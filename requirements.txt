@@ -1,0 +1,17 @@
+pandas
+plotly
+plotly-express
+scikit-learn
+xgboost
+torch
+torchvision
+transformers
+Pillow
+requests
+sentence-transformers
+spotipy
+scikit-learn
+numpy
+joblib
+python-dotenv
+matplotlib
