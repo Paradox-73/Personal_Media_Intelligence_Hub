@@ -6,6 +6,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
+from sklearn.decomposition import PCA
 import joblib
 from PIL import Image
 import os
@@ -50,6 +51,8 @@ class FeatureExtractor:
         self.image_processor = None
         self.image_model = None
         self.column_transformer = None
+        self.text_pca = None
+        self.image_pca = None
 
         # Attributes to store which columns were actually fitted/processed
         self.fitted_numerical_cols = []
@@ -152,7 +155,7 @@ class FeatureExtractor:
         numerical_features = [col for col in config["numerical_features"] if col in X.columns]
         categorical_features = [col for col in config["categorical_features"] if col in X.columns]
         text_features = [col for col in config["text_features"] if col in X.columns]
-        image_col = config["image_url"] if config["image_url"] and config["image_url"] in X.columns else None
+        image_col = "image_url" if "image_url" in X.columns and X["image_url"].notna().any() else None
 
         self.fitted_numerical_cols = numerical_features
         self.fitted_categorical_cols = categorical_features
@@ -192,15 +195,31 @@ class FeatureExtractor:
         if transformers: # Only fit if there are numerical or categorical features
             print("Fitting ColumnTransformer...")
             self.column_transformer.fit(X)
-            # Store the names of the features that the ColumnTransformer will output
-            # This is complex for OneHotEncoder, so we'll rely on its consistent output order.
-            # For simplicity, we just know which raw columns were used.
             print("ColumnTransformer fitted.")
         else:
             print("No numerical or categorical features to fit ColumnTransformer.")
-        
-        # Load transformer models (text and image)
+
+        # Load transformer models and fit PCA
         self._load_transformer_models()
+        if self.fitted_text_cols:
+            print("Fitting PCA for text features...")
+            combined_texts = X[self.fitted_text_cols].fillna("").agg(' '.join, axis=1).apply(clean_text)
+            text_embeddings = self.extract_text_features(combined_texts).cpu().numpy()
+            n_samples = text_embeddings.shape[0]
+            n_components = min(50, n_samples - 1)
+            self.text_pca = PCA(n_components=n_components) # Reduce dynamically
+            self.text_pca.fit(text_embeddings)
+            print(f"Text PCA fitted with {n_components} components.")
+
+        if self.fitted_image_col:
+            print("Fitting PCA for image features...")
+            image_embeddings = self.extract_image_features(X[self.fitted_image_col]).cpu().numpy()
+            n_samples = image_embeddings.shape[0]
+            n_components = min(50, n_samples - 1)
+            self.image_pca = PCA(n_components=n_components) # Reduce dynamically
+            self.image_pca.fit(image_embeddings)
+            print(f"Image PCA fitted with {n_components} components.")
+
         print("FeatureExtractor fitting complete.")
 
     def transform(self, X: pd.DataFrame) -> torch.Tensor: # Changed return type to torch.Tensor
@@ -240,10 +259,9 @@ class FeatureExtractor:
         # Text features
         text_embeddings = None
         if self.fitted_text_cols:
-            # Concatenate all text columns into a single series for embedding
-            # Fillna with empty string before joining to prevent issues with non-string types
             combined_texts = X_transformed[self.fitted_text_cols].fillna("").agg(' '.join, axis=1).apply(clean_text)
-            text_embeddings = self.extract_text_features(combined_texts) # This now returns torch.Tensor
+            text_features_raw = self.extract_text_features(combined_texts).cpu().numpy()
+            text_embeddings = torch.tensor(self.text_pca.transform(text_features_raw), dtype=torch.float32, device=self.device)
             print(f"Text embeddings shape (on {self.device}): {text_embeddings.shape}")
         else:
             text_embeddings = torch.empty(len(X_transformed), 0, dtype=torch.float32, device=self.device) # Empty tensor
@@ -251,7 +269,8 @@ class FeatureExtractor:
         # Image features
         image_embeddings = None
         if self.fitted_image_col:
-            image_embeddings = self.extract_image_features(X_transformed[self.fitted_image_col]) # This now returns torch.Tensor
+            image_features_raw = self.extract_image_features(X_transformed[self.fitted_image_col]).cpu().numpy()
+            image_embeddings = torch.tensor(self.image_pca.transform(image_features_raw), dtype=torch.float32, device=self.device)
             print(f"Image embeddings shape (on {self.device}): {image_embeddings.shape}")
         else:
             image_embeddings = torch.empty(len(X_transformed), 0, dtype=torch.float32, device=self.device) # Empty tensor
@@ -286,6 +305,10 @@ class FeatureExtractor:
         # Save ColumnTransformer
         if self.column_transformer:
             joblib.dump(self.column_transformer, os.path.join(path, 'column_transformer.pkl'))
+        if self.text_pca:
+            joblib.dump(self.text_pca, os.path.join(path, 'text_pca.pkl'))
+        if self.image_pca:
+            joblib.dump(self.image_pca, os.path.join(path, 'image_pca.pkl'))
         
         # Save Transformer models (or their names to reload)
         # It's generally better to save and load directly from Hugging Face cache
@@ -330,6 +353,10 @@ class FeatureExtractor:
         # Load fitted components
         if os.path.exists(os.path.join(path, 'column_transformer.pkl')):
             instance.column_transformer = joblib.load(os.path.join(path, 'column_transformer.pkl'))
+        if os.path.exists(os.path.join(path, 'text_pca.pkl')):
+            instance.text_pca = joblib.load(os.path.join(path, 'text_pca.pkl'))
+        if os.path.exists(os.path.join(path, 'image_pca.pkl')):
+            instance.image_pca = joblib.load(os.path.join(path, 'image_pca.pkl'))
         
         # Load transformer models locally if saved, otherwise from Hugging Face Hub
         if os.path.exists(os.path.join(path, 'sentence_transformer_model')):

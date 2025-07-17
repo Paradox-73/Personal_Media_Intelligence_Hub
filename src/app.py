@@ -56,69 +56,98 @@ def load_model_and_extractor(content_type: str):
 def prepare_dataframe_for_prediction(details: dict, content_type: str) -> pd.DataFrame:
     """
     Prepares a single content's details (from API response) into a Pandas DataFrame
-    suitable for prediction. It applies content-type-specific feature engineering
-    and ensures all expected columns are present with appropriate default values.
+    suitable for prediction. It standardizes the structure from various APIs
+    to match the training data format.
     """
-    df = pd.DataFrame([details]) # Convert single detail dictionary to a DataFrame
-
-    # Get the column mappings for the specific content type from data_loader
+    print("\nGathering features for prediction...")
+    processed_details = {}
     config = CONTENT_COLUMN_MAPPING[content_type]
 
-    # --- Handle common features expected by the FeatureExtractor ---
+    # Manually map API fields to our internal standard fields
+    if content_type == "Movie":
+        processed_details['title'] = details.get('Title')
+        processed_details['description'] = details.get('Plot')
+        processed_details['genres'] = details.get('Genre')
+        processed_details['image_url'] = details.get('Poster')
+        processed_details['release_date'] = details.get('Released')
+        processed_details['year'] = pd.to_numeric(details.get('Year'), errors='coerce')
+        processed_details['imdb_rating'] = pd.to_numeric(details.get('imdbRating'), errors='coerce')
+        processed_details['metascore'] = pd.to_numeric(details.get('Metascore'), errors='coerce')
+        processed_details['rated'] = details.get('Rated')
+        processed_details['language'] = details.get('Language')
+        processed_details['director'] = details.get('Director')
+        processed_details['writer'] = details.get('Writer')
+        processed_details['actors'] = details.get('Actors')
+        processed_details['awards'] = details.get('Awards')
 
-    # Ensure numerical features are present and are numeric, fill NaNs
-    numerical_cols = config.get("numerical_features", [])
-    # Also include specific engineered numeric features that FeatureExtractor expects
-    # These are hardcoded as they come from data_loader_show.py's engineering.
-    if content_type == "Show":
-        numerical_cols.extend(['genre_count', 'has_ended', 'is_english'])
+    elif content_type == "Game":
+        processed_details['title'] = details.get('name')
+        processed_details['description'] = details.get('description_raw')
+        processed_details['image_url'] = details.get('cover')
+        processed_details['release_date'] = details.get('released')
+        processed_details['metacritic'] = details.get('metacritic')
+        processed_details['rating'] = details.get('rating')
+        processed_details['ratings_count'] = details.get('ratings_count')
+        processed_details['reviews_count'] = details.get('reviews_count')
+        processed_details['platform_from_text'] = ", ".join([p['platform']['name'] for p in details.get('platforms', [])])
+        processed_details['age_rating'] = details.get('esrb_rating', {}).get('name') if details.get('esrb_rating') else 'Not Rated'
+        processed_details['developers'] = ", ".join([d['name'] for d in details.get('developers', [])])
+        processed_details['publishers'] = ", ".join([p['name'] for p in details.get('publishers', [])])
+        processed_details['tags'] = ", ".join([t['name'] for t in details.get('tags', [])])
+        processed_details['genres'] = ", ".join([g['name'] for g in details.get('genres', [])])
 
-    for col in numerical_cols:
-        if col not in df.columns:
-            df[col] = 0.0 # Default to 0.0 for missing numericals from API
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0) # Ensure numeric, fill any NaNs
+    elif content_type == "Show":
+        processed_details['title'] = details.get('name')
+        processed_details['description'] = details.get('summary')
+        processed_details['image_url'] = details.get('image', {}).get('medium') if details.get('image') else None
+        processed_details['release_date'] = details.get('premiered')
+        processed_details['runtime'] = details.get('runtime')
+        processed_details['average_runtime'] = details.get('averageRuntime')
+        processed_details['rating_avg'] = details.get('rating', {}).get('average') if details.get('rating') else None
+        processed_details['popularity'] = details.get('weight')
+        processed_details['language'] = details.get('language')
+        processed_details['status'] = details.get('status')
+        processed_details['show_type'] = details.get('type')
+        processed_details['genres'] = "|".join(details.get('genres', []))
 
-    # Ensure categorical features are present and fill NaNs with 'Unknown'
-    categorical_cols = config.get("categorical_features", [])
-    for col in categorical_cols:
-        if col not in df.columns:
-            df[col] = config.get("fill_na_categorical_strategy", "Unknown")
-        df[col] = df[col].fillna(config.get("fill_na_categorical_strategy", "Unknown"))
+    elif content_type == "Book":
+        vol_info = details.get('volumeInfo', {})
+        processed_details['title'] = vol_info.get('title')
+        processed_details['description'] = vol_info.get('description')
+        processed_details['image_url'] = vol_info.get('imageLinks', {}).get('thumbnail') if vol_info.get('imageLinks') else None
+        processed_details['release_date'] = vol_info.get('publishedDate')
+        processed_details['averageRating'] = vol_info.get('averageRating')
+        processed_details['ratingsCount'] = vol_info.get('ratingsCount')
+        processed_details['authors'] = ", ".join(vol_info.get('authors', []))
+        processed_details['publisher'] = vol_info.get('publisher')
+        processed_details['language'] = vol_info.get('language')
+        processed_details['genres'] = ", ".join(vol_info.get('categories', []))
 
-    # Ensure text features are present and fill NaNs with empty strings
-    text_cols = config.get("text_features", [])
-    for col in text_cols:
-        if col not in df.columns:
-            df[col] = ''
-        df[col] = df[col].fillna('')
+    # Convert the processed dictionary to a single-row DataFrame
+    df_pred = pd.DataFrame([processed_details])
 
-    # --- Content-type specific feature engineering ---
-    # This recreates the features that were engineered during training
-    if content_type == "Show":
-        # Ensure base columns for engineering are filled, although largely handled above
-        df['genres'] = df['genres'].fillna('')
-        df['language'] = df['language'].fillna('Unknown')
-        df['status'] = df['status'].fillna('Unknown')
+    # Ensure all columns the model was trained on are present, filling missing ones with defaults
+    all_trained_cols = set(config.get('numerical_features', []) + config.get('categorical_features', []) + config.get('text_features', []))
+    if config.get('image_url'):
+        all_trained_cols.add('image_url')
 
-        # Engineered features for 'Show'
-        df['genre_count'] = df['genres'].apply(lambda x: len(x.split('|')) if x else 0)
-        df['has_ended'] = df['status'].str.lower().str.contains('ended').astype(int)
-        df['is_english'] = df['language'].str.lower().str.contains('english').astype(int)
+    for col in all_trained_cols:
+        if col not in df_pred.columns:
+            if col in config.get('numerical_features', []):
+                df_pred[col] = 0.0
+            else:
+                df_pred[col] = "Unknown"
 
-        # Specific handling for show runtime/episode_count if they might be NaN from API
-        if 'runtime' in df.columns and pd.isna(df['runtime'].iloc[0]):
-            df['runtime'] = 0.0
-        if 'episode_count' in df.columns and pd.isna(df['episode_count'].iloc[0]):
-            df['episode_count'] = 0.0
+    # Final cleanup for consistency
+    for col in config.get('numerical_features', []):
+        df_pred[col] = pd.to_numeric(df_pred[col], errors='coerce').fillna(0.0)
+    for col in list(set(config.get('categorical_features', []) + config.get('text_features', []))):
+        df_pred[col] = df_pred[col].fillna("Unknown")
+    if 'image_url' in df_pred.columns:
+        df_pred['image_url'] = df_pred['image_url'].fillna("")
 
-    # Add elif blocks here for other content types (Game, Movie, etc.)
-    # if they have specific feature engineering steps.
-    # elif content_type == "Game":
-    #     # Example for Game:
-    #     # df['platform_count'] = df['platforms'].apply(lambda x: len(x.split(',')) if x else 0)
-    #     pass
 
-    return df
+    return df_pred
 
 def get_user_input():
     """Gets content type and search query from the user."""
@@ -130,7 +159,9 @@ def get_user_input():
 
     while True:
         try:
-            choice = int(input("Enter the number of your choice: ")) - 1
+            choice_input = input("Enter the number of your choice: ")
+            if not choice_input: continue
+            choice = int(choice_input) - 1
             if 0 <= choice < len(content_type_options):
                 selected_content_type = content_type_options[choice]
                 break
@@ -187,7 +218,9 @@ def select_content_from_results(found_content, content_type):
 
     while True:
         try:
-            choice = int(input("\nEnter the number of the content you want to predict: "))
+            choice_input = input("\nEnter the number of the content you want to predict: ")
+            if not choice_input: continue
+            choice = int(choice_input)
             if choice in content_id_map:
                 return content_id_map[choice]
             else:
@@ -195,42 +228,6 @@ def select_content_from_results(found_content, content_type):
         except ValueError:
             print("Invalid input. Please enter a number.")
 
-def prepare_dataframe_for_prediction(details, content_type):
-    """Prepares the pandas DataFrame for the model."""
-    prediction_input_data = {}
-    cfg = CONTENT_COLUMN_MAPPING[content_type]
-
-    # This function would contain the detailed, content-specific logic
-    # from your Streamlit app to extract and map all the necessary features
-    # (numerical, categorical, text, etc.) into the prediction_input_data dict.
-    # For this example, we'll keep it conceptual.
-    print("\nGathering features for prediction...")
-
-    # Title
-    prediction_input_data[cfg['title']] = details.get(cfg['title'], 'N/A')
-
-    # Example for one numerical feature
-    if content_type == "Movie":
-        raw_rating = details.get('imdbRating', 'N/A')
-        rating_val = pd.to_numeric(raw_rating, errors='coerce')
-        prediction_input_data['imdb_rating'] = rating_val
-    # ... and so on for all features defined in CONTENT_COLUMN_MAPPING
-
-    # Build DataFrame
-    all_cols = set(cfg.get('numerical_features', []) + cfg.get('categorical_features', []) + cfg.get('text_features', []))
-    df_pred = pd.DataFrame([prediction_input_data], columns=list(all_cols))
-
-    # Impute missing values
-    for col in cfg.get('numerical_features', []):
-        if col in df_pred.columns:
-            df_pred[col] = df_pred[col].fillna(0.0)
-
-    for col in cfg.get('categorical_features', []) + cfg.get('text_features', []):
-        if col in df_pred.columns:
-            fill_value = cfg.get('fill_na_categorical_strategy', 'Unknown')
-            df_pred[col] = df_pred[col].astype(str).replace('nan', fill_value).fillna(fill_value)
-
-    return df_pred
 
 
 def main():

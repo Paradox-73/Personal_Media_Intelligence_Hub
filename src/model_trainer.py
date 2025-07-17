@@ -105,10 +105,10 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):
         print("CUDA not available. Using CPU 'hist' tree method for XGBoost training.")
         xgb_model = XGBRegressor(objective='reg:squarederror', n_estimators=100, random_state=42,
                                  tree_method='hist', # Fallback to CPU if CUDA not available
-                                 learning_rate=0.1,
-                                 max_depth=6,
-                                 subsample=0.8,
-                                 colsample_bytree=0.8,
+                                 learning_rate=0.05,
+                                 max_depth=4,
+                                 subsample=0.7,
+                                 colsample_bytree=0.7,
                                  n_jobs=-1
                                  )
     
@@ -143,18 +143,27 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):
     # 7. Save Model and Feature Extractor
     # Create content-specific model directory
     model_dir = os.path.join(model_base_dir, content_type.lower())
+    diagnostics_dir = os.path.join(current_script_dir, '..', 'diagnostics', content_type.lower())
     print(f"\n--- Saving trained model and feature extractor to {model_dir} ---\n")
     ensure_directory_exists(model_dir)
+    ensure_directory_exists(diagnostics_dir)
 
     joblib.dump(xgb_model, os.path.join(model_dir, f'xgboost_model_{content_type.lower()}.pkl'))
     feature_extractor.save(os.path.join(model_dir, 'feature_extractor'))
-    print("Training process complete for", content_type)
-    
+
+    # 8. Save Diagnostics
     import matplotlib.pyplot as plt
     from xgboost import plot_importance
 
-    plot_importance(xgb_model, max_num_features=20)
-    plt.show()
+    fig, ax = plt.subplots(figsize=(10, 8))
+    plot_importance(xgb_model, ax=ax, max_num_features=20, title=f'Feature Importance for {content_type}')
+    plt.tight_layout()
+    plot_path = os.path.join(diagnostics_dir, f'{content_type}_feature_importance.png')
+    plt.savefig(plot_path)
+    plt.close(fig) # Close the figure to free memory
+    print(f"Saved feature importance plot to {plot_path}")
+
+    print("Training process complete for", content_type)
 
 if __name__ == "__main__":
     # Define base directories
