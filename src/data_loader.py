@@ -1,3 +1,5 @@
+
+
 import pandas as pd
 import numpy as np
 import os
@@ -19,8 +21,8 @@ CONTENT_COLUMN_MAPPING = {
         "my_rating": "my_rating",
         "release_date": "released",
         "numerical_features": ["metacritic", "rating", "ratings_count", "reviews_count"],
-        "categorical_features": ["platform_from_text", "age_rating"],
-        "text_features": ["description_raw", "tags", "name", "developers", "publishers"],
+        "categorical_features": ["platform_from_text", "age_rating", "developers", "publishers"],
+        "text_features": ["description_raw", "tags", "name"],
         "date_features": ["released"],
         "fill_na_numerical_strategy": "median",
         "fill_na_categorical_strategy": "Unknown",
@@ -37,7 +39,7 @@ CONTENT_COLUMN_MAPPING = {
         "my_rating": "my_rating",
         "release_date": "premiered",
         "numerical_features": ["runtime", "average_runtime", "rating_avg", "popularity", "watch_count", "episode_count"],
-        "categorical_features": ["language", "status", "show_type"],
+        "categorical_features": ["language", "status", "show_type", "network_country"],
         "text_features": ["summary", "genres", "title", "cast", "characters", "crew"],
         "date_features": ["premiered"],
         "fill_na_numerical_strategy": "median",
@@ -51,12 +53,12 @@ CONTENT_COLUMN_MAPPING = {
         "description": "plot",
         "genres": "genre",
         "image_url": "poster", # URL to movie poster
-        "my_rating_source_col": "user_rating", # ORIGINAL COLUMN NAME for target
+        "my_rating_source_col": "my_rating",
         "my_rating": "my_rating",
         "release_date": "released",
         "numerical_features": ["year", "imdb_rating", "metascore"], # imdb_votes, rotten_tomatoes_rating, box_office need careful conversion
-        "categorical_features": ["rated", "language"],
-        "text_features": ["plot", "genre", "title", "director", "writer", "actors", "awards"],
+        "categorical_features": ["rated", "language", "director", "writer"],
+        "text_features": ["plot", "genre", "title", "actors", "awards"],
         "date_features": ["released"],
         "fill_na_numerical_strategy": "median",
         "fill_na_categorical_strategy": "Unknown",
@@ -80,8 +82,8 @@ CONTENT_COLUMN_MAPPING = {
         "numerical_features": ["Popularity", "Danceability", "Energy", "Loudness", "Speechiness",
                                "Acousticness", "Instrumentalness", "Liveness", "Valence", "Tempo",
                                "Duration (ms)", "Time Signature"], # Spotify audio features
-        "categorical_features": ["Artist(s)", "Key", "Mode"], # Added Key and Mode
-        "text_features": ["Track Name", "Artist(s)", "Album Name"], # Simplified, could include Genre(s) if robust
+        "categorical_features": ["Artist(s)", "Key", "Mode", "Genre(s)"], # Added Key and Mode
+        "text_features": ["Track Name", "Album Name"], # Simplified, could include Genre(s) if robust
         "date_features": ["Release Date", "Added At"],
         "fill_na_numerical_strategy": "median",
         "fill_na_categorical_strategy": "Unknown",
@@ -97,9 +99,9 @@ CONTENT_COLUMN_MAPPING = {
         "my_rating_source_col": "my_rating", # User needs to provide how 'my_rating' is derived for books for training
         "my_rating": "my_rating",
         "release_date": "publishedDate",
-        "numerical_features": ["averageRating", "ratingsCount"],
-        "categorical_features": ["language"],
-        "text_features": ["title", "description", "authors", "categories", "publisher"],
+        "numerical_features": ["averageRating", "ratingsCount", "pageCount"],
+        "categorical_features": ["language", "authors", "publisher"],
+        "text_features": ["title", "description", "categories"],
         "date_features": ["publishedDate"],
         "fill_na_numerical_strategy": "median",
         "fill_na_categorical_strategy": "Unknown",
@@ -169,7 +171,13 @@ def load_content_data(content_type: str) -> pd.DataFrame:
 
     # Handle release dates - now 'release_date' should be the generic column name
     if "release_date" in df.columns:
-        df["release_date"] = pd.to_datetime(df["release_date"], errors='coerce')
+        if content_type == "Show":
+            df["release_date"] = pd.to_datetime(df["release_date"], errors='coerce', dayfirst=True)
+        elif content_type == "Movie":
+            df["release_date"] = pd.to_datetime(df["release_date"], format='%d-%b-%y', errors='coerce')
+        else:
+            df["release_date"] = pd.to_datetime(df["release_date"], errors='coerce')
+        
         df['release_year'] = df["release_date"].dt.year
         print(f"Converted 'release_date' to datetime and extracted 'release_year'.")
 

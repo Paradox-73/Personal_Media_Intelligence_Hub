@@ -15,7 +15,7 @@ from tqdm import tqdm # For progress bars
 import sys
 
 # Add the parent directory of the current script to sys.path
-# This makes 'src' importable if you run from E:\\Show_ML\\GAME_PREDICT\\src\\\
+# This makes 'src' importable if you run from E:\Show_ML\GAME_PREDICT\src\\
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import custom utility functions and the content column mapping
@@ -42,8 +42,7 @@ class FeatureExtractor:
         self.image_model_name = image_model_name
         
         # Determine device for PyTorch models
-        #self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.device = torch.device("cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
 
         # Initialize models (will be loaded/downloaded during first use or fitting)
@@ -181,128 +180,114 @@ class FeatureExtractor:
             transformers.append(('cat', categorical_transformer, self.fitted_categorical_cols))
             print(f"Categorical features to fit: {self.fitted_categorical_cols}")
 
-        # Create ColumnTransformer
-        # 'remainder='passthrough'' ensures columns not explicitly transformed are kept.
-        # However, for ML models, we usually want only engineered features.
-        # Given the "no standardized features" constraint, we'll implicitly drop
-        # columns not specified, so we don't end up with hundreds of untransformed columns.
         self.column_transformer = ColumnTransformer(
             transformers=transformers,
-            remainder='drop' # Drop columns not specified in transformers
+            remainder='drop' 
         )
 
-        # Fit the ColumnTransformer
-        if transformers: # Only fit if there are numerical or categorical features
+        if transformers:
             print("Fitting ColumnTransformer...")
             self.column_transformer.fit(X)
             print("ColumnTransformer fitted.")
         else:
             print("No numerical or categorical features to fit ColumnTransformer.")
 
-        # Load transformer models and fit PCA
         self._load_transformer_models()
         if self.fitted_text_cols:
             print("Fitting PCA for text features...")
             combined_texts = X[self.fitted_text_cols].fillna("").agg(' '.join, axis=1).apply(clean_text)
             text_embeddings = self.extract_text_features(combined_texts).cpu().numpy()
-            n_samples = text_embeddings.shape[0]
-            n_components = min(50, n_samples - 1)
-            self.text_pca = PCA(n_components=n_components) # Reduce dynamically
-            self.text_pca.fit(text_embeddings)
-            print(f"Text PCA fitted with {n_components} components.")
+            n_samples, n_features = text_embeddings.shape
+            
+            if n_samples > 1:
+                max_components = min(n_samples - 1, n_features)
+                n_components = min(50, max_components)
+                
+                if n_components > 0:
+                    self.text_pca = PCA(n_components=n_components)
+                    self.text_pca.fit(text_embeddings)
+                    print(f"Text PCA fitted with {n_components} components.")
+                else:
+                    print("Not enough samples or features to fit PCA for text. Skipping.")
+                    self.text_pca = None
+            else:
+                print("Not enough samples to fit PCA for text. Skipping.")
+                self.text_pca = None
 
         if self.fitted_image_col:
             print("Fitting PCA for image features...")
             image_embeddings = self.extract_image_features(X[self.fitted_image_col]).cpu().numpy()
-            n_samples = image_embeddings.shape[0]
-            n_components = min(50, n_samples - 1)
-            self.image_pca = PCA(n_components=n_components) # Reduce dynamically
-            self.image_pca.fit(image_embeddings)
-            print(f"Image PCA fitted with {n_components} components.")
+            n_samples, n_features = image_embeddings.shape
+
+            if n_samples > 1:
+                max_components = min(n_samples - 1, n_features)
+                n_components = min(50, max_components)
+
+                if n_components > 0:
+                    self.image_pca = PCA(n_components=n_components)
+                    self.image_pca.fit(image_embeddings)
+                    print(f"Image PCA fitted with {n_components} components.")
+                else:
+                    print("Not enough samples or features to fit PCA for images. Skipping.")
+                    self.image_pca = None
+            else:
+                print("Not enough samples to fit PCA for images. Skipping.")
+                self.image_pca = None
 
         print("FeatureExtractor fitting complete.")
 
-    def transform(self, X: pd.DataFrame) -> torch.Tensor: # Changed return type to torch.Tensor
+    def transform(self, X: pd.DataFrame) -> torch.Tensor:
         """
         Transforms the input DataFrame into a feature array using the fitted components.
-
-        Args:
-            X (pd.DataFrame): The input DataFrame to transform.
-
-        Returns:
-            torch.Tensor: A PyTorch tensor of combined features on the configured device.
         """
         print("--- Transforming data using FeatureExtractor ---")
-        if self.column_transformer is None:
+        if self.column_transformer is None and self.text_pca is None and self.image_pca is None:
             raise RuntimeError("FeatureExtractor has not been fitted yet. Call .fit() first.")
         
-        # Ensure all fitted columns are present in X, fill missing with NaN for consistent transformation
-        # The ColumnTransformer will handle these NaNs based on its fitted transformers
-        # For categorical, OneHotEncoder handle_unknown='ignore' will output zeros for unknown categories
-        # For numerical, StandardScaler will produce NaNs if input is NaN, which then needs handling by model or earlier.
-        # data_loader is responsible for filling NaNs, so this should generally be clean.
-        
-        # Make a copy to avoid modifying the original DataFrame
         X_transformed = X.copy()
 
-        # Numerical and Categorical features via ColumnTransformer
-        ct_features = None
-        if self.column_transformer.transformers_: # Check if CT has actually been fitted with transformers
-            # ColumnTransformer outputs NumPy array, convert to PyTorch tensor and move to device
+        ct_features = torch.empty(len(X_transformed), 0, dtype=torch.float32, device=self.device)
+        if self.column_transformer and getattr(self.column_transformer, 'transformers_', []):
             ct_features = torch.tensor(self.column_transformer.transform(X_transformed), 
                                        dtype=torch.float32, device=self.device)
             print(f"ColumnTransformer output shape (on {self.device}): {ct_features.shape}")
-        else:
-            print("ColumnTransformer not fitted or no numerical/categorical features.")
-            ct_features = torch.empty(len(X_transformed), 0, dtype=torch.float32, device=self.device) # Empty tensor if no features for CT
-
-        # Text features
-        text_embeddings = None
+        
+        text_embeddings = torch.empty(len(X_transformed), 0, dtype=torch.float32, device=self.device)
         if self.fitted_text_cols:
             combined_texts = X_transformed[self.fitted_text_cols].fillna("").agg(' '.join, axis=1).apply(clean_text)
-            text_features_raw = self.extract_text_features(combined_texts).cpu().numpy()
-            text_embeddings = torch.tensor(self.text_pca.transform(text_features_raw), dtype=torch.float32, device=self.device)
+            text_features_raw = self.extract_text_features(combined_texts)
+            if self.text_pca:
+                text_features_raw_np = text_features_raw.cpu().numpy()
+                text_embeddings = torch.tensor(self.text_pca.transform(text_features_raw_np), dtype=torch.float32, device=self.device)
+            else:
+                text_embeddings = text_features_raw
             print(f"Text embeddings shape (on {self.device}): {text_embeddings.shape}")
-        else:
-            text_embeddings = torch.empty(len(X_transformed), 0, dtype=torch.float32, device=self.device) # Empty tensor
 
-        # Image features
-        image_embeddings = None
+        image_embeddings = torch.empty(len(X_transformed), 0, dtype=torch.float32, device=self.device)
         if self.fitted_image_col:
-            image_features_raw = self.extract_image_features(X_transformed[self.fitted_image_col]).cpu().numpy()
-            image_embeddings = torch.tensor(self.image_pca.transform(image_features_raw), dtype=torch.float32, device=self.device)
+            image_features_raw = self.extract_image_features(X_transformed[self.fitted_image_col])
+            if self.image_pca:
+                image_features_raw_np = image_features_raw.cpu().numpy()
+                image_embeddings = torch.tensor(self.image_pca.transform(image_features_raw_np), dtype=torch.float32, device=self.device)
+            else:
+                image_embeddings = image_features_raw
             print(f"Image embeddings shape (on {self.device}): {image_embeddings.shape}")
-        else:
-            image_embeddings = torch.empty(len(X_transformed), 0, dtype=torch.float32, device=self.device) # Empty tensor
 
-
-        # Combine all features - now all are PyTorch tensors on the same device
-        feature_list = []
-        if ct_features.size(1) > 0: # Check if there are actual features in ct_features
-            feature_list.append(ct_features)
-        if text_embeddings.size(1) > 0: # Check if there are actual features in text_embeddings
-            feature_list.append(text_embeddings)
-        if image_embeddings.size(1) > 0: # Check if there are actual features in image_embeddings
-            feature_list.append(image_embeddings)
-
+        feature_list = [f for f in [ct_features, text_embeddings, image_embeddings] if f.size(1) > 0]
         if not feature_list:
-            raise ValueError("No features were extracted. Check input data and feature configurations.")
+            raise ValueError("No features were extracted.")
 
-        combined_features = torch.cat(feature_list, dim=1) # Use torch.cat for tensors
+        combined_features = torch.cat(feature_list, dim=1)
         print(f"Combined features shape (on {self.device}): {combined_features.shape}")
         return combined_features
 
     def save(self, path: str):
         """
         Saves the fitted FeatureExtractor components to the specified path.
-
-        Args:
-            path (str): Directory path to save the components.
         """
         ensure_directory_exists(path)
         print(f"Saving FeatureExtractor components to {path}...")
 
-        # Save ColumnTransformer
         if self.column_transformer:
             joblib.dump(self.column_transformer, os.path.join(path, 'column_transformer.pkl'))
         if self.text_pca:
@@ -310,17 +295,12 @@ class FeatureExtractor:
         if self.image_pca:
             joblib.dump(self.image_pca, os.path.join(path, 'image_pca.pkl'))
         
-        # Save Transformer models (or their names to reload)
-        # It's generally better to save and load directly from Hugging Face cache
-        # or a local path after downloading. Saving the actual models can be large.
-        # Here, we'll save the model weights and processor config locally.
         if self.text_model:
-            self.text_model.save_pretrained(os.path.join(path, 'sentence_transformer_model'))
+            self.text_model.save(os.path.join(path, 'sentence_transformer_model'))
         if self.image_processor and self.image_model:
             self.image_processor.save_pretrained(os.path.join(path, 'image_processor'))
             self.image_model.save_pretrained(os.path.join(path, 'image_model'))
 
-        # Save metadata
         metadata = {
             'text_model_name': self.text_model_name,
             'image_model_name': self.image_model_name,
@@ -336,21 +316,13 @@ class FeatureExtractor:
     def load(cls, path: str):
         """
         Loads a fitted FeatureExtractor from the specified path.
-
-        Args:
-            path (str): Directory path where the components were saved.
-
-        Returns:
-            FeatureExtractor: The loaded and initialized FeatureExtractor instance.
         """
         print(f"Loading FeatureExtractor components from {path}...")
         metadata = joblib.load(os.path.join(path, 'feature_extractor_metadata.pkl'))
         
-        # Re-initialize the FeatureExtractor class instance
         instance = cls(text_model_name=metadata['text_model_name'],
                        image_model_name=metadata['image_model_name'])
 
-        # Load fitted components
         if os.path.exists(os.path.join(path, 'column_transformer.pkl')):
             instance.column_transformer = joblib.load(os.path.join(path, 'column_transformer.pkl'))
         if os.path.exists(os.path.join(path, 'text_pca.pkl')):
@@ -358,31 +330,29 @@ class FeatureExtractor:
         if os.path.exists(os.path.join(path, 'image_pca.pkl')):
             instance.image_pca = joblib.load(os.path.join(path, 'image_pca.pkl'))
         
-        # Load transformer models locally if saved, otherwise from Hugging Face Hub
-        if os.path.exists(os.path.join(path, 'sentence_transformer_model')):
-            instance.text_model = SentenceTransformer(instance.text_model_name, device='cpu')
-            instance.text_model.eval()
+        text_model_path = os.path.join(path, 'sentence_transformer_model')
+        if os.path.exists(text_model_path):
+            instance.text_model = SentenceTransformer(text_model_path, device=instance.device)
         else:
-            print(f"Warning: Local text model not found. Will try to download '{instance.text_model_name}'.")
+            print(f"Warning: Local text model not found. Downloading '{instance.text_model_name}'.")
             instance.text_model = SentenceTransformer(instance.text_model_name, device=instance.device)
-            instance.text_model.eval()
+        instance.text_model.eval()
 
-        if os.path.exists(os.path.join(path, 'image_processor')) and \
-           os.path.exists(os.path.join(path, 'image_model')):
-            instance.image_processor = AutoImageProcessor.from_pretrained(os.path.join(path, 'image_processor'))
-            instance.image_model = AutoModel.from_pretrained(os.path.join(path, 'image_model')).to('cpu')
-            instance.image_model.eval()
+        image_processor_path = os.path.join(path, 'image_processor')
+        image_model_path = os.path.join(path, 'image_model')
+        if os.path.exists(image_processor_path) and os.path.exists(image_model_path):
+            instance.image_processor = AutoImageProcessor.from_pretrained(image_processor_path)
+            instance.image_model = AutoModel.from_pretrained(image_model_path).to(instance.device)
         else:
-            print(f"Warning: Local image processor/model not found. Will try to download '{instance.image_model_name}'.")
+            print(f"Warning: Local image model not found. Downloading '{instance.image_model_name}'.")
             instance.image_processor = AutoImageProcessor.from_pretrained(instance.image_model_name)
-            instance.image_model = AutoModel.from_pretrained(instance.image_model_name).to('cpu')
-            instance.image_model.eval()
-
+            instance.image_model = AutoModel.from_pretrained(instance.image_model_name).to(instance.device)
+        instance.image_model.eval()
 
         instance.fitted_numerical_cols = metadata.get('fitted_numerical_cols', [])
         instance.fitted_categorical_cols = metadata.get('fitted_categorical_cols', [])
-        instance.fitted_text_cols = metadata['fitted_text_cols']
-        instance.fitted_image_col = metadata['fitted_image_col']
+        instance.fitted_text_cols = metadata.get('fitted_text_cols', [])
+        instance.fitted_image_col = metadata.get('fitted_image_col')
 
         print("FeatureExtractor components loaded successfully.")
         return instance

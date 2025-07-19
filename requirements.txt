@@ -15,3 +15,5 @@ numpy
 joblib
 python-dotenv
 matplotlib
+cupy-cuda12x 
+optuna

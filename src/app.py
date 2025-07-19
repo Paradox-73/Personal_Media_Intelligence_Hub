@@ -264,10 +264,8 @@ def main():
 
             print("⚙️  Running prediction...")
             combined_features = feature_extractor.transform(df_pred)
-            if isinstance(combined_features, torch.Tensor):
-                features_for_xgb = combined_features.cpu().detach().numpy()
-            else:
-                features_for_xgb = combined_features
+            # No change needed here, the tensor is already on the correct device
+            features_for_xgb = combined_features
 
             predicted_rating = xgb_model.predict(features_for_xgb)[0]
             predicted_rating = max(1.0, min(5.0, predicted_rating))

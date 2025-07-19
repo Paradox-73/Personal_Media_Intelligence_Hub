@@ -7,7 +7,8 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import joblib
 import os
 import torch # To check CUDA availability
-
+import optuna
+import json
 import sys
 
 # Add the parent directory of the current script to sys.path
@@ -17,6 +18,28 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from src.data_loader import load_content_data, CONTENT_COLUMN_MAPPING
 from src.feature_extractor import FeatureExtractor
 from src.utils import ensure_directory_exists
+
+def objective(trial, X_train, y_train, X_test, y_test):
+    """
+    Objective function for Optuna to optimize.
+    """
+    param = {
+        'objective': 'reg:squarederror',
+        'n_estimators': trial.suggest_int('n_estimators', 100, 2000),
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3),
+        'max_depth': trial.suggest_int('max_depth', 3, 10),
+        'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+        'tree_method': 'hist',
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+        'n_jobs': -1
+    }
+    
+    model = XGBRegressor(**param)
+    model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
+    preds = model.predict(X_test)
+    r2 = r2_score(y_test, preds)
+    return r2
 
 def train_model(content_type: str, data_base_dir: str, model_base_dir: str):
     """
@@ -86,38 +109,48 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):
         y_test_final = y_test.values # Convert Series to numpy array
 
 
-    # 5. Train XGBoost Regressor Model
-    print("Training XGBoost Regressor model...")
-    
-    # Configure XGBoost to use GPU if available, and explicitly use 'reg:squarederror'
-    if torch.cuda.is_available():
-        print("CUDA available. Attempting to use GPU for XGBoost training with 'gpu_hist' tree method.")
-        xgb_model = XGBRegressor(objective='reg:squarederror', n_estimators=1000, random_state=42,
-                                 tree_method='hist', # Explicitly request GPU
-                                 learning_rate=0.05,
-                                 max_depth=6,
-                                 subsample=0.8,
-                                 colsample_bytree=0.8,
-                                 n_jobs=-1, # Use all available cores
-                                 device='cuda'
-                                 )
+    # 5. Hyperparameter Tuning or Loading
+    model_dir = os.path.join(model_base_dir, content_type.lower())
+    params_path = os.path.join(model_dir, 'best_params.json')
+    best_params = None
+
+    if os.path.exists(params_path):
+        print(f"Found existing best parameters for {content_type}. Loading them.")
+        with open(params_path, 'r') as f:
+            best_params = json.load(f)
+        print("Loaded parameters:", best_params)
     else:
-        print("CUDA not available. Using CPU 'hist' tree method for XGBoost training.")
-        xgb_model = XGBRegressor(objective='reg:squarederror', n_estimators=100, random_state=42,
-                                 tree_method='hist', # Fallback to CPU if CUDA not available
-                                 learning_rate=0.05,
-                                 max_depth=4,
-                                 subsample=0.7,
-                                 colsample_bytree=0.7,
-                                 n_jobs=-1
-                                 )
+        print(f"No best parameters found for {content_type}. Running Optuna study.")
+        study = optuna.create_study(direction='maximize')
+        study.optimize(lambda trial: objective(trial, X_train_transformed, y_train_final, X_test_transformed, y_test_final), n_trials=100)
+
+        print("Best trial:")
+        trial = study.best_trial
+        best_params = trial.params
+
+        print(f"  Value: {trial.value}")
+        print("  Params: ")
+        for key, value in best_params.items():
+            print(f"    {key}: {value}")
+
+        # Save the best parameters for future runs
+        ensure_directory_exists(model_dir)
+        with open(params_path, 'w') as f:
+            json.dump(best_params, f, indent=4)
+        print(f"Saved best parameters to {params_path}")
+
+    # 6. Train Final Model with Best Parameters
+    print("Training XGBoost Regressor model with best parameters...")
+    best_params['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    xgb_model = XGBRegressor(objective='reg:squarederror', **best_params)
     
     # Pass PyTorch tensors directly to xgb_model.fit. XGBoost with gpu_hist can handle them.
     xgb_model.fit(X_train_transformed, y_train_final, eval_set=[(X_test_transformed, y_test_final)],
     verbose=False)
     print("XGBoost model training complete.")
 
-    # 6. Evaluate Model
+    # 7. Evaluate Model
     print("\n--- Evaluating Model ---")
     # Pass PyTorch tensors directly to xgb_model.predict
     y_pred = xgb_model.predict(X_test_transformed)
@@ -140,10 +173,9 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):
     print(f"Root Mean Squared Error (RMSE): {rmse:.4f}")
     print(f"R-squared (R2): {r2:.4f}")
 
-    # 7. Save Model and Feature Extractor
+    # 8. Save Model and Feature Extractor
     # Create content-specific model directory
-    model_dir = os.path.join(model_base_dir, content_type.lower())
-    diagnostics_dir = os.path.join(current_script_dir, '..', 'diagnostics', content_type.lower())
+    diagnostics_dir = os.path.join(os.path.dirname(__file__), '..', 'diagnostics', content_type.lower())
     print(f"\n--- Saving trained model and feature extractor to {model_dir} ---\n")
     ensure_directory_exists(model_dir)
     ensure_directory_exists(diagnostics_dir)
@@ -151,7 +183,7 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):
     joblib.dump(xgb_model, os.path.join(model_dir, f'xgboost_model_{content_type.lower()}.pkl'))
     feature_extractor.save(os.path.join(model_dir, 'feature_extractor'))
 
-    # 8. Save Diagnostics
+    # 9. Save Diagnostics
     import matplotlib.pyplot as plt
     from xgboost import plot_importance
 
