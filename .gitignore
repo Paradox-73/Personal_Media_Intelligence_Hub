@@ -16,6 +16,6 @@ src/__pycache__/
 
 # Environment variables
 .env
-roadmap
-model_output
+roadmap.txt
+model_output.txt
 src/fetch
