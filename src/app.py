@@ -53,6 +53,29 @@ def load_model_and_extractor(content_type: str):
         print(f"❌ Error loading model or feature extractor for {content_type}: {e}")
         return None, None
     
+def load_unified_models():
+    """
+    Loads the trained unified regression and classification models and their preprocessor.
+    """
+    model_dir = os.path.join(MODEL_BASE_DIR, 'unified')
+    reg_model_path = os.path.join(model_dir, 'unified_regression_model.pkl')
+    cls_model_path = os.path.join(model_dir, 'unified_classification_model.pkl')
+    preprocessor_path = os.path.join(model_dir, 'unified_preprocessor.pkl')
+
+    if not os.path.exists(reg_model_path) or not os.path.exists(cls_model_path) or not os.path.exists(preprocessor_path):
+        print(f"❌ Error: Unified model files not found in {model_dir}. Please train the unified models first.")
+        return None, None, None
+
+    try:
+        reg_model = joblib.load(reg_model_path)
+        cls_model = joblib.load(cls_model_path)
+        preprocessor = joblib.load(preprocessor_path)
+        print("OK: Successfully loaded unified models and preprocessor.")
+        return reg_model, cls_model, preprocessor
+    except Exception as e:
+        print(f"ERROR: Error loading unified models: {e}")
+        return None, None, None
+
 def prepare_dataframe_for_prediction(details: dict, content_type: str) -> pd.DataFrame:
     """
     Prepares a single content's details (from API response) into a Pandas DataFrame
@@ -149,6 +172,62 @@ def prepare_dataframe_for_prediction(details: dict, content_type: str) -> pd.Dat
 
     return df_pred
 
+def prepare_dataframe_for_unified_prediction(details: dict, content_type: str) -> pd.DataFrame:
+    """
+    Prepares a single content's details for the unified model.
+    """
+    df = prepare_dataframe_for_prediction(details, content_type)
+    df['content_type'] = content_type
+
+    # Normalize critic ratings
+    if content_type == 'Game':
+        df['critic_rating_normalized'] = df.get('metacritic', df.get('rating', 50)) / 10
+    elif content_type == 'Show':
+        df['critic_rating_normalized'] = df.get('rating_avg', 5)
+    elif content_type == 'Movie':
+        df['critic_rating_normalized'] = df.get('imdb_rating', df.get('metascore', 50) / 10)
+    elif content_type == 'Music':
+        df['critic_rating_normalized'] = df.get('my_rating', 50) / 10
+    elif content_type == 'Book':
+        df['critic_rating_normalized'] = df.get('averageRating', 2.5) * 2
+    
+    if 'critic_rating_normalized' in df.columns:
+        df['critic_rating_normalized'] = df['critic_rating_normalized'].fillna(5.0)
+    else:
+        df['critic_rating_normalized'] = 5.0 # Default value
+
+    # Define the full set of features the unified model expects
+    unified_text_features = ['title', 'description', 'genres']
+    unified_categorical_features = [
+        'content_type', 'language', 'status', 'show_type', 'network_country', 
+        'rated', 'director', 'writer', 'actors', 'awards', 'platform_from_text', 
+        'age_rating', 'developers', 'publishers', 'tags', 'authors', 'publisher'
+    ]
+    unified_numerical_features = [
+        'critic_rating_normalized', 'runtime', 'average_runtime', 'popularity', 
+        'watch_count', 'episode_count', 'year', 'imdb_rating', 'metascore', 
+        'ratings_count', 'reviews_count', 'pageCount'
+    ]
+
+    all_unified_cols = set(unified_text_features + unified_categorical_features + unified_numerical_features)
+
+    # Ensure all expected columns are present, filling with defaults if necessary
+    for col in all_unified_cols:
+        if col not in df.columns:
+            if col in unified_numerical_features:
+                df[col] = 0.0
+            else:
+                df[col] = "Unknown"
+
+    # Final cleanup for consistency
+    for col in unified_numerical_features:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+    for col in unified_text_features + unified_categorical_features:
+        if col in df.columns:
+            df[col] = df[col].fillna("Unknown")
+
+    return df
+
 def get_user_input():
     """Gets content type and search query from the user."""
     content_type_options = list(CONTENT_COLUMN_MAPPING.keys())
@@ -229,11 +308,12 @@ def select_content_from_results(found_content, content_type):
             print("Invalid input. Please enter a number.")
 
 
-
 def main():
     """Main function to run the terminal-based predictor."""
     print("--- Universal Content Rating Predictor ---")
     print("(Press Ctrl+C at any time to exit)")
+
+    unified_reg_model, unified_cls_model, unified_preprocessor = load_unified_models()
 
     while True:
         try:
@@ -260,21 +340,37 @@ def main():
                 print("Could not fetch details for the selected content.")
                 continue
 
+            # Content-specific prediction
             df_pred = prepare_dataframe_for_prediction(details, selected_content_type)
+            print("⚙️  Running content-specific prediction...")
+            if not df_pred.empty:
+                combined_features = feature_extractor.transform(df_pred)
+                features_for_xgb = combined_features
+                predicted_rating = xgb_model.predict(features_for_xgb)[0]
+                predicted_rating = max(1.0, min(5.0, predicted_rating))
+            else:
+                predicted_rating = 0.0
 
-            print("⚙️  Running prediction...")
-            combined_features = feature_extractor.transform(df_pred)
-            # No change needed here, the tensor is already on the correct device
-            features_for_xgb = combined_features
-
-            predicted_rating = xgb_model.predict(features_for_xgb)[0]
-            predicted_rating = max(1.0, min(5.0, predicted_rating))
+            # Unified model prediction
+            if unified_reg_model and unified_cls_model and unified_preprocessor:
+                df_unified_pred = prepare_dataframe_for_unified_prediction(details, selected_content_type)
+                print("⚙️  Running unified model prediction...")
+                if not df_unified_pred.empty:
+                    unified_predicted_rating = unified_reg_model.predict(df_unified_pred)[0]
+                    unified_predicted_rating = max(1.0, min(5.0, unified_predicted_rating))
+                    unified_predicted_sentiment = unified_cls_model.predict(df_unified_pred)[0]
+                else:
+                    unified_predicted_rating = 0.0
+                    unified_predicted_sentiment = "Unknown"
 
             print("\n" + "="*35)
             print("        ⭐ PREDICTION RESULT ⭐")
             print("="*35)
             print(f"  Content: {selected_content_name}")
-            print(f"  Predicted Rating: {predicted_rating:.2f} / 5.0")
+            print(f"  Predicted Rating (Specific): {predicted_rating:.2f} / 5.0")
+            if unified_reg_model and unified_cls_model:
+                print(f"  Predicted Rating (Unified): {unified_predicted_rating:.2f} / 5.0")
+                print(f"  Predicted Sentiment (Unified): {unified_predicted_sentiment}")
             print("="*35)
 
         except KeyboardInterrupt:

@@ -164,9 +164,15 @@ def load_content_data(content_type: str) -> pd.DataFrame:
             else:
                 rename_mapping[original_col] = generic_col # e.g., 'name' -> 'title', 'summary' -> 'description'
     
-    # Perform the renaming. Using .copy() to avoid SettingWithCopyWarning
+        # Perform the renaming. Using .copy() to avoid SettingWithCopyWarning
     df = df.rename(columns=rename_mapping).copy()
     print(f"Columns renamed: {rename_mapping}")
+
+    # --- Custom Cleaning for Specific Columns ---
+    if 'runtime' in df.columns and content_type == 'Movie':
+        # Use a regex to extract the first sequence of digits from the string
+        df['runtime'] = df['runtime'].str.extract(r'(\d+)').astype(float)
+        print("Cleaned 'runtime' column for Movie data.")
 
 
     # Handle release dates - now 'release_date' should be the generic column name

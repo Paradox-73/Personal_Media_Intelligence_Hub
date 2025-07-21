@@ -821,3 +821,73 @@ Successfully trained model for Music.
 
 
 ================================================================================
+
+
+(content_rec) E:\Personal_Media_Intelligence_Hub>python src/app.py
+--- Universal Content Rating Predictor ---
+(Press Ctrl+C at any time to exit)
+OK: Successfully loaded unified models and preprocessor.
+
+
+--- New Prediction ---
+1️⃣ Select a Content Type:
+   1. Game
+   2. Show
+   3. Movie
+   4. Music
+   5. Book
+Enter the number of your choice: 2
+
+2️⃣ Enter the name of the show to search for: breaking bad
+Loading FeatureExtractor components from E:\Personal_Media_Intelligence_Hub\src\..\models\show\feature_extractor...
+Using device: cuda
+FeatureExtractor components loaded successfully.
+✅ Successfully loaded model and extractor for Show.
+
+Searching for 'breaking bad'...
+Searching TVmaze for: breaking bad
+
+3️⃣ Select the correct item from the search results:
+   1. Breaking Bad (2008)
+   2. Breaking Bad: Original Minisodes (2009)
+   3. Talking Bad (2013)
+   4. Breaking Band (2016)
+   5. Breaking the Band (2018)
+   6. Bradley Walsh & Son: Breaking Dad (2019)
+   7. Breaking Dad: Britain's Unlikeliest Drug Dealer (2024)
+   8. Baking Mad with Eric Lanlard (2011)
+
+Enter the number of the content you want to predict: 1
+
+Fetching details for 'Breaking Bad (2008)'...
+Fetching details for show ID: 169
+
+Gathering features for prediction...
+⚙️  Running content-specific prediction...
+--- Transforming data using FeatureExtractor ---
+ColumnTransformer output shape (on cuda): torch.Size([1, 20])
+Batches: 100%|██████████████████████████████████████████████████████████████████████████████████████| 1/1 [00:00<00:00,  4.49it/s]
+Text embeddings shape (on cuda): torch.Size([1, 50])
+Combined features shape (on cuda): torch.Size([1, 70])
+
+Gathering features for prediction...
+⚙️  Running unified model prediction...
+An unexpected error occurred: X has 6049 features, but Ridge is expecting 6034 features as input.
+Traceback (most recent call last):
+  File "E:\Personal_Media_Intelligence_Hub\src\app.py", line 330, in main
+    unified_predicted_rating = unified_reg_model.predict(df_unified_pred)[0]
+                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\sklearn\pipeline.py", line 787, in predict
+    return self.steps[-1][1].predict(Xt, **params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\sklearn\linear_model\_base.py", line 298, in predict      
+    return self._decision_function(X)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\sklearn\linear_model\_base.py", line 277, in _decision_function
+    X = validate_data(self, X, accept_sparse=["csr", "csc", "coo"], reset=False)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\sklearn\utils\validation.py", line 2975, in validate_data 
+    _check_n_features(_estimator, X, reset=reset)
+  File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\sklearn\utils\validation.py", line 2839, in _check_n_features
+    raise ValueError(
+ValueError: X has 6049 features, but Ridge is expecting 6034 features as input.
