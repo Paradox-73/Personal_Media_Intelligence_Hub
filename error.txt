@@ -1,4 +1,0 @@
-Write formatted comments (on the right, no overflow (go to next line same indentation and continue the comment      │
-│    there) all comments starting on same vertical line. the comments should explain the code which is on it's left. the │
-│     aim is that even a newbie that doesnt understand python or ML can know whats going on line by line. do this for    │
-│    all python files. @src/*.py   some are already commented like app.py, data_loader.py, feature_extractor.py take inspiration from them.
