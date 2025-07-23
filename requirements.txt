@@ -10,10 +10,16 @@ Pillow
 requests
 sentence-transformers
 spotipy
-scikit-learn
 numpy
 joblib
 python-dotenv
 matplotlib
 cupy-cuda12x 
 optuna
+flake8
+pytest
+black
+mypy
+pytest-cov
+safety
+bandit
