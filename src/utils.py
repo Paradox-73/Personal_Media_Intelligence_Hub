@@ -65,8 +65,8 @@ def clean_text(text: str) -> str:                                               
         return ""                                                                   # If not, returns an empty string.
     text = text.lower()                                                             # Converts all text to lowercase.
     text = re.sub(r'<.*?>', '', text)                                                # Removes any HTML tags (e.g., <b>, <p>).
-    text = re.sub(r'[^a-z0-9\\s]', '', text)                                        # Removes any characters that are not letters, numbers, or spaces.
-    text = re.sub(r'\\s+', ' ', text).strip()                                        # Replaces multiple spaces with a single space and removes leading/trailing spaces.
+    text = re.sub(r'[^a-z0-9\s]', '', text)                                        # Removes any characters that are not letters, numbers, or spaces.
+    text = re.sub(r'\s+', ' ', text).strip()                                        # Replaces multiple spaces with a single space and removes leading/trailing spaces.
     return text                                                                     # Returns the cleaned text.
 
 def ensure_directory_exists(path: str):                                             # Defines a function to ensure a directory exists.

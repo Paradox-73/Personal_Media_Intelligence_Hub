@@ -17,5 +17,8 @@ src/__pycache__/
 # Environment variables
 .env
 roadmap.txt
+@roadmap.txt
 model_output.txt
+error.txt
 src/fetch
+tutor.md
