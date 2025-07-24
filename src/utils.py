@@ -1,3 +1,4 @@
+from typing import Optional, Any
 import requests                                                                     # Imports the requests library, used for making web requests (e.g., to APIs).
 from PIL import Image                                                               # Imports the Image module from Pillow (PIL), used for image processing.
 from io import BytesIO                                                              # Imports BytesIO, used to handle binary data in memory, especially for images.
@@ -82,7 +83,7 @@ def ensure_directory_exists(path: str):                                         
 # --- API Specific Functions ---
 
 # RAWG (Games)
-def _make_rawg_request(endpoint: str, params: dict = None) -> dict | None:          # Helper function to make requests to the RAWG API.
+def _make_rawg_request(endpoint: str, params: Optional[dict[Any, Any]] = None) -> dict | None:          # Helper function to make requests to the RAWG API.
     """Helper to make requests to RAWG API."""
     if not RAWG_API_KEY or RAWG_API_KEY == "YOUR_RAWG_API_KEY":                     # Checks if the RAWG API key is set.
         print("RAWG API key not set. Cannot make requests.")                        # If not, prints a warning.
@@ -115,7 +116,7 @@ def get_game_details_rawg(game_id: int) -> dict | None:                         
     return _make_rawg_request(f"games/{game_id}")                                  # Calls the helper to get details for the specific game ID.
 
 # OMDB (Movies)
-def _make_omdb_request(params: dict = None) -> dict | None:                         # Helper function to make requests to the OMDB API.
+def _make_omdb_request(params: Optional[dict[Any, Any]] = None) -> dict | None:                         # Helper function to make requests to the OMDB API.
     """Helper to make requests to OMDB API."""
     if not OMDB_API_KEY or OMDB_API_KEY == "YOUR_OMDB_API_KEY":                     # Checks if the OMDB API key is set.
         print("OMDB API key not set. Cannot make requests.")                        # If not, prints a warning.
@@ -150,7 +151,7 @@ def get_movie_details_omdb(imdb_id: str) -> dict | None:                        
     return None                                                                     # Returns None if an error.
 
 # TVmaze (Shows)
-def _make_tvmaze_request(endpoint: str, params: dict = None) -> dict | None:        # Helper function to make requests to the TVmaze API.
+def _make_tvmaze_request(endpoint: str, params: Optional[dict[Any, Any]] = None) -> dict | None:        # Helper function to make requests to the TVmaze API.
     """Helper to make requests to TVmaze API."""
     full_url = f"{TVMAZE_BASE_URL}/{endpoint}"                                       # Constructs the full URL.
     try:                                                                            # Starts a 'try' block.
@@ -180,7 +181,7 @@ def get_show_details_tvmaze(tvmaze_id: int) -> dict | None:                     
 def _get_spotify_access_token():                                                    # Defines a function to get an access token for the Spotify API.
     """Gets a Spotify access token using Client Credentials Flow."""
     if not SPOTIPY_CLIENT_ID or SPOTIPY_CLIENT_ID == "YOUR_SPOTIPY_CLIENT_ID" or \
-       not SPOTIPY_CLIENT_SECRET or SPOTIPY_CLIENT_SECRET == "YOUR_SPOTIPY_CLIENT_SECRET": # Checks if Spotify API credentials are set.
+       not SPOTIPY_CLIENT_SECRET or SPOTIPY_CLIENT_SECRET == "YOUR_SPOTIPY_CLIENT_SECRET": # nosec # Checks if Spotify API credentials are set.
         print("Spotify API client ID or secret not set. Cannot get access token.")  # If not, prints a warning.
         return None                                                                 # Returns None.
 
@@ -197,7 +198,7 @@ def _get_spotify_access_token():                                                
     auth_data = auth_response.json()                                                # Parses the JSON response.
     return auth_data['access_token']                                                # Returns the access token.
 
-def _make_spotify_request(endpoint: str, params: dict = None) -> dict | None:       # Helper function to make requests to the Spotify API.
+def _make_spotify_request(endpoint: str, params: Optional[dict[Any, Any]] = None) -> dict | None:       # Helper function to make requests to the Spotify API.
     """Helper to make requests to Spotify API."""
     token = _get_spotify_access_token()                                             # Gets an access token.
     if not token:                                                                   # If no token is obtained...
@@ -275,7 +276,7 @@ def get_artist_details_spotify(artist_id: str) -> dict | None:                  
 
 
 # Google Books
-def _make_google_books_request(endpoint: str = "volumes", params: dict = None) -> dict | None: # Helper function to make requests to the Google Books API.
+def _make_google_books_request(endpoint: str = "volumes", params: Optional[dict[Any, Any]] = None) -> dict | None: # Helper function to make requests to the Google Books API.
     """
     Helper to make requests to Google Books API.
     """
@@ -354,15 +355,15 @@ def get_content_details(content_type: str, content_id: str | int) -> dict | None
     For Music, it always fetches track details as the prediction is track-based.
     """
     if content_type == "Game":                                                      # If the content type is "Game"...
-        return get_game_details_rawg(content_id)                                    # ...call the RAWG game details function.
+        return get_game_details_rawg(int(content_id))                               # ...call the RAWG game details function.
     elif content_type == "Show":                                                    # If the content type is "Show"...
-        return get_show_details_tvmaze(content_id)                                  # ...call the TVmaze show details function.
+        return get_show_details_tvmaze(int(content_id))                             # ...call the TVmaze show details function.
     elif content_type == "Movie":                                                   # If the content type is "Movie"...
-        return get_movie_details_omdb(content_id)                                   # ...call the OMDB movie details function.
+        return get_movie_details_omdb(str(content_id))                              # ...call the OMDB movie details function.
     elif content_type == "Music":                                                   # If the content type is "Music"...
-        return get_track_details_spotify(content_id)                                # ...always call the Spotify track details function (as prediction is track-based).
+        return get_track_details_spotify(str(content_id))                           # ...always call the Spotify track details function (as prediction is track-based).
     elif content_type == "Book":                                                    # If the content type is "Book"...
-        return get_book_details_google_books(content_id)                            # ...call the Google Books details function.
+        return get_book_details_google_books(str(content_id))                       # ...call the Google Books details function.
     else:                                                                           # For any unsupported content type...
         print(f"Unsupported content type for details: {content_type}")             # ...print an error message.
         return None                                                                 # ...and return None.

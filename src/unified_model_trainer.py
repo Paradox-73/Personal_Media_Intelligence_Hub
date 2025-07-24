@@ -4,13 +4,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))) 
 import pandas as pd                                                                 # Imports the pandas library, used for creating and working with data tables (DataFrames).
 import numpy as np                                                                  # Imports numpy, a library for numerical operations, especially with arrays.
 import os                                                                           # Re-imports os (already imported above, but harmless).
-import joblib                                                                       # Imports joblib, used for saving and loading Python objects, like our trained models.
-from sklearn.model_selection import train_test_split                                # Imports a function to split data into training and testing sets.
-from sklearn.compose import ColumnTransformer                                     # A tool to apply different preparations to different columns of data.
-from sklearn.pipeline import Pipeline                                             # A tool to chain multiple data preparation steps together.
-from sklearn.feature_extraction.text import TfidfVectorizer                         # Imports TF-IDF Vectorizer, a method to convert text into numerical features.
-from sklearn.preprocessing import StandardScaler, OneHotEncoder                     # Imports tools from scikit-learn for preparing data for ML.
-from sklearn.linear_model import Ridge, LogisticRegression                          # Imports Ridge (for regression) and Logistic Regression (for classification) models.
+import joblib  # type: ignore                                                                     # Imports joblib, used for saving and loading Python objects, like our trained models.
+from sklearn.model_selection import train_test_split  # type: ignore                               # Imports a function to split data into training and testing sets.
+from sklearn.compose import ColumnTransformer  # type: ignore                                    # A tool to apply different preparations to different columns of data.
+from sklearn.pipeline import Pipeline  # type: ignore                                            # A tool to chain multiple data preparation steps together.
+from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore                         # Imports TF-IDF Vectorizer, a method to convert text into numerical features.
+from sklearn.preprocessing import StandardScaler, OneHotEncoder  # type: ignore                     # Imports tools from scikit-learn for preparing data for ML.
+from sklearn.linear_model import Ridge, LogisticRegression  # type: ignore                          # Imports Ridge (for regression) and Logistic Regression (for classification) models.
 from src.data_loader import load_content_data, CONTENT_COLUMN_MAPPING               # Imports functions and configurations for loading and understanding our data.
 
 def get_unified_feature_config():                                                   # Defines a function to get the configuration for features used by the unified model.

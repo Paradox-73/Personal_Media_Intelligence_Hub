@@ -2,6 +2,8 @@ import pandas as pd                                                             
 import numpy as np                                                                  # Imports numpy, a library for numerical operations, especially with arrays.
 import os                                                                           # Imports the os library, which allows the script to interact with the operating system (e.g., file paths).
 import re                                                                           # Imports re, the regular expression library, used for advanced text pattern matching.
+from typing import Dict, Any, cast
+from pandas import Series
 
 # This large dictionary is the main configuration for the entire data loading process.
 # For each content type (like "Game", "Show", etc.), it defines:
@@ -10,7 +12,7 @@ import re                                                                       
 # - Which columns are numerical, which are text, and which are categories.
 # - How to handle missing data.
 # - The name of the column that we want to predict ('my_rating').
-CONTENT_COLUMN_MAPPING = {
+CONTENT_COLUMN_MAPPING: Dict[str, Dict[str, Any]] = {
     "Game": {                                                                       # Configuration for game data.
         "csv_paths": [os.path.join('data', 'games_data.csv')],                       # Specifies the CSV file containing game data.
         "id": None,                                                                 # No ID column in the CSV; will be found later using an API.
@@ -126,7 +128,7 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
         print(f"Error: Content type '{content_type}' is not supported.")            # If not, prints an error.
         return pd.DataFrame()                                                       # Returns an empty data table.
 
-    config = CONTENT_COLUMN_MAPPING[content_type]                                   # Gets the configuration for the requested content type.
+    config: Dict[str, Any] = CONTENT_COLUMN_MAPPING[content_type]                                   # Gets the configuration for the requested content type.
     all_dfs = []                                                                    # Creates an empty list to hold the data from each CSV file.
 
     # Load CSV files
@@ -155,8 +157,9 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
     # This section renames the columns from their original names in the CSV files
     # to the standard, generic names we use throughout the program (e.g., 'name' becomes 'title').
     rename_mapping = {}                                                             # Creates an empty dictionary to store the renaming rules.
-    for generic_col, original_col in config.items():                                # Loops through the items in the configuration dictionary.
-        if isinstance(original_col, str) and original_col in df.columns:            # Checks if the item is a column name that exists in our data.
+    for generic_col, original_col_val in config.items():                                # Loops through the items in the configuration dictionary.
+        if isinstance(original_col_val, str) and original_col_val in df.columns:            # Checks if the item is a column name that exists in our data.
+            original_col = cast(str, original_col_val)
             if generic_col == "my_rating_source_col":                               # Special case for the rating column.
                 rename_mapping[original_col] = "my_rating"                          # We want to rename the source (e.g., "Popularity") to "my_rating".
             else:
@@ -167,7 +170,7 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
 
     # --- Custom Cleaning for Specific Columns ---
     if 'runtime' in df.columns and content_type == 'Movie':                         # If there's a 'runtime' column for a Movie...
-        df['runtime'] = df['runtime'].str.extract(r'(\d+)').astype(float)           # ...extract only the numbers from it (e.g., "120 min" -> 120).
+        df['runtime'] = cast(Series[str], df['runtime']).str.extract(r'(\d+)').astype(float)           # ...extract only the numbers from it (e.g., "120 min" -> 120).
         print("Cleaned 'runtime' column for Movie data.")                           # Prints a confirmation message.
 
 

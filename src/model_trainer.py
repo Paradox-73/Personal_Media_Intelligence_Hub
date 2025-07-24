@@ -1,10 +1,10 @@
 #   python src/model_trainer.py
 import pandas as pd                                                                 # Imports the pandas library, used for creating and working with data tables (DataFrames).
 import numpy as np                                                                  # Imports numpy, a library for numerical operations, especially with arrays.
-from sklearn.model_selection import train_test_split                                # Imports a function to split data into training and testing sets.
+from sklearn.model_selection import train_test_split  # type: ignore                                # Imports a function to split data into training and testing sets.
 from xgboost import XGBRegressor                                                    # Imports XGBoost, a powerful machine learning algorithm for regression (predicting numbers).
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score       # Imports metrics to evaluate how well our model performs.
-import joblib                                                                       # Imports joblib, used for saving and loading Python objects, like our trained models.
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score  # type: ignore       # Imports metrics to evaluate how well our model performs.
+import joblib  # type: ignore                                                                       # Imports joblib, used for saving and loading Python objects, like our trained models.
 import os                                                                           # Imports the os library, which allows the script to interact with the operating system (e.g., file paths).
 import torch                                                                        # Imports PyTorch, a machine learning library, used here to check for GPU availability.
 import optuna                                                                       # Imports Optuna, a library for automating hyperparameter optimization (finding the best settings for our model).
@@ -147,7 +147,7 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):    
 
     # This block handles potential CuPy arrays if XGBoost used GPU and returned them.
     try:                                                                            # Starts a 'try' block.
-        import cupy                                                                 # Tries to import CuPy (a library for GPU arrays).
+        import cupy  # type: ignore                                                          # Tries to import CuPy (a library for GPU arrays).
         if isinstance(y_pred, cupy.ndarray):                                        # If the predictions are a CuPy array...
             y_pred = y_pred.get()                                                   # ...convert them to a NumPy array.
     except ImportError:                                                             # If CuPy is not installed...

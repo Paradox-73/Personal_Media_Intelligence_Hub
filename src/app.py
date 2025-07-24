@@ -1,26 +1,28 @@
 #python src/app.py
 import pandas as pd                                                                 # Imports the pandas library, used for creating and working with data tables (DataFrames).
 import numpy as np                                                                  # Imports numpy, a library for numerical operations, especially with arrays.
-import joblib                                                                       # Imports joblib, used for saving and loading Python objects, like our trained models.
+import joblib  # type: ignore                                                                       # Imports joblib, used for saving and loading Python objects, like our trained models.
 import os                                                                           # Imports the os library, which allows the script to interact with the operating system (e.g., file paths).
 import torch                                                                        # Imports PyTorch, a machine learning library, used here to manage which device (CPU or GPU) to use.
 import sys                                                                          # Imports the sys library, which provides access to system-specific parameters and functions.
 import traceback                                                                    # Imports traceback, used for printing detailed error information when something goes wrong.
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))) # Adds the parent directory of this file to Python's path.
+from src.utils import (                                                     # Imports specific functions from our 'utils.py' file.
+    clean_text,                                                             # A function to clean up text data.
+    search_content,                                                         # A function to search for content online (e.g., movies, games).
+    get_content_details,                                                    # A function to get detailed information about a piece of content.
+    get_artist_details_spotify                                              # A function to get details about a music artist from Spotify.
+)
+from src.feature_extractor import FeatureExtractor                          # Imports the FeatureExtractor class, which turns data into numbers for the model.
+from src.data_loader import CONTENT_COLUMN_MAPPING                          # Imports a configuration dictionary that describes our data.
 
 # This block of code checks if the script is being run directly.
 # If so, it adds the project's main folder to the list of places Python looks for files.
 # This is important so we can import our own custom Python files from the 'src' directory.
 if __name__ == "__main__":                                                           # Checks if this script is the main program being run.
     try:                                                                            # Starts a 'try' block to handle potential errors gracefully.
-        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))) # Adds the parent directory of this file to Python's path.
-        from src.utils import (                                                     # Imports specific functions from our 'utils.py' file.
-            clean_text,                                                             # A function to clean up text data.
-            search_content,                                                         # A function to search for content online (e.g., movies, games).
-            get_content_details,                                                    # A function to get detailed information about a piece of content.
-            get_artist_details_spotify                                              # A function to get details about a music artist from Spotify.
-        )
-        from src.feature_extractor import FeatureExtractor                          # Imports the FeatureExtractor class, which turns data into numbers for the model.
-        from src.data_loader import CONTENT_COLUMN_MAPPING                          # Imports a configuration dictionary that describes our data.
+        pass
     except ImportError:                                                             # If any of the imports fail...
         print("Could not import custom modules. Please ensure the script is run from the correct directory structure.") # ...print an error message.
         sys.exit(1)                                                                 # ...and exit the program.
@@ -95,9 +97,9 @@ def prepare_dataframe_for_prediction(details: dict, content_type: str) -> pd.Dat
         processed_details['genres'] = details.get('Genre')                          # ...get the genres.
         processed_details['image_url'] = details.get('Poster')                      # ...get the URL for the movie poster image.
         processed_details['release_date'] = details.get('Released')                 # ...get the release date.
-        processed_details['year'] = pd.to_numeric(details.get('Year'), errors='coerce') # ...get the year and make sure it's a number.
-        processed_details['imdb_rating'] = pd.to_numeric(details.get('imdbRating'), errors='coerce') # ...get the IMDb rating and make sure it's a number.
-        processed_details['metascore'] = pd.to_numeric(details.get('Metascore'), errors='coerce') # ...get the Metascore and make sure it's a number.
+        processed_details['year'] = pd.to_numeric(details.get('Year', ''), errors='coerce') # ...get the year and make sure it's a number.
+        processed_details['imdb_rating'] = pd.to_numeric(details.get('imdbRating', ''), errors='coerce') # ...get the IMDb rating and make sure it's a number.
+        processed_details['metascore'] = pd.to_numeric(details.get('Metascore', ''), errors='coerce') # ...get the Metascore and make sure it's a number.
         processed_details['rated'] = details.get('Rated')                           # ...get the age rating (e.g., PG-13).
         processed_details['language'] = details.get('Language')                     # ...get the language.
         processed_details['director'] = details.get('Director')                     # ...get the director's name.
