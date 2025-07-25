@@ -10,7 +10,6 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.feature_extractor import FeatureExtractor
-from src.utils import clean_text
 
 # --- Fixtures ---
 
@@ -43,17 +42,17 @@ def test_load_transformer_models(mock_auto_model, mock_image_processor, mock_sen
     """
     feature_extractor._load_transformer_models()
     mock_sentence_transformer.assert_called_once_with(
-        feature_extractor.text_model_name, 
-        device=str(feature_extractor.device), 
+        feature_extractor.text_model_name,
+        device=str(feature_extractor.device),
         revision=feature_extractor.text_model_revision
     )
     mock_image_processor.from_pretrained.assert_called_once_with(
-        feature_extractor.image_model_name, 
-        revision=feature_extractor.image_model_revision, 
+        feature_extractor.image_model_name,
+        revision=feature_extractor.image_model_revision,
         use_fast=True
     )
     mock_auto_model.from_pretrained.assert_called_once_with(
-        feature_extractor.image_model_name, 
+        feature_extractor.image_model_name,
         revision=feature_extractor.image_model_revision
     )
 
@@ -63,12 +62,12 @@ def test_extract_text_features(mock_sentence_transformer, feature_extractor, sam
     Tests the extraction of text features.
     """
     mock_model = MagicMock()
-    mock_model.encode.return_value = torch.randn(3, 10) # (batch_size, feature_size)
+    mock_model.encode.return_value = torch.randn(3, 10)  # (batch_size, feature_size)
     mock_sentence_transformer.return_value = mock_model
-    
+
     feature_extractor._load_transformer_models()
     embeddings = feature_extractor.extract_text_features(sample_data['text_col'])
-    
+
     assert isinstance(embeddings, torch.Tensor)
     assert embeddings.shape == (3, 10)
     mock_model.encode.assert_called_once()
@@ -99,7 +98,7 @@ def test_extract_image_features(mock_auto_model, mock_image_processor, mock_down
     assert isinstance(embeddings, torch.Tensor)
     assert embeddings.shape[0] == len(sample_data)
     assert embeddings.shape[1] > 0
-    assert mock_download.call_count == 2 # Called for the two valid URLs
+    assert mock_download.call_count == 2  # Called for the two valid URLs
 
 # --- Tests for Fit and Transform ---
 
@@ -125,7 +124,7 @@ def test_fit(mock_pca, mock_one_hot_encoder, mock_standard_scaler, mock_load_mod
     mock_standard_scaler.return_value.fit_transform.return_value = np.array([[1.0], [2.0], [3.0]])
     mock_one_hot_encoder.return_value.fit_transform.return_value = np.array([[1, 0], [0, 1], [1, 0]])
     assert feature_extractor.column_transformer is not None
-    
+
     # Check if PCA was called for text and image features
     assert mock_pca.call_count == 2
     assert feature_extractor.text_pca is not None
@@ -141,11 +140,11 @@ def test_transform(mock_extract_image, mock_extract_text, feature_extractor, sam
     mock_ct = MagicMock()
     mock_ct.transform.return_value = np.random.rand(3, 5)
     feature_extractor.column_transformer = mock_ct
-    
+
     mock_text_pca = MagicMock()
     mock_text_pca.transform.return_value = np.random.rand(3, 10)
     feature_extractor.text_pca = mock_text_pca
-    
+
     mock_image_pca = MagicMock()
     mock_image_pca.transform.return_value = np.random.rand(3, 15)
     feature_extractor.image_pca = mock_image_pca
@@ -185,7 +184,7 @@ def test_save(mock_load_models, mock_ensure_dir, mock_dump, feature_extractor, t
     feature_extractor.save(str(save_path))
 
     mock_ensure_dir.assert_called_with(str(save_path))
-    assert mock_dump.call_count == 4 # ct, text_pca, image_pca, metadata
+    assert mock_dump.call_count == 4  # ct, text_pca, image_pca, metadata
     feature_extractor.text_model.save.assert_called_once()
     feature_extractor.image_processor.save_pretrained.assert_called_once()
     feature_extractor.image_model.save_pretrained.assert_called_once()
@@ -210,10 +209,10 @@ def test_load(mock_auto_model, mock_image_processor, mock_sentence_transformer, 
         'fitted_image_col': 'image_url'
     }
     mock_load.side_effect = [
-        metadata, # First call loads metadata
-        MagicMock(), # column_transformer
-        MagicMock(), # text_pca
-        MagicMock()  # image_pca
+        metadata,  # First call loads metadata
+        MagicMock(),  # column_transformer
+        MagicMock(),  # text_pca
+        MagicMock()   # image_pca
     ]
 
     # Mock the paths to avoid actual file system checks

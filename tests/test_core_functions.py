@@ -1,14 +1,13 @@
 import pandas as pd
 import numpy as np
 import os
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 # Adjust path to import modules from src
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.data_loader import load_content_data, CONTENT_COLUMN_MAPPING
+from src.data_loader import load_content_data
 from src.utils import clean_text, ensure_directory_exists
 
 # --- Tests for src/utils.py ---
@@ -79,10 +78,10 @@ def test_load_content_data_success(mock_exists, mock_read_csv):
     assert "like_dislike" in df.columns
     assert "release_year" in df.columns
     assert df["my_rating"].iloc[0] == 4.0
-    assert df["like_dislike"].iloc[0] == 1 # 4.0 >= 3.5
-    assert df["like_dislike"].iloc[1] == 0 # 2.5 < 3.5
-    assert df["num_feat_1"].iloc[1] == 15.0 # Median imputation (10, 20 -> 15) for the remaining row
-    
+    assert df["like_dislike"].iloc[0] == 1  # 4.0 >= 3.5
+    assert df["like_dislike"].iloc[1] == 0  # 2.5 < 3.5
+    assert df["num_feat_1"].iloc[1] == 15.0  # Median imputation (10, 20 -> 15) for the remaining row
+
 
 @patch('src.data_loader.CONTENT_COLUMN_MAPPING', MOCK_CONTENT_COLUMN_MAPPING)
 @patch('pandas.read_csv', side_effect=FileNotFoundError)
@@ -96,7 +95,7 @@ def test_load_content_data_file_not_found(mock_exists, mock_read_csv):
 @patch('pandas.read_csv')
 @patch('os.path.exists', return_value=True)
 def test_load_content_data_empty_csv(mock_exists, mock_read_csv):
-    mock_read_csv.return_value = pd.DataFrame() # Empty DataFrame
+    mock_read_csv.return_value = pd.DataFrame()  # Empty DataFrame
     df = load_content_data("TestType")
     assert df.empty
 
@@ -121,7 +120,7 @@ def test_load_content_data_missing_my_rating_source_col(mock_exists, mock_read_c
     df = load_content_data("TestType")
     assert "my_rating" not in df.columns
     assert "like_dislike" not in df.columns
-    assert not df.empty # Still returns data, but without target columns
+    assert not df.empty  # Still returns data, but without target columns
 
 def test_load_content_data_unsupported_type():
     df = load_content_data("UnsupportedType")

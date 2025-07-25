@@ -2,8 +2,6 @@ import os                                                                       
 import sys                                                                          # Imports the sys library, which provides access to system-specific parameters and functions.
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))) # Adds the project's main folder to Python's search path.
 import pandas as pd                                                                 # Imports the pandas library, used for creating and working with data tables (DataFrames).
-import numpy as np                                                                  # Imports numpy, a library for numerical operations, especially with arrays.
-import os                                                                           # Re-imports os (already imported above, but harmless).
 import joblib  # type: ignore                                                                     # Imports joblib, used for saving and loading Python objects, like our trained models.
 from sklearn.model_selection import train_test_split  # type: ignore                               # Imports a function to split data into training and testing sets.
 from sklearn.compose import ColumnTransformer  # type: ignore                                    # A tool to apply different preparations to different columns of data.
@@ -19,13 +17,13 @@ def get_unified_feature_config():                                               
     unified_features = {                                                            # Defines a dictionary to hold the feature categories.
         'text_features': ['title', 'description', 'genres'],                        # Lists text-based features.
         'categorical_features': [                                                   # Lists categorical features (text labels).
-            'content_type', 'language', 'status', 'show_type', 'network_country', 
-            'rated', 'director', 'writer', 'actors', 'awards', 'platform_from_text', 
+            'content_type', 'language', 'status', 'show_type', 'network_country',
+            'rated', 'director', 'writer', 'actors', 'awards', 'platform_from_text',
             'age_rating', 'developers', 'publishers', 'tags', 'authors', 'publisher'
         ],
         'numerical_features': [                                                     # Lists numerical features.
-            'critic_rating_normalized', 'runtime', 'average_runtime', 'popularity', 
-            'watch_count', 'episode_count', 'year', 'imdb_rating', 'metascore', 
+            'critic_rating_normalized', 'runtime', 'average_runtime', 'popularity',
+            'watch_count', 'episode_count', 'year', 'imdb_rating', 'metascore',
             'ratings_count', 'reviews_count', 'pageCount'
         ]
     }
@@ -38,7 +36,7 @@ def prepare_unified_data():                                                     
         df = load_content_data(content_type)                                        # Loads the data for the current content type using the data_loader.
         if not df.empty and 'my_rating' in df.columns:                              # Checks if data was loaded successfully and if it contains the 'my_rating' column.
             df['content_type'] = content_type                                       # Adds a new column to the DataFrame to indicate the content type.
-            
+
             # Normalize critic ratings to a 0-10 scale
             # This is a simplified approach; more sophisticated scaling could be used
             if content_type == 'Game':                                              # If the content type is 'Game'...
@@ -51,7 +49,7 @@ def prepare_unified_data():                                                     
                 df['critic_rating_normalized'] = df.get('Popularity', 50) / 10       # ...normalize music popularity to a 0-10 scale.
             elif content_type == 'Book':                                            # If the content type is 'Book'...
                 df['critic_rating_normalized'] = df.get('averageRating', 2.5) * 2   # ...normalize book average rating to a 0-10 scale.
-            
+
             # Fill any remaining NaNs in the normalized critic rating with the median
             if 'critic_rating_normalized' in df.columns:                            # Checks if the normalized critic rating column exists.
                 df['critic_rating_normalized'].fillna(df['critic_rating_normalized'].median(), inplace=True) # Fills any missing values in this column with its median.
@@ -69,12 +67,12 @@ def prepare_unified_data():                                                     
     for col in numerical_cols:                                                      # Loops through each numerical column.
         if col in unified_df.columns:                                               # Checks if the column exists in the combined DataFrame.
             unified_df[col] = pd.to_numeric(unified_df[col], errors='coerce').fillna(0) # Ensures numerical columns are numbers and fills missing values with 0.
-    
+
     # Define sentiment categories
     bins = [0, 1, 2, 3, 4, 5]                                                       # Defines the boundaries for rating bins.
     labels = ['hate it', 'dislike it', 'meh', 'like it', 'love it']                 # Defines the sentiment labels for each bin.
     unified_df['sentiment'] = pd.cut(unified_df['my_rating'], bins=bins, labels=labels, right=True, include_lowest=True) # Creates a new 'sentiment' column by categorizing 'my_rating'.
-    
+
     # Drop rows where target is missing
     unified_df.dropna(subset=['my_rating', 'sentiment'], inplace=True)              # Removes any rows where 'my_rating' or 'sentiment' are missing.
 
@@ -86,7 +84,7 @@ def train_unified_model():                                                      
         return                                                                      # If not, stops the training process.
 
     features_config = get_unified_feature_config()                                  # Gets the feature configuration for the unified model.
-    
+
     # Define features and target
     X = unified_df[features_config['text_features'] + features_config['categorical_features'] + features_config['numerical_features']] # 'X' contains all the input features.
     y_reg = unified_df['my_rating']                                                 # 'y_reg' is the target for the regression model (the actual rating).
@@ -113,15 +111,14 @@ def train_unified_model():                                                      
         X, y_cls, test_size=0.2, random_state=42, stratify=y_cls                    # Uses 80% for training, 20% for testing, and ensures sentiment categories are evenly distributed.
     )
     y_train_reg = y_reg.loc[X_train.index]                                          # Gets the corresponding regression targets for the training set.
-    y_test_reg = y_reg.loc[X_test.index]                                            # Gets the corresponding regression targets for the test set.
 
     # --- Train Regression Model ---
     reg_pipeline = Pipeline(steps=[('preprocessor', preprocessor),
                                    ('regressor', Ridge(alpha=1.0))])                # Creates a pipeline for the regression model: preprocess data, then apply Ridge regression.
-    
+
     print("Training unified regression model...")                                   # Prints a status message.
     reg_pipeline.fit(X_train, y_train_reg)                                          # Trains the regression model using the training data.
-    
+
     # --- Train Classification Model ---
     cls_pipeline = Pipeline(steps=[('preprocessor', preprocessor),
                                    ('classifier', LogisticRegression(class_weight='balanced', max_iter=1000))]) # Creates a pipeline for the classification model: preprocess data, then apply Logistic Regression.
@@ -132,11 +129,11 @@ def train_unified_model():                                                      
     # Save the models and the preprocessor
     output_dir = os.path.join('models', 'unified')                                  # Defines the directory where the models will be saved.
     os.makedirs(output_dir, exist_ok=True)                                          # Creates the directory if it doesn't exist.
-    
+
     joblib.dump(reg_pipeline, os.path.join(output_dir, 'unified_regression_model.pkl')) # Saves the trained regression model.
     joblib.dump(cls_pipeline, os.path.join(output_dir, 'unified_classification_model.pkl')) # Saves the trained classification model.
     joblib.dump(preprocessor, os.path.join(output_dir, 'unified_preprocessor.pkl')) # Saves the data preprocessor.
-    
+
     print(f"Unified models and preprocessor saved to {output_dir}")                # Prints a confirmation message.
 
 if __name__ == '__main__':                                                          # Checks if this script is the main program being run.

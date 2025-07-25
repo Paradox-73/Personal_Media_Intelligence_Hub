@@ -1,18 +1,14 @@
 #python src/app.py
 import pandas as pd                                                                 # Imports the pandas library, used for creating and working with data tables (DataFrames).
-import numpy as np                                                                  # Imports numpy, a library for numerical operations, especially with arrays.
 import joblib  # type: ignore                                                                       # Imports joblib, used for saving and loading Python objects, like our trained models.
 import os                                                                           # Imports the os library, which allows the script to interact with the operating system (e.g., file paths).
-import torch                                                                        # Imports PyTorch, a machine learning library, used here to manage which device (CPU or GPU) to use.
 import sys                                                                          # Imports the sys library, which provides access to system-specific parameters and functions.
 import traceback                                                                    # Imports traceback, used for printing detailed error information when something goes wrong.
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))) # Adds the parent directory of this file to Python's path.
-from src.utils import (                                                     # Imports specific functions from our 'utils.py' file.
-    clean_text,                                                             # A function to clean up text data.
-    search_content,                                                         # A function to search for content online (e.g., movies, games).
-    get_content_details,                                                    # A function to get detailed information about a piece of content.
-    get_artist_details_spotify                                              # A function to get details about a music artist from Spotify.
+from src.utils import (
+    search_content,
+    get_content_details,
 )
 from src.feature_extractor import FeatureExtractor                          # Imports the FeatureExtractor class, which turns data into numbers for the model.
 from src.data_loader import CONTENT_COLUMN_MAPPING                          # Imports a configuration dictionary that describes our data.
@@ -21,9 +17,9 @@ from src.data_loader import CONTENT_COLUMN_MAPPING                          # Im
 # If so, it adds the project's main folder to the list of places Python looks for files.
 # This is important so we can import our own custom Python files from the 'src' directory.
 if __name__ == "__main__":                                                           # Checks if this script is the main program being run.
-    try:                                                                            # Starts a 'try' block to handle potential errors gracefully.
+    try:
         pass
-    except ImportError:                                                             # If any of the imports fail...
+    except ImportError:
         print("Could not import custom modules. Please ensure the script is run from the correct directory structure.") # ...print an error message.
         sys.exit(1)                                                                 # ...and exit the program.
 
@@ -32,7 +28,7 @@ if __name__ == "__main__":                                                      
 MODEL_BASE_DIR = os.path.join(os.path.dirname(__file__), '..', 'models')            # Defines the main folder where all our trained models are stored.
 
 # --- Helper Functions for Loading Models ---
-def load_model_and_extractor(content_type: str):                                    # Defines a function to load a specific model (e.g., for movies).
+def load_model_and_extractor(content_type: str):
     """
     Loads the trained XGBoost model and FeatureExtractor for a given content type.
     """
@@ -40,23 +36,23 @@ def load_model_and_extractor(content_type: str):                                
     xgboost_model_path = os.path.join(model_dir, f'xgboost_model_{content_type.lower()}.pkl') # Creates the full file path for the XGBoost model file.
     feature_extractor_path = os.path.join(model_dir, 'feature_extractor')           # Creates the full file path for the feature extractor.
 
-    if not os.path.exists(xgboost_model_path):                                      # Checks if the model file actually exists.
+    if not os.path.exists(xgboost_model_path):
         print(f"❌ Error: Model file not found for {content_type}: {xgboost_model_path}. Please train the model first.") # If not, prints an error.
         return None, None                                                           # And returns nothing, indicating failure.
-    if not os.path.exists(feature_extractor_path):                                  # Checks if the feature extractor files exist.
+    if not os.path.exists(feature_extractor_path):
         print(f"❌ Error: Feature Extractor not found for {content_type}: {feature_extractor_path}. Please train the model first.") # If not, prints an error.
         return None, None                                                           # And returns nothing.
 
-    try:                                                                            # Starts a 'try' block to handle potential loading errors.
+    try:
         xgb_model = joblib.load(xgboost_model_path)                                 # Loads the saved XGBoost model from its file.
         feature_extractor = FeatureExtractor.load(feature_extractor_path)           # Loads the saved feature extractor.
         print(f"✅ Successfully loaded model and extractor for {content_type}.")      # Prints a success message.
         return xgb_model, feature_extractor                                         # Returns the loaded model and feature extractor.
-    except Exception as e:                                                          # If any error occurs during loading...
+    except Exception as e:
         print(f"❌ Error loading model or feature extractor for {content_type}: {e}") # ...print an error message with details.
         return None, None                                                           # ...and return nothing.
-    
-def load_unified_models():                                                          # Defines a function to load the "unified" models (that work for all content types).
+
+def load_unified_models():
     """
     Loads the trained unified regression and classification models and their preprocessor.
     """
@@ -65,21 +61,21 @@ def load_unified_models():                                                      
     cls_model_path = os.path.join(model_dir, 'unified_classification_model.pkl')    # Creates the file path for the classification model (predicts a category).
     preprocessor_path = os.path.join(model_dir, 'unified_preprocessor.pkl')         # Creates the file path for the data preprocessor.
 
-    if not os.path.exists(reg_model_path) or not os.path.exists(cls_model_path) or not os.path.exists(preprocessor_path): # Checks if any of the unified model files are missing.
+    if not os.path.exists(reg_model_path) or not os.path.exists(cls_model_path) or not os.path.exists(preprocessor_path):
         print(f"❌ Error: Unified model files not found in {model_dir}. Please train the unified models first.") # If so, prints an error.
         return None, None, None                                                     # And returns nothing.
 
-    try:                                                                            # Starts a 'try' block for loading.
+    try:
         reg_model = joblib.load(reg_model_path)                                     # Loads the regression model.
         cls_model = joblib.load(cls_model_path)                                     # Loads the classification model.
         preprocessor = joblib.load(preprocessor_path)                               # Loads the preprocessor.
         print("OK: Successfully loaded unified models and preprocessor.")           # Prints a success message.
         return reg_model, cls_model, preprocessor                                   # Returns all the loaded components.
-    except Exception as e:                                                          # If an error occurs...
+    except Exception as e:
         print(f"ERROR: Error loading unified models: {e}")                          # ...print the error.
         return None, None, None                                                     # ...and return nothing.
 
-def prepare_dataframe_for_prediction(details: dict, content_type: str) -> pd.DataFrame: # Defines a function to get data ready for the model to use.
+def prepare_dataframe_for_prediction(details: dict, content_type: str) -> pd.DataFrame:
     """
     Prepares a single content's details (from API response) into a Pandas DataFrame
     suitable for prediction. It standardizes the structure from various APIs
@@ -164,7 +160,7 @@ def prepare_dataframe_for_prediction(details: dict, content_type: str) -> pd.Dat
             if col in config.get('numerical_features', []):                         # ...and it's supposed to be a number...
                 df_pred[col] = 0.0                                                  # ...add the column and fill it with 0.
             else:                                                                   # ...otherwise (if it's text)...
-                df_pred[col] = "Unknown"                                            # ...add the column and fill it with "Unknown".
+                df_pred[col] = "Unknown"                                            # ...add the column and fill with "Unknown".
 
     # Final cleanup for consistency
     for col in config.get('numerical_features', []):                                # Loops through all the number columns.
@@ -177,7 +173,7 @@ def prepare_dataframe_for_prediction(details: dict, content_type: str) -> pd.Dat
 
     return df_pred                                                                  # Returns the prepared data table.
 
-def prepare_dataframe_for_unified_prediction(details: dict, content_type: str) -> pd.DataFrame: # Defines a function to prepare data for the unified model.
+def prepare_dataframe_for_unified_prediction(details: dict, content_type: str) -> pd.DataFrame:
     """
     Prepares a single content's details for the unified model.
     """
@@ -196,7 +192,7 @@ def prepare_dataframe_for_unified_prediction(details: dict, content_type: str) -
         df['critic_rating_normalized'] = df.get('my_rating', 50) / 10               # ...use 'my_rating' scaled to 0-10.
     elif content_type == 'Book':                                                    # If it's a book...
         df['critic_rating_normalized'] = df.get('averageRating', 2.5) * 2           # ...use the average rating (0-5) and multiply by 2 to scale it to 0-10.
-    
+
     if 'critic_rating_normalized' in df.columns:                                    # If the normalized rating column exists...
         df['critic_rating_normalized'] = df['critic_rating_normalized'].fillna(5.0) # ...fill any empty spots with a neutral 5.0.
     else:                                                                           # Otherwise...
@@ -204,14 +200,14 @@ def prepare_dataframe_for_unified_prediction(details: dict, content_type: str) -
 
     # Define the full set of features the unified model expects
     unified_text_features = ['title', 'description', 'genres']                      # Defines the text features the unified model uses.
-    unified_categorical_features = [                                                # Defines the categorical (text category) features.
-        'content_type', 'language', 'status', 'show_type', 'network_country', 
-        'rated', 'director', 'writer', 'actors', 'awards', 'platform_from_text', 
+    unified_categorical_features = [
+        'content_type', 'language', 'status', 'show_type', 'network_country',
+        'rated', 'director', 'writer', 'actors', 'awards', 'platform_from_text',
         'age_rating', 'developers', 'publishers', 'tags', 'authors', 'publisher'
     ]
-    unified_numerical_features = [                                                  # Defines the numerical features.
-        'critic_rating_normalized', 'runtime', 'average_runtime', 'popularity', 
-        'watch_count', 'episode_count', 'year', 'imdb_rating', 'metascore', 
+    unified_numerical_features = [
+        'critic_rating_normalized', 'runtime', 'average_runtime', 'popularity',
+        'watch_count', 'episode_count', 'year', 'imdb_rating', 'metascore',
         'ratings_count', 'reviews_count', 'pageCount'
     ]
 
@@ -239,32 +235,31 @@ def get_user_input():                                                           
     content_type_options = list(CONTENT_COLUMN_MAPPING.keys())                      # Gets the list of available content types (Movie, Game, etc.).
     print("\n\n--- New Prediction ---")                                              # Prints a header for the user.
     print("1️⃣ Select a Content Type:")                                               # Asks the user to make a selection.
-    for i, option in enumerate(content_type_options):                               # Loops through the content types.
-        print(f"   {i+1}. {option}")                                                # Prints each one as a numbered option.
+    for i, option in enumerate(content_type_options):
+        print(f"   {i + 1}. {option}")                                                # Prints each one as a numbered option.
 
-    while True:                                                                     # Starts a loop that continues until the user gives valid input.
-        try:                                                                        # Starts a 'try' block to handle non-number inputs.
+    while True:
+        try:
             choice_input = input("Enter the number of your choice: ")               # Asks the user to enter a number.
             if not choice_input: continue                                           # If the user just presses Enter, ask again.
             choice = int(choice_input) - 1                                          # Converts the user's text input to a number and subtracts 1 (because lists start at 0).
-            if 0 <= choice < len(content_type_options):                             # Checks if the number is valid.
+            if 0 <= choice < len(content_type_options):
                 selected_content_type = content_type_options[choice]                # Gets the selected content type from the list.
                 break                                                               # Exits the loop because we have a valid choice.
-            else:                                                                   # If the number is not in the list...
+            else:
                 print("Invalid choice. Please select a number from the list.")      # ...print an error message.
-        except ValueError:                                                          # If the user enters text that isn't a number...
+        except ValueError:
             print("Invalid input. Please enter a number.")                          # ...print an error message.
 
     search_query = input(f"\n2️⃣ Enter the name of the {selected_content_type.lower()} to search for: ") # Asks the user to type what they want to search for.
     return selected_content_type, search_query                                      # Returns the chosen content type and the search text.
 
-def select_content_from_results(found_content, content_type):                       # Defines a function to let the user pick from search results.
+def select_content_from_results(found_content, content_type):
     """Displays search results and prompts the user to select one."""
     print("\n3️⃣ Select the correct item from the search results:")                  # Prints a header for the user.
-    content_options_display = []                                                    # Creates an empty list (not used, can be removed).
     content_id_map = {}                                                             # Creates a dictionary to link the menu number to the item's ID.
 
-    for i, item in enumerate(found_content):                                        # Loops through each item found in the search.
+    for i, item in enumerate(found_content):
         display_text = "Unknown Content"                                            # Sets a default display text.
         item_id = None                                                              # Sets a default item ID.
 
@@ -302,18 +297,17 @@ def select_content_from_results(found_content, content_type):                   
         print("No valid results found to select.")                                  # ...tell the user.
         return None, None                                                           # ...and return nothing.
 
-    while True:                                                                     # Starts a loop to get the user's selection.
-        try:                                                                        # Starts a 'try' block to handle non-number inputs.
+    while True:
+        try:
             choice_input = input("\nEnter the number of the content you want to predict: ") # Asks the user to pick a number.
             if not choice_input: continue                                           # If they press Enter, ask again.
             choice = int(choice_input)                                              # Convert the input to a number.
-            if choice in content_id_map:                                            # If the number is a valid choice in our map...
+            if choice in content_id_map:
                 return content_id_map[choice]                                       # ...return the ID and display text for that choice.
-            else:                                                                   # If it's not a valid number...
+            else:
                 print("Invalid choice. Please try again.")                          # ...show an error.
-        except ValueError:                                                          # If they type something that's not a number...
+        except ValueError:
             print("Invalid input. Please enter a number.")                          # ...show an error.
-
 
 def main():                                                                         # The main function where the program's execution starts.
     """Main function to run the terminal-based predictor."""
@@ -322,71 +316,71 @@ def main():                                                                     
 
     unified_reg_model, unified_cls_model, unified_preprocessor = load_unified_models() # Loads the unified models at the start.
 
-    while True:                                                                     # Starts the main loop of the program, which runs forever until exited.
-        try:                                                                        # Starts a 'try' block to catch errors and keep the program running.
+    while True:
+        try:
             selected_content_type, search_query = get_user_input()                  # Gets the content type and search query from the user.
 
             xgb_model, feature_extractor = load_model_and_extractor(selected_content_type) # Loads the specific model for the chosen content type.
-            if not xgb_model or not feature_extractor:                              # If the model failed to load...
+            if not xgb_model or not feature_extractor:
                 continue                                                            # ...skip the rest of this loop and start over.
 
             print(f"\nSearching for '{search_query}'...")                           # Tells the user it's searching.
             found_content = search_content(selected_content_type, search_query)     # Performs the search using the function from utils.py.
 
-            if not found_content:                                                   # If the search returned no results...
+            if not found_content:
                 print(f"No {selected_content_type.lower()} found for your search.") # ...tell the user.
                 continue                                                            # ...and start the loop over.
 
             selected_content_id, selected_content_name = select_content_from_results(found_content, selected_content_type) # Shows the results and asks the user to pick one.
-            if not selected_content_id:                                             # If the user didn't select anything...
+            if not selected_content_id:
                 continue                                                            # ...start the loop over.
 
             print(f"\nFetching details for '{selected_content_name}'...")           # Tells the user it's getting details.
             details = get_content_details(selected_content_type, selected_content_id) # Gets the detailed information for the selected item.
-            if not details:                                                         # If it couldn't get details...
+            if not details:
                 print("Could not fetch details for the selected content.")          # ...tell the user.
                 continue                                                            # ...and start the loop over.
 
             # Content-specific prediction
             df_pred = prepare_dataframe_for_prediction(details, selected_content_type) # Prepares the detailed data for the specific model.
             print("⚙️  Running content-specific prediction...")                      # Prints a status message.
-            if not df_pred.empty:                                                   # If the data table is not empty...
+            if not df_pred.empty:
                 combined_features = feature_extractor.transform(df_pred)            # ...use the feature extractor to turn the data into numbers.
                 features_for_xgb = combined_features                                # ...assigns the features to a new variable.
                 predicted_rating = xgb_model.predict(features_for_xgb)[0]           # ...use the specific model to predict a rating. The [0] gets the single number from the result.
                 predicted_rating = max(1.0, min(5.0, predicted_rating))             # ...make sure the rating is between 1.0 and 5.0.
-            else:                                                                   # If the data table was empty...
+            else:
                 predicted_rating = 0.0                                              # ...set the prediction to 0.0.
 
             # Unified model prediction
-            if unified_reg_model and unified_cls_model and unified_preprocessor:    # Checks if the unified models were loaded successfully.
+            if unified_reg_model and unified_cls_model and unified_preprocessor:
                 df_unified_pred = prepare_dataframe_for_unified_prediction(details, selected_content_type) # Prepares the data for the unified model.
                 print("⚙️  Running unified model prediction...")                     # Prints a status message.
-                if not df_unified_pred.empty:                                       # If the data is not empty...
+                if not df_unified_pred.empty:
                     unified_predicted_rating = unified_reg_model.predict(df_unified_pred)[0] # ...predict a rating with the unified regression model.
                     unified_predicted_rating = max(1.0, min(5.0, unified_predicted_rating)) # ...make sure the rating is between 1.0 and 5.0.
                     unified_predicted_sentiment = unified_cls_model.predict(df_unified_pred)[0] # ...predict a sentiment (e.g., 'like it') with the classification model.
-                else:                                                               # If the data was empty...
+                else:
                     unified_predicted_rating = 0.0                                  # ...set the rating to 0.0.
                     unified_predicted_sentiment = "Unknown"                         # ...set the sentiment to "Unknown".
 
-            print("\n" + "="*35)                                                    # Prints a separator line.
+            print("\n" + "=" * 35)                                                    # Prints a separator line.
             print("        ⭐ PREDICTION RESULT ⭐")                                  # Prints the header for the results.
-            print("="*35)                                                           # Prints another separator line.
+            print("=" * 35)                                                           # Prints another separator line.
             print(f"  Content: {selected_content_name}")                            # Prints the name of the content.
             print(f"  Predicted Rating (Specific): {predicted_rating:.2f} / 5.0")   # Prints the prediction from the content-specific model, formatted to 2 decimal places.
-            if unified_reg_model and unified_cls_model:                             # If the unified models exist...
+            if unified_reg_model and unified_cls_model:
                 print(f"  Predicted Rating (Unified): {unified_predicted_rating:.2f} / 5.0") # ...print the prediction from the unified model.
                 print(f"  Predicted Sentiment (Unified): {unified_predicted_sentiment}") # ...print the predicted sentiment.
-            print("="*35)                                                           # Prints a final separator line.
+            print("=" * 35)                                                           # Prints a final separator line.
 
-        except KeyboardInterrupt:                                                   # If the user presses Ctrl+C...
+        except KeyboardInterrupt:
             print("\nExiting predictor. Goodbye! 👋")                               # ...print a goodbye message.
             break                                                                   # ...and exit the main loop, ending the program.
-        except Exception as e:                                                      # If any other unexpected error occurs...
+        except Exception as e:
             print(f"An unexpected error occurred: {e}")                             # ...print a generic error message.
             traceback.print_exc()                                                   # ...print the full technical error details.
             continue                                                                # ...and continue to the next iteration of the loop.
 
-if __name__ == "__main__":                                                          # Checks if this script is the main program being run.
-    main()                                                                          # Calls the main function to start the program.
+if __name__ == "__main__":
+    main()

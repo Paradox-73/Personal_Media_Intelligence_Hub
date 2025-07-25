@@ -1,12 +1,9 @@
 # src/feature_extractor.py
 
-from typing import Optional, List, Any, cast
+from typing import Optional, List, Any
 from transformers.models.auto.processing_auto import AutoImageProcessor
 from transformers.models.auto.modeling_auto import AutoModel
-from transformers.modeling_utils import PreTrainedModel
-# Removed: from transformers.image_processing_utils import ProcessorMixin # This caused the error
 import pandas as pd
-import numpy as np
 import torch
 from sentence_transformers import SentenceTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder  # type: ignore
@@ -14,7 +11,6 @@ from sklearn.compose import ColumnTransformer  # type: ignore
 from sklearn.pipeline import Pipeline  # type: ignore
 from sklearn.decomposition import PCA  # type: ignore
 import joblib
-from PIL import Image
 import os
 from tqdm import tqdm
 

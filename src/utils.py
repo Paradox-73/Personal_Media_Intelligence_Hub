@@ -4,8 +4,6 @@ from PIL import Image                                                           
 from io import BytesIO                                                              # Imports BytesIO, used to handle binary data in memory, especially for images.
 import re                                                                           # Imports re, the regular expression library, used for advanced text pattern matching.
 import os                                                                           # Imports the os library, which allows the script to interact with the operating system (e.g., file paths).
-import time                                                                         # Imports time, used for time-related functions (not directly used in this snippet, but often for delays).
-import json                                                                         # Imports json, used for handling JSON (JavaScript Object Notation) data, common in web APIs.
 from dotenv import load_dotenv                                                      # Imports load_dotenv from dotenv, used to load environment variables from a .env file.
 
 load_dotenv()                                                                       # Loads environment variables from a .env file. This is where API keys are stored securely.
@@ -332,13 +330,13 @@ def search_content(content_type: str, query: str) -> list[dict]:                
         track_results = search_music_spotify(query, type="track")                   # Search for tracks.
         album_results_tracks = search_music_spotify(query, type="album")            # Search for albums and get their tracks.
         artist_results_tracks = search_music_spotify(query, type="artist")          # Search for artists and get their top tracks.
-        
+
         # Combine all tracks found from various searches
         all_music_results = []                                                      # Initialize a list to hold all music results.
         all_music_results.extend([item for item in track_results])                  # Add track results.
         all_music_results.extend([item for item in album_results_tracks])           # Add tracks from albums.
         all_music_results.extend([item for item in artist_results_tracks])          # Add tracks from artists.
-        
+
         # Remove duplicates based on track ID
         unique_tracks = {track['id']: track for track in all_music_results if 'id' in track} # Use a dictionary to keep only unique tracks by ID.
         return list(unique_tracks.values())                                         # Return the unique tracks as a list.

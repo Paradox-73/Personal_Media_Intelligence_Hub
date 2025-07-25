@@ -6,7 +6,6 @@ import pandas as pd
 import torch
 import os
 import sys
-import requests # Import requests here so you can patch it
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -15,9 +14,9 @@ from src.app import (
     load_model_and_extractor,
     prepare_dataframe_for_prediction,
     main,
+    get_user_input,
+    select_content_from_results,
 )
-from src.feature_extractor import FeatureExtractor
-from src.data_loader import CONTENT_COLUMN_MAPPING
 
 # --- Fixtures ---
 
@@ -53,7 +52,7 @@ def test_load_model_and_extractor_success(mock_exists, mock_feature_extractor_lo
     mock_joblib_load.return_value = MagicMock()
     mock_feature_extractor_load.return_value = MagicMock()
 
-    xgb_model, feature_extractor = load_model_and_extractor('movie')
+    xgb_model, feature_extractor = load_model_and_extractor('Movie')
 
     assert xgb_model is not None
     assert feature_extractor is not None
@@ -65,7 +64,7 @@ def test_load_model_and_extractor_file_not_found(mock_exists):
     """
     Tests that the function returns None when model files are not found.
     """
-    xgb_model, feature_extractor = load_model_and_extractor('movie')
+    xgb_model, feature_extractor = load_model_and_extractor('Movie')
     assert xgb_model is None
     assert feature_extractor is None
 
@@ -83,39 +82,38 @@ def test_prepare_dataframe_for_prediction(mock_details):
     assert 'imdb_rating' in df.columns
     assert df['imdb_rating'].iloc[0] == 8.8
 
+@patch('builtins.input', side_effect=['1', 'Inception'])
+def test_get_user_input(mock_input):
+    content_type, search_query = get_user_input()
+    assert content_type == 'Game'
+    assert search_query == 'Inception'
+
+@patch('builtins.input', side_effect=['1'])
+def test_select_content_from_results(mock_input):
+    found_content = [
+        {'id': '123', 'name': 'Game A', 'released': '2022-01-01'},
+        {'id': '456', 'name': 'Game B', 'released': '2021-01-01'}
+    ]
+    content_id, content_name = select_content_from_results(found_content, 'Game')
+    assert content_id == '123'
+    assert content_name == 'Game A (2022)'
+
 # --- Tests for Main Function ---
 
-# Add a mock for requests.get here, as search_content and get_content_details use it
-@patch('requests.get')
+@patch('src.app.get_content_details')
+@patch('src.app.search_content')
 @patch('src.app.get_user_input')
 @patch('src.app.load_model_and_extractor')
-@patch('src.utils.search_content') # This will now interact with our requests.get mock
 @patch('src.app.select_content_from_results')
-@patch('src.utils.get_content_details') # This will now interact with our requests.get mock
 @patch('src.app.prepare_dataframe_for_prediction')
 @patch('src.app.load_unified_models')
 def test_main_full_flow(
-    mock_load_unified, mock_prepare_df, mock_get_details,
-    mock_select_content, mock_search, mock_load_model, mock_get_input,
-    mock_requests_get # Added this argument
+    mock_load_unified, mock_prepare_df, mock_select_content, 
+    mock_load_model, mock_get_input, mock_search, mock_get_details
 ):
     """
     Tests the main function's full workflow from user input to prediction.
     """
-    # Configure the mock for requests.get
-    mock_response = MagicMock()
-    mock_response.raise_for_status.return_value = None # Ensure status check passes
-    # Provide a JSON response that your search_content and get_content_details expect
-    # This will depend on the actual structure of responses from TVMaze, OMDB, etc.
-    mock_response.json.side_effect = [
-        # First call for search_content (mock search results)
-        {"Search": [{'imdbID': 'tt1375666', 'Title': 'Inception', 'Year': '2010'}]},
-        # Second call for get_content_details (mock details for Inception)
-        {'Title': 'Inception', 'Plot': 'A mind-bending thriller.', 'imdbRating': '8.8', 'Metascore': '74'}, # Add more fields as needed by prepare_dataframe_for_prediction
-        # Add more .json() side_effects if other requests.get calls are made
-    ]
-    mock_requests_get.return_value = mock_response
-
     # Mock user input
     mock_get_input.return_value = ('Movie', 'Inception')
 
@@ -133,14 +131,13 @@ def test_main_full_flow(
     mock_unified_cls.predict.return_value = ['like']
     mock_load_unified.return_value = (mock_unified_reg, mock_unified_cls, MagicMock())
 
-    # Mock API calls and user selection (these mocks are still needed for call assertions)
-    # But their *return values* will now come from mock_requests_get.json()
-    mock_search.return_value = [{'imdbID': 'tt1375666', 'Title': 'Inception', 'Year': '2010'}] # This might become redundant if mock_requests_get handles it
+    # Mock API calls and user selection
+    mock_search.return_value = [{'imdbID': 'tt1375666', 'Title': 'Inception', 'Year': '2010'}]
     mock_select_content.return_value = ('tt1375666', 'Inception (2010)')
-    mock_get_details.return_value = {'Title': 'Inception', 'Plot': 'A mind-bending thriller.'} # This might become redundant
+    mock_get_details.return_value = {'Title': 'Inception', 'Plot': 'A mind-bending thriller.'}
 
     # Mock DataFrame preparation
-    mock_prepare_df.return_value = pd.DataFrame({'title': ['Inception'], 'imdb_rating': [8.8], 'metascore': [74]}) # Ensure all columns needed by prepare_dataframe_for_prediction are here
+    mock_prepare_df.return_value = pd.DataFrame({'title': ['Inception'], 'imdb_rating': [8.8], 'metascore': [74]})
 
     # Run the main loop once
     with patch('builtins.print'), patch('src.app.main', side_effect=KeyboardInterrupt):

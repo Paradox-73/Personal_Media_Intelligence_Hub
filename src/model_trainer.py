@@ -1,6 +1,4 @@
 #   python src/model_trainer.py
-import pandas as pd                                                                 # Imports the pandas library, used for creating and working with data tables (DataFrames).
-import numpy as np                                                                  # Imports numpy, a library for numerical operations, especially with arrays.
 from sklearn.model_selection import train_test_split  # type: ignore                                # Imports a function to split data into training and testing sets.
 from xgboost import XGBRegressor                                                    # Imports XGBoost, a powerful machine learning algorithm for regression (predicting numbers).
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score  # type: ignore       # Imports metrics to evaluate how well our model performs.
@@ -34,7 +32,7 @@ def objective(trial, X_train, y_train, X_test, y_test):                         
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',                  # Tells XGBoost to use the GPU if available, otherwise the CPU.
         'n_jobs': -1                                                                # Uses all available CPU cores for parallel processing.
     }
-    
+
     model = XGBRegressor(**param)                                                   # Creates an XGBoost Regressor model with the chosen parameters.
     model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)         # Trains the model using the training data and evaluates it on the test data.
     preds = model.predict(X_test)                                                   # Makes predictions on the test data.
@@ -66,7 +64,7 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):    
     if my_rating_col is None or 'like_dislike' not in df.columns:                   # Checks if the rating column or the like/dislike column is missing.
         print(f"Skipping training for {content_type}: 'my_rating' or 'like_dislike' column not found or not applicable.") # If so, prints a message.
         return                                                                      # And stops training.
-    
+
     # Ensure there's enough data for training after dropping NaNs
     if len(df) < 2:                                                                 # Checks if there are at least 2 rows of data (needed for splitting).
         print(f"Not enough data for {content_type} after cleaning ({len(df)} samples). Skipping training.") # If not, prints a message.
@@ -90,7 +88,7 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):    
     X_train_transformed = feature_extractor.transform(X_train)                      # Uses the FeatureExtractor to convert the training data into numerical features.
     print("Transforming test data...")                                             # Prints a status message.
     X_test_transformed = feature_extractor.transform(X_test)                        # Uses the FeatureExtractor to convert the test data into numerical features.
-    
+
     # Converts the target variables (y_train, y_test) into a format that XGBoost can use.
     if isinstance(y_train, torch.Tensor):                                           # If y_train is a PyTorch tensor...
         y_train_final = y_train.cpu().numpy()                                       # ...convert it to a NumPy array on the CPU.
@@ -136,7 +134,7 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):    
     best_params['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'          # Ensures the model uses the GPU if available.
 
     xgb_model = XGBRegressor(objective='reg:squarederror', **best_params)          # Creates the final XGBoost model using the best parameters found.
-    
+
     xgb_model.fit(X_train_transformed, y_train_final, eval_set=[(X_test_transformed, y_test_final)], # Trains the final model.
     verbose=False)                                                                  # Does not print detailed training progress.
     print("XGBoost model training complete.")                                       # Prints a success message.
@@ -155,7 +153,7 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):    
 
 
     mae = mean_absolute_error(y_test_final, y_pred)                                 # Calculates the Mean Absolute Error (average difference between predicted and actual).
-    rmse = np.sqrt(mean_squared_error(y_test_final, y_pred))                        # Calculates the Root Mean Squared Error (another measure of prediction accuracy).
+    rmse = mean_squared_error(y_test_final, y_pred, squared=False)                        # Calculates the Root Mean Squared Error (another measure of prediction accuracy).
     r2 = r2_score(y_test_final, y_pred)                                             # Calculates the R-squared score again for the final model.
 
     print(f"Mean Absolute Error (MAE): {mae:.4f}")                                 # Prints the MAE, formatted to 4 decimal places.
@@ -186,7 +184,7 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):    
     print("Training process complete for", content_type)                            # Prints a final message for the completed training.
 
 if __name__ == "__main__":                                                          # Checks if this script is the main program being run.
-    current_script_dir = os.path.dirname(__file__)                                  # Gets the directory where this script is located.
+    current_script_dir = os.path.join(os.path.dirname(__file__))                                  # Gets the directory where this script is located.
     data_base_path = os.path.join(current_script_dir, '..', 'data')                  # Defines the base directory for data files.
     model_base_path = os.path.join(current_script_dir, '..', 'models')               # Defines the base directory for saving models.
 

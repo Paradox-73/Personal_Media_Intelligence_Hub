@@ -1,7 +1,5 @@
 import pandas as pd                                                                 # Imports the pandas library, used for creating and working with data tables (DataFrames).
-import numpy as np                                                                  # Imports numpy, a library for numerical operations, especially with arrays.
 import os                                                                           # Imports the os library, which allows the script to interact with the operating system (e.g., file paths).
-import re                                                                           # Imports re, the regular expression library, used for advanced text pattern matching.
 from typing import Dict, Any, cast
 from pandas import Series
 
@@ -132,59 +130,59 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
     all_dfs = []                                                                    # Creates an empty list to hold the data from each CSV file.
 
     # Load CSV files
-    for filepath in config["csv_paths"]:                                            # Loops through the list of CSV file paths in the configuration.
-        try:                                                                        # Starts a 'try' block to handle file loading errors.
-            df_part = pd.read_csv(filepath)                                         # Reads a CSV file into a pandas DataFrame (a data table).
-            all_dfs.append(df_part)                                                 # Adds the loaded data table to our list.
-            print(f"Successfully loaded {filepath}")                                # Prints a success message.
-        except FileNotFoundError:                                                   # If the file doesn't exist...
-            print(f"Warning: The file '{filepath}' was not found. Skipping.")       # ...print a warning and continue.
-        except Exception as e:                                                      # If any other error occurs...
-            print(f"An error occurred while loading '{filepath}': {e}")              # ...print the error.
+    for filepath in config["csv_paths"]:
+        try:
+            df_part = pd.read_csv(filepath)
+            all_dfs.append(df_part)
+            print(f"Successfully loaded {filepath}")
+        except FileNotFoundError:
+            print(f"Warning: The file '{filepath}' was not found. Skipping.")
+        except Exception as e:
+            print(f"An error occurred while loading '{filepath}': {e}")
 
-    if not all_dfs:                                                                 # Checks if any data was loaded.
-        print(f"No data loaded for content type: {content_type}. Returning empty DataFrame.") # If not, prints a message.
-        return pd.DataFrame()                                                       # And returns an empty data table.
+    if not all_dfs:
+        print(f"No data loaded for content type: {content_type}. Returning empty DataFrame.")
+        return pd.DataFrame()
 
-    df = pd.concat(all_dfs, ignore_index=True)                                      # Combines all the loaded data tables into one big table.
-    print(f"Initial DataFrame info for {content_type}:")                            # Prints a header.
-    df.info()                                                                       # Prints a summary of the data table (columns, data types, etc.).
-    print(f"\nInitial DataFrame head for {content_type}:")                         # Prints another header.
-    print(df.head())                                                                # Prints the first 5 rows of the data table.
+    df = pd.concat(all_dfs, ignore_index=True)
+    print(f"Initial DataFrame info for {content_type}:")
+    df.info()
+    print(f"\nInitial DataFrame head for {content_type}:")
+    print(df.head())
 
     # --- Data Cleaning and Preprocessing ---
 
     # This section renames the columns from their original names in the CSV files
     # to the standard, generic names we use throughout the program (e.g., 'name' becomes 'title').
-    rename_mapping = {}                                                             # Creates an empty dictionary to store the renaming rules.
-    for generic_col, original_col_val in config.items():                                # Loops through the items in the configuration dictionary.
-        if isinstance(original_col_val, str) and original_col_val in df.columns:            # Checks if the item is a column name that exists in our data.
+    rename_mapping = {}
+    for generic_col, original_col_val in config.items():
+        if isinstance(original_col_val, str) and original_col_val in df.columns:
             original_col = cast(str, original_col_val)
-            if generic_col == "my_rating_source_col":                               # Special case for the rating column.
-                rename_mapping[original_col] = "my_rating"                          # We want to rename the source (e.g., "Popularity") to "my_rating".
+            if generic_col == "my_rating_source_col":
+                rename_mapping[original_col] = "my_rating"
             else:
-                rename_mapping[original_col] = generic_col                          # For all others, map the original name to the generic name.
-    
-    df = df.rename(columns=rename_mapping).copy()                                   # Applies the renaming rules to the data table.
-    print(f"Columns renamed: {rename_mapping}")                                     # Prints the renaming rules that were applied.
+                rename_mapping[original_col] = generic_col
+
+    df = df.rename(columns=rename_mapping).copy()
+    print(f"Columns renamed: {rename_mapping}")
 
     # --- Custom Cleaning for Specific Columns ---
-    if 'runtime' in df.columns and content_type == 'Movie':                         # If there's a 'runtime' column for a Movie...
-        df['runtime'] = cast(Series[str], df['runtime']).str.extract(r'(\d+)').astype(float)           # ...extract only the numbers from it (e.g., "120 min" -> 120).
-        print("Cleaned 'runtime' column for Movie data.")                           # Prints a confirmation message.
+    if 'runtime' in df.columns and content_type == 'Movie':
+        df['runtime'] = cast(Series[str], df['runtime']).str.extract(r'(\d+)').astype(float)
+        print("Cleaned 'runtime' column for Movie data.")
 
 
     # This section handles dates, converting them from text into a proper date format.
-    if "release_date" in df.columns:                                                # Checks if a 'release_date' column exists.
-        if content_type == "Show":                                                  # For Shows, the date format might be day-first.
-            df["release_date"] = pd.to_datetime(df["release_date"], errors='coerce', dayfirst=True) # Converts text to dates, handling errors.
-        elif content_type == "Movie":                                               # For Movies, the date format is specific ('dd-Mon-yy').
-            df["release_date"] = pd.to_datetime(df["release_date"], format='%d-%b-%y', errors='coerce') # Converts using the specific format.
-        else:                                                                       # For all other types...
-            df["release_date"] = pd.to_datetime(df["release_date"], errors='coerce') # ...let pandas figure out the format automatically.
-        
-        df['release_year'] = df["release_date"].dt.year                             # Creates a new column containing just the year from the release date.
-        print(f"Converted 'release_date' to datetime and extracted 'release_year'.") # Prints a confirmation message.
+    if "release_date" in df.columns:
+        if content_type == "Show":
+            df["release_date"] = pd.to_datetime(df["release_date"], errors='coerce', dayfirst=True)
+        elif content_type == "Movie":
+            df["release_date"] = pd.to_datetime(df["release_date"], format='%d-%b-%y', errors='coerce')
+        else:
+            df["release_date"] = pd.to_datetime(df["release_date"], errors='coerce')
+
+        df['release_year'] = df["release_date"].dt.year
+        print(f"Converted 'release_date' to datetime and extracted 'release_year'.")
 
     # This section fills in missing values (empty cells) in the numerical columns.
     for col_original in config["numerical_features"]:
@@ -207,14 +205,14 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
 
     # This section fills in missing values for all text and categorical columns.
     all_source_text_and_categorical_cols = list(set(config["text_features"] + config["categorical_features"])) # Gets a list of all text-based columns.
-    for col_original in all_source_text_and_categorical_cols:                       # Loops through each of these columns.
-        col_in_df = rename_mapping.get(col_original, col_original)                  # Gets the current name of the column.
-        if col_in_df in df.columns:                                                 # Checks if the column exists.
-            if not isinstance(df[col_in_df].dtype, pd.CategoricalDtype):             # Checks if the column is not already a special 'category' type.
-                df[col_in_df] = df[col_in_df].astype(str).replace('nan', config["fill_na_categorical_strategy"]) # Converts column to text and replaces 'nan' strings.
-                df[col_in_df] = df[col_in_df].replace('', config["fill_na_categorical_strategy"]) # Replaces empty strings.
-                df[col_in_df] = df[col_in_df].fillna(config["fill_na_categorical_strategy"]) # Fills any remaining missing values.
-            print(f"Filled missing values in '{col_in_df}' (from original '{col_original}') with '{config['fill_na_categorical_strategy']}'.") # Prints what was done.
+    for col_original in all_source_text_and_categorical_cols:
+        col_in_df = rename_mapping.get(col_original, col_original)
+        if col_in_df in df.columns:
+            if not isinstance(df[col_in_df].dtype, pd.CategoricalDtype):
+                df[col_in_df] = df[col_in_df].astype(str).replace('nan', config["fill_na_categorical_strategy"])
+                df[col_in_df] = df[col_in_df].replace('', config["fill_na_categorical_strategy"])
+                df[col_in_df] = df[col_in_df].fillna(config["fill_na_categorical_strategy"])
+            print(f"Filled missing values in '{col_in_df}' (from original '{col_original}') with '{config['fill_na_categorical_strategy']}'.")
 
     # This section does a final check to make sure all numerical columns are actually numbers.
     for col_original in config["numerical_features"]:
@@ -245,10 +243,10 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
             df['my_rating'] = ((df['Popularity'] - min_popularity) / (max_popularity - min_popularity)) * \
                               (new_max_rating - new_min_rating) + new_min_rating
             df['my_rating'] = df['my_rating'].round(1)
-            print(f"Derived 'my_rating' for Music from 'Popularity' (0-100) scaled to 1-5 range.")
+            print("Derived 'my_rating' for Music from 'Popularity' (0-100) scaled to 1-5 range.")
         else:
-            print(f"Warning: 'Popularity' column not found for Music. Cannot derive 'my_rating'.")
-    
+            print("Warning: 'Popularity' column not found for Music. Cannot derive 'my_rating'.")
+
     if "my_rating" in df.columns:
         df["my_rating"] = pd.to_numeric(df["my_rating"], errors='coerce')
         original_rows = len(df)
@@ -263,7 +261,7 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
 
     else:
         # This warning is shown if, after all processing, there's no 'my_rating' column to use for training.
-        print(f"Warning: Generic target column 'my_rating' not found in DataFrame for {content_type}. 'like_dislike' will not be created. Please check CONTENT_COLUMN_MAPPING and input CSVs for 'my_rating_source_col'.")
+        print("Warning: Generic target column 'my_rating' not found in DataFrame for {content_type}. 'like_dislike' will not be created. Please check CONTENT_COLUMN_MAPPING and input CSVs for 'my_rating_source_col'.")
 
 
     print(f"\nDataFrame info after cleaning for {content_type}:")
