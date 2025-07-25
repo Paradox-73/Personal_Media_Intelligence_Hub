@@ -19,7 +19,6 @@ src/__pycache__/
 roadmap.txt
 @roadmap.txt
 model_output.txt
-.flake8
 ci_workflow_output.txt
 error.txt
 src/fetch

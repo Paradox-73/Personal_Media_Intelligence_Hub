@@ -1,0 +1,4 @@
+[flake8]
+ignore = E501,E261,E302,E303,E305
+max-complexity = 12
+exclude = content_rec
