@@ -1,21 +1,20 @@
 #   python src/model_trainer.py
-from sklearn.model_selection import train_test_split  # type: ignore                                # Imports a function to split data into training and testing sets.
-from xgboost import XGBRegressor                                                    # Imports XGBoost, a powerful machine learning algorithm for regression (predicting numbers).
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score  # type: ignore       # Imports metrics to evaluate how well our model performs.
-import joblib  # type: ignore                                                                       # Imports joblib, used for saving and loading Python objects, like our trained models.
-import os                                                                           # Imports the os library, which allows the script to interact with the operating system (e.g., file paths).
-import torch                                                                        # Imports PyTorch, a machine learning library, used here to check for GPU availability.
-import optuna                                                                       # Imports Optuna, a library for automating hyperparameter optimization (finding the best settings for our model).
-import json                                                                         # Imports json, used for working with JSON data (like saving model settings).
-import sys                                                                          # Imports the sys library, which provides access to system-specific parameters and functions.
+import json
+import os
+import sys
+import joblib  # type: ignore
+import optuna
+import torch
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score  # type: ignore
+from sklearn.model_selection import train_test_split  # type: ignore
+from xgboost import XGBRegressor
+
+from src.data_loader import load_content_data, CONTENT_COLUMN_MAPPING
+from src.feature_extractor import FeatureExtractor
+from src.utils import ensure_directory_exists
 
 # Add the parent directory of the current script to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))) # Adds the project's main folder to Python's search path.
-
-# Import custom modules
-from src.data_loader import load_content_data, CONTENT_COLUMN_MAPPING               # Imports functions and configurations for loading and understanding our data.
-from src.feature_extractor import FeatureExtractor                                  # Imports the FeatureExtractor class, which turns raw data into numbers for the model.
-from src.utils import ensure_directory_exists                                       # Imports a utility function to make sure directories exist.
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 def objective(trial, X_train, y_train, X_test, y_test):                             # Defines the objective function for Optuna, which Optuna tries to optimize.
     """
@@ -113,7 +112,10 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):    
     else:                                                                           # If no best settings file is found...
         print(f"No best parameters found for {content_type}. Running Optuna study.") # ...prints a message that Optuna will run.
         study = optuna.create_study(direction='maximize')                           # Creates an Optuna study, aiming to maximize the R-squared score.
-        study.optimize(lambda trial: objective(trial, X_train_transformed, y_train_final, X_test_transformed, y_test_final), n_trials=100) # Runs the optimization for 100 trials.
+        study.optimize(
+            lambda trial: objective(trial, X_train_transformed, y_train_final, X_test_transformed, y_test_final),
+            n_trials=100
+        ) # Runs the optimization for 100 trials.
 
         print("Best trial:")                                                        # Prints a header for the best trial results.
         trial = study.best_trial                                                    # Gets the best trial found by Optuna.
@@ -136,7 +138,7 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):    
     xgb_model = XGBRegressor(objective='reg:squarederror', **best_params)          # Creates the final XGBoost model using the best parameters found.
 
     xgb_model.fit(X_train_transformed, y_train_final, eval_set=[(X_test_transformed, y_test_final)], # Trains the final model.
-    verbose=False)                                                                  # Does not print detailed training progress.
+                  verbose=False)                                                                  # Does not print detailed training progress.
     print("XGBoost model training complete.")                                       # Prints a success message.
 
     # 7. Evaluate Model
@@ -153,7 +155,7 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):    
 
 
     mae = mean_absolute_error(y_test_final, y_pred)                                 # Calculates the Mean Absolute Error (average difference between predicted and actual).
-    rmse = mean_squared_error(y_test_final, y_pred, squared=False)                        # Calculates the Root Mean Squared Error (another measure of prediction accuracy).
+    rmse = mean_squared_error(y_test_final, y_pred, squared=False) # Calculates the Root Mean Squared Error (another measure of prediction accuracy).
     r2 = r2_score(y_test_final, y_pred)                                             # Calculates the R-squared score again for the final model.
 
     print(f"Mean Absolute Error (MAE): {mae:.4f}")                                 # Prints the MAE, formatted to 4 decimal places.
@@ -205,4 +207,4 @@ if __name__ == "__main__":                                                      
             print(f"\nError training model for {content_type}: {e}\n")             # ...print an error message.
             import traceback                                                        # Imports traceback for detailed error info.
             traceback.print_exc()                                                   # Prints the full technical error details.
-        print("\n" + "="*80 + "\n")                                                # Prints a separator line after each content type's training.
+        print("\n" + "=" * 80 + "\n")                                                # Prints a separator line after each content type's training.

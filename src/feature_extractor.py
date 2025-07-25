@@ -1,25 +1,25 @@
 # src/feature_extractor.py
 
+import os
+import sys
 from typing import Optional, List, Any
-from transformers.models.auto.processing_auto import AutoImageProcessor
-from transformers.models.auto.modeling_auto import AutoModel
+import joblib
 import pandas as pd
 import torch
 from sentence_transformers import SentenceTransformer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder  # type: ignore
 from sklearn.compose import ColumnTransformer  # type: ignore
-from sklearn.pipeline import Pipeline  # type: ignore
 from sklearn.decomposition import PCA  # type: ignore
-import joblib
-import os
+from sklearn.pipeline import Pipeline  # type: ignore
+from sklearn.preprocessing import StandardScaler, OneHotEncoder  # type: ignore
 from tqdm import tqdm
-
-import sys
+from transformers.models.auto.modeling_auto import AutoModel
+from transformers.models.auto.processing_auto import AutoImageProcessor
+from src.utils import clean_text, download_image_from_url, ensure_directory_exists
+from src.data_loader import CONTENT_COLUMN_MAPPING
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.utils import clean_text, download_image_from_url, ensure_directory_exists
-from src.data_loader import CONTENT_COLUMN_MAPPING
+
 
 class FeatureExtractor:
     """

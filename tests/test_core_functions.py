@@ -1,14 +1,14 @@
+import os
+import sys
 import pandas as pd
 import numpy as np
-import os
 from unittest.mock import patch
-
-# Adjust path to import modules from src
-import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.data_loader import load_content_data
 from src.utils import clean_text, ensure_directory_exists
+
+# Adjust path to import modules from src
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # --- Tests for src/utils.py ---
 

@@ -1,15 +1,11 @@
 # tests/test_app.py
 
+import os
+import sys
 import pytest
 from unittest.mock import patch, MagicMock
 import pandas as pd
 import torch
-import os
-import sys
-
-# Add the project root to the Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
 from src.app import (
     load_model_and_extractor,
     prepare_dataframe_for_prediction,
@@ -17,6 +13,10 @@ from src.app import (
     get_user_input,
     select_content_from_results,
 )
+
+# Add the project root to the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 
 # --- Fixtures ---
 
@@ -108,7 +108,7 @@ def test_select_content_from_results(mock_input):
 @patch('src.app.prepare_dataframe_for_prediction')
 @patch('src.app.load_unified_models')
 def test_main_full_flow(
-    mock_load_unified, mock_prepare_df, mock_select_content, 
+    mock_load_unified, mock_prepare_df, mock_select_content,
     mock_load_model, mock_get_input, mock_search, mock_get_details
 ):
     """

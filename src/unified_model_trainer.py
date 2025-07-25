@@ -1,6 +1,5 @@
 import os                                                                           # Imports the os library, which allows the script to interact with the operating system (e.g., file paths).
 import sys                                                                          # Imports the sys library, which provides access to system-specific parameters and functions.
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))) # Adds the project's main folder to Python's search path.
 import pandas as pd                                                                 # Imports the pandas library, used for creating and working with data tables (DataFrames).
 import joblib  # type: ignore                                                                     # Imports joblib, used for saving and loading Python objects, like our trained models.
 from sklearn.model_selection import train_test_split  # type: ignore                               # Imports a function to split data into training and testing sets.
@@ -10,6 +9,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore     
 from sklearn.preprocessing import StandardScaler, OneHotEncoder  # type: ignore                     # Imports tools from scikit-learn for preparing data for ML.
 from sklearn.linear_model import Ridge, LogisticRegression  # type: ignore                          # Imports Ridge (for regression) and Logistic Regression (for classification) models.
 from src.data_loader import load_content_data, CONTENT_COLUMN_MAPPING               # Imports functions and configurations for loading and understanding our data.
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))) # Adds the project's main folder to Python's search path.
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))) # Adds the project's main folder to Python's search path.
 
 def get_unified_feature_config():                                                   # Defines a function to get the configuration for features used by the unified model.
     # Define a unified set of features to be used across all content types

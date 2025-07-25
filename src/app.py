@@ -1,28 +1,27 @@
-#python src/app.py
-import pandas as pd                                                                 # Imports the pandas library, used for creating and working with data tables (DataFrames).
-import joblib  # type: ignore                                                                       # Imports joblib, used for saving and loading Python objects, like our trained models.
-import os                                                                           # Imports the os library, which allows the script to interact with the operating system (e.g., file paths).
-import sys                                                                          # Imports the sys library, which provides access to system-specific parameters and functions.
-import traceback                                                                    # Imports traceback, used for printing detailed error information when something goes wrong.
+# python src/app.py
+import os
+import sys
+import traceback
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))) # Adds the parent directory of this file to Python's path.
-from src.utils import (
-    search_content,
-    get_content_details,
-)
-from src.feature_extractor import FeatureExtractor                          # Imports the FeatureExtractor class, which turns data into numbers for the model.
-from src.data_loader import CONTENT_COLUMN_MAPPING                          # Imports a configuration dictionary that describes our data.
+import joblib  # type: ignore
+import pandas as pd
 
 # This block of code checks if the script is being run directly.
 # If so, it adds the project's main folder to the list of places Python looks for files.
 # This is important so we can import our own custom Python files from the 'src' directory.
-if __name__ == "__main__":                                                           # Checks if this script is the main program being run.
+if __name__ == "__main__":
     try:
-        pass
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
     except ImportError:
-        print("Could not import custom modules. Please ensure the script is run from the correct directory structure.") # ...print an error message.
-        sys.exit(1)                                                                 # ...and exit the program.
+        print("Could not import custom modules. Please ensure the script is run from the correct directory structure.")
+        sys.exit(1)
 
+from src.utils import (
+    search_content,
+    get_content_details,
+)
+from src.feature_extractor import FeatureExtractor
+from src.data_loader import CONTENT_COLUMN_MAPPING
 
 # --- Configuration ---
 MODEL_BASE_DIR = os.path.join(os.path.dirname(__file__), '..', 'models')            # Defines the main folder where all our trained models are stored.
@@ -93,113 +92,117 @@ def prepare_dataframe_for_prediction(details: dict, content_type: str) -> pd.Dat
         processed_details['genres'] = details.get('Genre')                          # ...get the genres.
         processed_details['image_url'] = details.get('Poster')                      # ...get the URL for the movie poster image.
         processed_details['release_date'] = details.get('Released')                 # ...get the release date.
-        processed_details['year'] = pd.to_numeric(details.get('Year', ''), errors='coerce') # ...get the year and make sure it's a number.
-        processed_details['imdb_rating'] = pd.to_numeric(details.get('imdbRating', ''), errors='coerce') # ...get the IMDb rating and make sure it's a number.
-        processed_details['metascore'] = pd.to_numeric(details.get('Metascore', ''), errors='coerce') # ...get the Metascore and make sure it's a number.
-        processed_details['rated'] = details.get('Rated')                           # ...get the age rating (e.g., PG-13).
-        processed_details['language'] = details.get('Language')                     # ...get the language.
-        processed_details['director'] = details.get('Director')                     # ...get the director's name.
-        processed_details['writer'] = details.get('Writer')                         # ...get the writer's name.
-        processed_details['actors'] = details.get('Actors')                         # ...get the actors' names.
-        processed_details['awards'] = details.get('Awards')                         # ...get any awards the movie has won.
+        processed_details['year'] = pd.to_numeric(details.get('Year', ''), errors='coerce')
+        processed_details['imdb_rating'] = pd.to_numeric(details.get('imdbRating', ''), errors='coerce')
+        processed_details['metascore'] = pd.to_numeric(details.get('Metascore', ''), errors='coerce')
+        processed_details['rated'] = details.get('Rated')
+        processed_details['language'] = details.get('Language')
+        processed_details['director'] = details.get('Director')
+        processed_details['writer'] = details.get('Writer')
+        processed_details['actors'] = details.get('Actors')
+        processed_details['awards'] = details.get('Awards')
 
-    elif content_type == "Game":                                                    # Or if the content is a Game...
-        processed_details['title'] = details.get('name')                            # ...get the title.
-        processed_details['description'] = details.get('description_raw')           # ...get the raw text description.
-        processed_details['image_url'] = details.get('cover')                       # ...get the URL for the game's cover image.
-        processed_details['release_date'] = details.get('released')                 # ...get the release date.
-        processed_details['metacritic'] = details.get('metacritic')                 # ...get the Metacritic score.
-        processed_details['rating'] = details.get('rating')                         # ...get the user rating.
-        processed_details['ratings_count'] = details.get('ratings_count')           # ...get how many ratings it has.
-        processed_details['reviews_count'] = details.get('reviews_count')           # ...get how many reviews it has.
-        processed_details['platform_from_text'] = ", ".join([p['platform']['name'] for p in details.get('platforms', [])]) # ...get the platforms (e.g., PC, PS5).
-        processed_details['age_rating'] = details.get('esrb_rating', {}).get('name') if details.get('esrb_rating') else 'Not Rated' # ...get the ESRB age rating.
-        processed_details['developers'] = ", ".join([d['name'] for d in details.get('developers', [])]) # ...get the developers.
-        processed_details['publishers'] = ", ".join([p['name'] for p in details.get('publishers', [])]) # ...get the publishers.
-        processed_details['tags'] = ", ".join([t['name'] for t in details.get('tags', [])]) # ...get the tags associated with the game.
-        processed_details['genres'] = ", ".join([g['name'] for g in details.get('genres', [])]) # ...get the genres.
+    elif content_type == "Game":
+        processed_details['title'] = details.get('name')
+        processed_details['description'] = details.get('description_raw')
+        processed_details['image_url'] = details.get('cover')
+        processed_details['release_date'] = details.get('released')
+        processed_details['metacritic'] = details.get('metacritic')
+        processed_details['rating'] = details.get('rating')
+        processed_details['ratings_count'] = details.get('ratings_count')
+        processed_details['reviews_count'] = details.get('reviews_count')
+        processed_details['platform_from_text'] = ", ".join([p['platform']['name'] for p in details.get('platforms', [])])
+        processed_details['age_rating'] = details.get('esrb_rating', {}).get('name') if details.get('esrb_rating') else 'Not Rated'
+        processed_details['developers'] = ", ".join([d['name'] for d in details.get('developers', [])])
+        processed_details['publishers'] = ", ".join([p['name'] for p in details.get('publishers', [])])
+        processed_details['tags'] = ", ".join([t['name'] for t in details.get('tags', [])])
+        processed_details['genres'] = ", ".join([g['name'] for g in details.get('genres', [])])
 
-    elif content_type == "Show":                                                    # Or if the content is a TV Show...
-        processed_details['title'] = details.get('name')                            # ...get the title.
-        processed_details['description'] = details.get('summary')                   # ...get the summary.
-        processed_details['image_url'] = details.get('image', {}).get('medium') if details.get('image') else None # ...get the URL for the show's image.
-        processed_details['release_date'] = details.get('premiered')                # ...get the premiere date.
-        processed_details['runtime'] = details.get('runtime')                       # ...get the runtime per episode.
-        processed_details['average_runtime'] = details.get('averageRuntime')        # ...get the average runtime.
-        processed_details['rating_avg'] = details.get('rating', {}).get('average') if details.get('rating') else None # ...get the average rating.
-        processed_details['popularity'] = details.get('weight')                     # ...get the popularity score.
-        processed_details['language'] = details.get('language')                     # ...get the language.
-        processed_details['status'] = details.get('status')                         # ...get the status (e.g., Ended, Running).
-        processed_details['show_type'] = details.get('type')                        # ...get the type of show (e.g., Scripted).
-        processed_details['genres'] = "|".join(details.get('genres', []))           # ...get the genres.
+    elif content_type == "Show":
+        processed_details['title'] = details.get('name')
+        processed_details['description'] = details.get('summary')
+        processed_details['image_url'] = details.get('image', {}).get('medium') if details.get('image') else None
+        processed_details['release_date'] = details.get('premiered')
+        processed_details['runtime'] = details.get('runtime')
+        processed_details['average_runtime'] = details.get('averageRuntime')
+        processed_details['rating_avg'] = details.get('rating', {}).get('average') if details.get('rating') else None
+        processed_details['popularity'] = details.get('weight')
+        processed_details['language'] = details.get('language')
+        processed_details['status'] = details.get('status')
+        processed_details['show_type'] = details.get('type')
+        processed_details['genres'] = "|".join(details.get('genres', []))
 
-    elif content_type == "Book":                                                    # Or if the content is a Book...
-        vol_info = details.get('volumeInfo', {})                                   # ...get the 'volumeInfo' section which contains most details.
-        processed_details['title'] = vol_info.get('title')                          # ...get the title.
-        processed_details['description'] = vol_info.get('description')              # ...get the description.
-        processed_details['image_url'] = vol_info.get('imageLinks', {}).get('thumbnail') if vol_info.get('imageLinks') else None # ...get the URL for the book cover thumbnail.
-        processed_details['release_date'] = vol_info.get('publishedDate')           # ...get the publication date.
-        processed_details['averageRating'] = vol_info.get('averageRating')          # ...get the average rating.
-        processed_details['ratingsCount'] = vol_info.get('ratingsCount')            # ...get the number of ratings.
-        processed_details['authors'] = ", ".join(vol_info.get('authors', []))       # ...get the authors.
-        processed_details['publisher'] = vol_info.get('publisher')                  # ...get the publisher.
-        processed_details['language'] = vol_info.get('language')                    # ...get the language.
-        processed_details['genres'] = ", ".join(vol_info.get('categories', []))     # ...get the categories (genres).
+    elif content_type == "Book":
+        vol_info = details.get('volumeInfo', {})
+        processed_details['title'] = vol_info.get('title')
+        processed_details['description'] = vol_info.get('description')
+        processed_details['image_url'] = vol_info.get('imageLinks', {}).get('thumbnail') if vol_info.get('imageLinks') else None
+        processed_details['release_date'] = vol_info.get('publishedDate')
+        processed_details['averageRating'] = vol_info.get('averageRating')
+        processed_details['ratingsCount'] = vol_info.get('ratingsCount')
+        processed_details['authors'] = ", ".join(vol_info.get('authors', []))
+        processed_details['publisher'] = vol_info.get('publisher')
+        processed_details['language'] = vol_info.get('language')
+        processed_details['genres'] = ", ".join(vol_info.get('categories', []))
 
     # Convert the processed dictionary to a single-row DataFrame
-    df_pred = pd.DataFrame([processed_details])                                     # Turns the dictionary of details into a data table with one row.
+    df_pred = pd.DataFrame([processed_details])
 
     # This section makes sure that the data table has all the columns the model was trained on.
     # If a column is missing, it adds it and fills it with a default value.
-    all_trained_cols = set(config.get('numerical_features', []) + config.get('categorical_features', []) + config.get('text_features', [])) # Gets a list of all feature columns.
-    if config.get('image_url'):                                                     # If the model uses an image URL...
-        all_trained_cols.add('image_url')                                           # ...add it to the list of columns.
+    all_trained_cols = set(config.get('numerical_features', []) + config.get('categorical_features', []) + config.get('text_features', []))
+    if config.get('image_url'):
+        all_trained_cols.add('image_url')
 
-    for col in all_trained_cols:                                                    # Loops through every column the model needs.
-        if col not in df_pred.columns:                                              # If the column is missing from our data table...
-            if col in config.get('numerical_features', []):                         # ...and it's supposed to be a number...
-                df_pred[col] = 0.0                                                  # ...add the column and fill it with 0.
-            else:                                                                   # ...otherwise (if it's text)...
-                df_pred[col] = "Unknown"                                            # ...add the column and fill with "Unknown".
+    for col in all_trained_cols:
+        if col not in df_pred.columns:
+            if col in config.get('numerical_features', []):
+                df_pred[col] = 0.0
+            else:
+                df_pred[col] = "Unknown"
 
     # Final cleanup for consistency
-    for col in config.get('numerical_features', []):                                # Loops through all the number columns.
-        df_pred[col] = pd.to_numeric(df_pred[col], errors='coerce').fillna(0.0)      # Ensures they are numbers and fills any empty spots with 0.
-    for col in list(set(config.get('categorical_features', []) + config.get('text_features', []))): # Loops through all the text columns.
-        df_pred[col] = df_pred[col].fillna("Unknown")                               # Fills any empty spots with "Unknown".
-    if 'image_url' in df_pred.columns:                                              # If there's an image URL column...
-        df_pred['image_url'] = df_pred['image_url'].fillna("")                      # ...fill any empty spots with an empty string.
+    for col in config.get('numerical_features', []):
+        df_pred[col] = pd.to_numeric(df_pred[col], errors='coerce').fillna(0.0)
+    for col in list(set(config.get('categorical_features', []) + config.get('text_features', []))):
+        df_pred[col] = df_pred[col].fillna("Unknown")
+    if 'image_url' in df_pred.columns:
+        df_pred['image_url'] = df_pred['image_url'].fillna("")
 
 
-    return df_pred                                                                  # Returns the prepared data table.
+    return df_pred
 
 def prepare_dataframe_for_unified_prediction(details: dict, content_type: str) -> pd.DataFrame:
     """
     Prepares a single content's details for the unified model.
     """
-    df = prepare_dataframe_for_prediction(details, content_type)                    # First, runs the standard preparation function.
-    df['content_type'] = content_type                                               # Adds a new column to specify the content type (e.g., 'Movie').
+    df = prepare_dataframe_for_prediction(details, content_type)
+    df['content_type'] = content_type
 
     # This section creates a new 'critic_rating_normalized' column.
     # It takes various rating scores (like Metacritic, IMDb) and puts them on a standard 1-10 scale.
-    if content_type == 'Game':                                                      # If it's a game...
-        df['critic_rating_normalized'] = df.get('metacritic', df.get('rating', 50)) / 10 # ...use Metacritic (0-100) or rating, scaled to 0-10.
-    elif content_type == 'Show':                                                    # If it's a show...
-        df['critic_rating_normalized'] = df.get('rating_avg', 5)                    # ...use the average rating (already 0-10).
-    elif content_type == 'Movie':                                                   # If it's a movie...
-        df['critic_rating_normalized'] = df.get('imdb_rating', df.get('metascore', 50) / 10) # ...use IMDb rating (0-10) or Metascore (0-100) scaled to 0-10.
-    elif content_type == 'Music':                                                   # If it's music...
-        df['critic_rating_normalized'] = df.get('my_rating', 50) / 10               # ...use 'my_rating' scaled to 0-10.
-    elif content_type == 'Book':                                                    # If it's a book...
-        df['critic_rating_normalized'] = df.get('averageRating', 2.5) * 2           # ...use the average rating (0-5) and multiply by 2 to scale it to 0-10.
+    df['critic_rating_normalized'] = _calculate_critic_rating_normalized(df, content_type)
+    if 'critic_rating_normalized' in df.columns:
+        df['critic_rating_normalized'] = df['critic_rating_normalized'].fillna(5.0)
+    else:
+        df['critic_rating_normalized'] = 5.0
 
-    if 'critic_rating_normalized' in df.columns:                                    # If the normalized rating column exists...
-        df['critic_rating_normalized'] = df['critic_rating_normalized'].fillna(5.0) # ...fill any empty spots with a neutral 5.0.
-    else:                                                                           # Otherwise...
-        df['critic_rating_normalized'] = 5.0                                        # ...create the column and set the value to 5.0.
+def _calculate_critic_rating_normalized(df: pd.DataFrame, content_type: str) -> pd.Series:
+    """Calculates a normalized critic rating based on content type."""
+    if content_type == 'Game':
+        return df.get('metacritic', df.get('rating', 50)) / 10
+    elif content_type == 'Show':
+        return df.get('rating_avg', 5)
+    elif content_type == 'Movie':
+        return df.get('imdb_rating', df.get('metascore', 50) / 10)
+    elif content_type == 'Music':
+        return df.get('my_rating', 50) / 10
+    elif content_type == 'Book':
+        return df.get('averageRating', 2.5) * 2
+    return pd.Series([5.0]) # Default if content_type not matched
 
     # Define the full set of features the unified model expects
-    unified_text_features = ['title', 'description', 'genres']                      # Defines the text features the unified model uses.
+    unified_text_features = ['title', 'description', 'genres']
     unified_categorical_features = [
         'content_type', 'language', 'status', 'show_type', 'network_country',
         'rated', 'director', 'writer', 'actors', 'awards', 'platform_from_text',
@@ -211,176 +214,203 @@ def prepare_dataframe_for_unified_prediction(details: dict, content_type: str) -
         'ratings_count', 'reviews_count', 'pageCount'
     ]
 
-    all_unified_cols = set(unified_text_features + unified_categorical_features + unified_numerical_features) # Combines all feature names into one set.
+    all_unified_cols = set(unified_text_features + unified_categorical_features + unified_numerical_features)
 
     # Ensure all expected columns are present, filling with defaults if necessary
-    for col in all_unified_cols:                                                    # Loops through every column the unified model needs.
-        if col not in df.columns:                                                   # If a column is missing...
-            if col in unified_numerical_features:                                   # ...and it should be a number...
-                df[col] = 0.0                                                       # ...add it and fill with 0.
-            else:                                                                   # ...otherwise (if it's text)...
-                df[col] = "Unknown"                                                 # ...add it and fill with "Unknown".
+    for col in all_unified_cols:
+        if col not in df.columns:
+            if col in unified_numerical_features:
+                df[col] = 0.0
+            else:
+                df[col] = "Unknown"
 
     # Final cleanup for consistency
-    for col in unified_numerical_features:                                          # Loops through all numerical columns.
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)                # Makes sure they are numbers, filling errors/missing values with 0.
-    for col in unified_text_features + unified_categorical_features:                # Loops through all text and category columns.
-        if col in df.columns:                                                       # If the column exists...
-            df[col] = df[col].fillna("Unknown")                                     # ...fill any missing values with "Unknown".
+    for col in unified_numerical_features:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+    for col in unified_text_features + unified_categorical_features:
+        if col in df.columns:
+            df[col] = df[col].fillna("Unknown")
 
-    return df                                                                       # Returns the prepared data table.
+    return df
 
-def get_user_input():                                                               # Defines a function to get input from the user in the terminal.
+def get_user_input():
     """Gets content type and search query from the user."""
-    content_type_options = list(CONTENT_COLUMN_MAPPING.keys())                      # Gets the list of available content types (Movie, Game, etc.).
-    print("\n\n--- New Prediction ---")                                              # Prints a header for the user.
-    print("1️⃣ Select a Content Type:")                                               # Asks the user to make a selection.
+    content_type_options = list(CONTENT_COLUMN_MAPPING.keys())
+    print("\n\n--- New Prediction ---")
+    print("1️⃣ Select a Content Type:")
     for i, option in enumerate(content_type_options):
-        print(f"   {i + 1}. {option}")                                                # Prints each one as a numbered option.
+        print(f"   {i + 1}. {option}")
 
     while True:
         try:
-            choice_input = input("Enter the number of your choice: ")               # Asks the user to enter a number.
-            if not choice_input: continue                                           # If the user just presses Enter, ask again.
-            choice = int(choice_input) - 1                                          # Converts the user's text input to a number and subtracts 1 (because lists start at 0).
+            choice_input = input("Enter the number of your choice: ")
+            if not choice_input:
+                continue
+            choice = int(choice_input) - 1
             if 0 <= choice < len(content_type_options):
-                selected_content_type = content_type_options[choice]                # Gets the selected content type from the list.
-                break                                                               # Exits the loop because we have a valid choice.
+                selected_content_type = content_type_options[choice]
+                break
             else:
-                print("Invalid choice. Please select a number from the list.")      # ...print an error message.
+                print("Invalid choice. Please select a number from the list.")
         except ValueError:
-            print("Invalid input. Please enter a number.")                          # ...print an error message.
+            print("Invalid input. Please enter a number.")
 
-    search_query = input(f"\n2️⃣ Enter the name of the {selected_content_type.lower()} to search for: ") # Asks the user to type what they want to search for.
-    return selected_content_type, search_query                                      # Returns the chosen content type and the search text.
+    search_query = input(f"\n2️⃣ Enter the name of the {selected_content_type.lower()} to search for: ")
+    return selected_content_type, search_query
 
 def select_content_from_results(found_content, content_type):
     """Displays search results and prompts the user to select one."""
-    print("\n3️⃣ Select the correct item from the search results:")                  # Prints a header for the user.
-    content_id_map = {}                                                             # Creates a dictionary to link the menu number to the item's ID.
+    print("\n3️⃣ Select the correct item from the search results:")
+    content_id_map = {}
 
     for i, item in enumerate(found_content):
-        display_text = "Unknown Content"                                            # Sets a default display text.
-        item_id = None                                                              # Sets a default item ID.
+        item_id, display_text = _format_content_display(item, content_type)
 
-        # This section formats the display text differently for each content type.
-        if content_type == "Game":                                                  # If it's a game...
-            item_id = item.get('id')                                                # ...get the game's ID.
-            year = item.get('released', 'N/A').split('-')[0] if item.get('released') else 'N/A' # ...get the release year.
-            display_text = f"{item.get('name', 'N/A')} ({year})"                    # ...format it as "Name (Year)".
-        elif content_type == "Show":                                                # If it's a show...
-            item_id = item.get('id')                                                # ...get the show's ID.
-            year = item.get('premiered', 'N/A').split('-')[0] if item.get('premiered') else 'N/A' # ...get the premiere year.
-            display_text = f"{item.get('name', 'N/A')} ({year})"                    # ...format it as "Name (Year)".
-        elif content_type == "Movie":                                               # If it's a movie...
-            item_id = item.get('imdbID')                                            # ...get the movie's IMDb ID.
-            display_text = f"{item.get('Title', 'N/A')} ({item.get('Year', 'N/A')})" # ...format it as "Title (Year)".
-        elif content_type == "Music":                                               # If it's music...
-            item_id = item.get('id')                                                # ...get the track's ID.
-            artists = ", ".join([a['name'] for a in item.get('artists', [])])       # ...get the artist names.
-            album = item.get('album',{}).get('name','N/A')                          # ...get the album name.
-            year = item.get('album',{}).get('release_date','N/A').split('-')[0] if item.get('album',{}).get('release_date') else 'N/A' # ...get the release year.
-            display_text = f"{item.get('name','N/A')} - {artists} (Album: {album}, {year})" # ...format it with all the details.
-        elif content_type == "Book":                                                # If it's a book...
-            item_id = item.get('id')                                                # ...get the book's ID.
-            vol = item.get('volumeInfo',{})                                         # ...get the volume info.
-            authors = ", ".join(vol.get('authors',[]))                              # ...get the author names.
-            year = vol.get('publishedDate','N/A').split('-')[0] if vol.get('publishedDate') else 'N/A' # ...get the publication year.
-            display_text = f"{vol.get('title','N/A')} by {authors} ({year})"        # ...format it as "Title by Authors (Year)".
+        if item_id:
+            display_text_with_num = f"   {i + 1}. {display_text}"
+            print(display_text_with_num)
+            content_id_map[i + 1] = (item_id, display_text)
 
-        if item_id:                                                                 # If we successfully got an ID for the item...
-            display_text_with_num = f"   {i + 1}. {display_text}"                    # ...create the numbered menu item text.
-            print(display_text_with_num)                                            # ...print it for the user.
-            content_id_map[i + 1] = (item_id, display_text)                         # ...store the ID and display text in our map, using the menu number as the key.
-
-    if not content_id_map:                                                          # If the map is empty (no results found)...
-        print("No valid results found to select.")                                  # ...tell the user.
-        return None, None                                                           # ...and return nothing.
+    if not content_id_map:
+        print("No valid results found to select.")
+        return None, None
 
     while True:
         try:
-            choice_input = input("\nEnter the number of the content you want to predict: ") # Asks the user to pick a number.
-            if not choice_input: continue                                           # If they press Enter, ask again.
-            choice = int(choice_input)                                              # Convert the input to a number.
+            choice_input = input("\nEnter the number of the content you want to predict: ")
+            if not choice_input:
+                continue
+            choice = int(choice_input)
             if choice in content_id_map:
-                return content_id_map[choice]                                       # ...return the ID and display text for that choice.
+                return content_id_map[choice]
             else:
-                print("Invalid choice. Please try again.")                          # ...show an error.
+                print("Invalid choice. Please try again.")
         except ValueError:
-            print("Invalid input. Please enter a number.")                          # ...show an error.
+            print("Invalid input. Please enter a number.")
 
-def main():                                                                         # The main function where the program's execution starts.
+def _format_content_display(item: dict, content_type: str):
+    """Helper to format content display text based on content type."""
+    display_text = "Unknown Content"
+    item_id = None
+
+    if content_type == "Game":
+        item_id = item.get('id')
+        year = item.get('released', 'N/A').split('-')[0] if item.get('released') else 'N/A'
+        display_text = f"{item.get('name', 'N/A')} ({year})"
+    elif content_type == "Show":
+        item_id = item.get('id')
+        year = item.get('premiered', 'N/A').split('-')[0] if item.get('premiered') else 'N/A'
+        display_text = f"{item.get('name', 'N/A')} ({year})"
+    elif content_type == "Movie":
+        item_id = item.get('imdbID')
+        display_text = f"{item.get('Title', 'N/A')} ({item.get('Year', 'N/A')})"
+    elif content_type == "Music":
+        item_id = item.get('id')
+        artists = ", ".join([a['name'] for a in item.get('artists', [])])
+        album = item.get('album', {}).get('name', 'N/A')
+        year = item.get('album', {}).get('release_date', 'N/A').split('-')[0] if item.get('album', {}).get('release_date') else 'N/A'
+        display_text = f"{item.get('name', 'N/A')} - {artists} (Album: {album}, {year})"
+    elif content_type == "Book":
+        item_id = item.get('id')
+        vol = item.get('volumeInfo', {})
+        authors = ", ".join(vol.get('authors', []))
+        year = vol.get('publishedDate', 'N/A').split('-')[0] if vol.get('publishedDate') else 'N/A'
+        display_text = f"{vol.get('title', 'N/A')} by {authors} ({year})"
+    return item_id, display_text
+
+def main():
     """Main function to run the terminal-based predictor."""
-    print("--- Universal Content Rating Predictor ---")                              # Prints a welcome message.
-    print("(Press Ctrl+C at any time to exit)")                                     # Gives the user instructions on how to exit.
+    print("--- Universal Content Rating Predictor ---")
+    print("(Press Ctrl+C at any time to exit)")
 
-    unified_reg_model, unified_cls_model, unified_preprocessor = load_unified_models() # Loads the unified models at the start.
+    unified_reg_model, unified_cls_model, unified_preprocessor = load_unified_models()
 
     while True:
         try:
-            selected_content_type, search_query = get_user_input()                  # Gets the content type and search query from the user.
+            selected_content_type, search_query = get_user_input()
 
-            xgb_model, feature_extractor = load_model_and_extractor(selected_content_type) # Loads the specific model for the chosen content type.
+            xgb_model, feature_extractor = load_model_and_extractor(selected_content_type)
             if not xgb_model or not feature_extractor:
-                continue                                                            # ...skip the rest of this loop and start over.
+                continue
 
-            print(f"\nSearching for '{search_query}'...")                           # Tells the user it's searching.
-            found_content = search_content(selected_content_type, search_query)     # Performs the search using the function from utils.py.
+            print(f"\nSearching for '{search_query}'...")
+            found_content = search_content(selected_content_type, search_query)
 
             if not found_content:
-                print(f"No {selected_content_type.lower()} found for your search.") # ...tell the user.
-                continue                                                            # ...and start the loop over.
+                print(f"No {selected_content_type.lower()} found for your search.")
+                continue
 
-            selected_content_id, selected_content_name = select_content_from_results(found_content, selected_content_type) # Shows the results and asks the user to pick one.
+            selected_content_id, selected_content_name = select_content_from_results(found_content, selected_content_type)
             if not selected_content_id:
-                continue                                                            # ...start the loop over.
+                continue
 
-            print(f"\nFetching details for '{selected_content_name}'...")           # Tells the user it's getting details.
-            details = get_content_details(selected_content_type, selected_content_id) # Gets the detailed information for the selected item.
+            print(f"\nFetching details for '{selected_content_name}'...")
+            details = get_content_details(selected_content_type, selected_content_id)
             if not details:
-                print("Could not fetch details for the selected content.")          # ...tell the user.
-                continue                                                            # ...and start the loop over.
+                print("Could not fetch details for the selected content.")
+                continue
 
-            # Content-specific prediction
-            df_pred = prepare_dataframe_for_prediction(details, selected_content_type) # Prepares the detailed data for the specific model.
-            print("⚙️  Running content-specific prediction...")                      # Prints a status message.
-            if not df_pred.empty:
-                combined_features = feature_extractor.transform(df_pred)            # ...use the feature extractor to turn the data into numbers.
-                features_for_xgb = combined_features                                # ...assigns the features to a new variable.
-                predicted_rating = xgb_model.predict(features_for_xgb)[0]           # ...use the specific model to predict a rating. The [0] gets the single number from the result.
-                predicted_rating = max(1.0, min(5.0, predicted_rating))             # ...make sure the rating is between 1.0 and 5.0.
-            else:
-                predicted_rating = 0.0                                              # ...set the prediction to 0.0.
-
-            # Unified model prediction
-            if unified_reg_model and unified_cls_model and unified_preprocessor:
-                df_unified_pred = prepare_dataframe_for_unified_prediction(details, selected_content_type) # Prepares the data for the unified model.
-                print("⚙️  Running unified model prediction...")                     # Prints a status message.
-                if not df_unified_pred.empty:
-                    unified_predicted_rating = unified_reg_model.predict(df_unified_pred)[0] # ...predict a rating with the unified regression model.
-                    unified_predicted_rating = max(1.0, min(5.0, unified_predicted_rating)) # ...make sure the rating is between 1.0 and 5.0.
-                    unified_predicted_sentiment = unified_cls_model.predict(df_unified_pred)[0] # ...predict a sentiment (e.g., 'like it') with the classification model.
-                else:
-                    unified_predicted_rating = 0.0                                  # ...set the rating to 0.0.
-                    unified_predicted_sentiment = "Unknown"                         # ...set the sentiment to "Unknown".
-
-            print("\n" + "=" * 35)                                                    # Prints a separator line.
-            print("        ⭐ PREDICTION RESULT ⭐")                                  # Prints the header for the results.
-            print("=" * 35)                                                           # Prints another separator line.
-            print(f"  Content: {selected_content_name}")                            # Prints the name of the content.
-            print(f"  Predicted Rating (Specific): {predicted_rating:.2f} / 5.0")   # Prints the prediction from the content-specific model, formatted to 2 decimal places.
-            if unified_reg_model and unified_cls_model:
-                print(f"  Predicted Rating (Unified): {unified_predicted_rating:.2f} / 5.0") # ...print the prediction from the unified model.
-                print(f"  Predicted Sentiment (Unified): {unified_predicted_sentiment}") # ...print the predicted sentiment.
-            print("=" * 35)                                                           # Prints a final separator line.
+            _run_and_display_predictions(
+                details,
+                selected_content_type,
+                selected_content_name,
+                xgb_model,
+                feature_extractor,
+                unified_reg_model,
+                unified_cls_model,
+                unified_preprocessor
+            )
 
         except KeyboardInterrupt:
-            print("\nExiting predictor. Goodbye! 👋")                               # ...print a goodbye message.
-            break                                                                   # ...and exit the main loop, ending the program.
+            print("\nExiting predictor. Goodbye! 👋")
+            break
         except Exception as e:
-            print(f"An unexpected error occurred: {e}")                             # ...print a generic error message.
-            traceback.print_exc()                                                   # ...print the full technical error details.
-            continue                                                                # ...and continue to the next iteration of the loop.
+            print(f"An unexpected error occurred: {e}")
+            traceback.print_exc()
+            continue
+
+def _run_and_display_predictions(
+    details: dict,
+    selected_content_type: str,
+    selected_content_name: str,
+    xgb_model,
+    feature_extractor,
+    unified_reg_model,
+    unified_cls_model,
+    unified_preprocessor
+):
+    """Runs content-specific and unified predictions and displays the results."""
+    # Content-specific prediction
+    df_pred = prepare_dataframe_for_prediction(details, selected_content_type)
+    print("⚙️  Running content-specific prediction...")
+    if not df_pred.empty:
+        combined_features = feature_extractor.transform(df_pred)
+        features_for_xgb = combined_features
+        predicted_rating = xgb_model.predict(features_for_xgb)[0]
+        predicted_rating = max(1.0, min(5.0, predicted_rating))
+    else:
+        predicted_rating = 0.0
+
+    # Unified model prediction
+    unified_predicted_rating = 0.0
+    unified_predicted_sentiment = "Unknown"
+    if unified_reg_model and unified_cls_model and unified_preprocessor:
+        df_unified_pred = prepare_dataframe_for_unified_prediction(details, selected_content_type)
+        print("⚙️  Running unified model prediction...")
+        if not df_unified_pred.empty:
+            unified_predicted_rating = unified_reg_model.predict(unified_preprocessor.transform(df_unified_pred))[0]
+            unified_predicted_rating = max(1.0, min(5.0, unified_predicted_rating))
+            unified_predicted_sentiment = unified_cls_model.predict(unified_preprocessor.transform(df_unified_pred))[0]
+
+    print("\n" + "=" * 35)
+    print("        ⭐ PREDICTION RESULT ⭐")
+    print("=" * 35)
+    print(f"  Content: {selected_content_name}")
+    print(f"  Predicted Rating (Specific): {predicted_rating:.2f} / 5.0")
+    if unified_reg_model and unified_cls_model:
+        print(f"  Predicted Rating (Unified): {unified_predicted_rating:.2f} / 5.0")
+        print(f"  Predicted Sentiment (Unified): {unified_predicted_sentiment}")
+    print("=" * 35)
 
 if __name__ == "__main__":
     main()

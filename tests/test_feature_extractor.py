@@ -5,11 +5,11 @@ import numpy as np
 import torch
 import os
 import sys
+from src.feature_extractor import FeatureExtractor
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.feature_extractor import FeatureExtractor
 
 # --- Fixtures ---
 

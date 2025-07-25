@@ -126,10 +126,29 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
         print(f"Error: Content type '{content_type}' is not supported.")            # If not, prints an error.
         return pd.DataFrame()                                                       # Returns an empty data table.
 
-    config: Dict[str, Any] = CONTENT_COLUMN_MAPPING[content_type]                                   # Gets the configuration for the requested content type.
-    all_dfs = []                                                                    # Creates an empty list to hold the data from each CSV file.
+    config: Dict[str, Any] = CONTENT_COLUMN_MAPPING[content_type]
+    df = _load_csv_files(config, content_type)
+    if df.empty:
+        return pd.DataFrame()
 
-    # Load CSV files
+    # --- Data Cleaning and Preprocessing ---
+    df, rename_mapping = _rename_columns(df, config)
+    df = _clean_runtime_column(df, content_type)
+    df = _process_release_date(df, content_type)
+    df = _impute_numerical_features(df, config, rename_mapping)
+    df = _impute_text_categorical_features(df, config, rename_mapping)
+    df = _recoerce_and_impute_numerical(df, config, rename_mapping)
+    df = _derive_my_rating_and_like_dislike(df, content_type, config)
+
+    print(f"\nDataFrame info after cleaning for {content_type}:")
+    df.info()
+    print(f"\nDataFrame head after cleaning for {content_type}:")
+    print(df.head())
+
+    return df
+
+def _load_csv_files(config: Dict[str, Any], content_type: str) -> pd.DataFrame:
+    all_dfs = []
     for filepath in config["csv_paths"]:
         try:
             df_part = pd.read_csv(filepath)
@@ -149,11 +168,9 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
     df.info()
     print(f"\nInitial DataFrame head for {content_type}:")
     print(df.head())
+    return df
 
-    # --- Data Cleaning and Preprocessing ---
-
-    # This section renames the columns from their original names in the CSV files
-    # to the standard, generic names we use throughout the program (e.g., 'name' becomes 'title').
+def _rename_columns(df: pd.DataFrame, config: Dict[str, Any]) -> tuple[pd.DataFrame, Dict[str, str]]:
     rename_mapping = {}
     for generic_col, original_col_val in config.items():
         if isinstance(original_col_val, str) and original_col_val in df.columns:
@@ -165,14 +182,15 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
 
     df = df.rename(columns=rename_mapping).copy()
     print(f"Columns renamed: {rename_mapping}")
+    return df, rename_mapping
 
-    # --- Custom Cleaning for Specific Columns ---
+def _clean_runtime_column(df: pd.DataFrame, content_type: str) -> pd.DataFrame:
     if 'runtime' in df.columns and content_type == 'Movie':
         df['runtime'] = cast(Series[str], df['runtime']).str.extract(r'(\d+)').astype(float)
         print("Cleaned 'runtime' column for Movie data.")
+    return df
 
-
-    # This section handles dates, converting them from text into a proper date format.
+def _process_release_date(df: pd.DataFrame, content_type: str) -> pd.DataFrame:
     if "release_date" in df.columns:
         if content_type == "Show":
             df["release_date"] = pd.to_datetime(df["release_date"], errors='coerce', dayfirst=True)
@@ -182,9 +200,10 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
             df["release_date"] = pd.to_datetime(df["release_date"], errors='coerce')
 
         df['release_year'] = df["release_date"].dt.year
-        print(f"Converted 'release_date' to datetime and extracted 'release_year'.")
+        print("Converted 'release_date' to datetime and extracted 'release_year'.")
+    return df
 
-    # This section fills in missing values (empty cells) in the numerical columns.
+def _impute_numerical_features(df: pd.DataFrame, config: Dict[str, Any], rename_mapping: Dict[str, str]) -> pd.DataFrame:
     for col_original in config["numerical_features"]:
         col_in_df = rename_mapping.get(col_original, col_original)
         if col_in_df in df.columns:
@@ -202,8 +221,9 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
                     print(f"Imputed missing values in '{col_in_df}' (from original '{col_original}') with constant: {config['fill_na_numerical_strategy']}")
                 else:
                     print(f"Warning: No imputation strategy defined for numerical column '{col_in_df}'. Leaving NaNs.")
+    return df
 
-    # This section fills in missing values for all text and categorical columns.
+def _impute_text_categorical_features(df: pd.DataFrame, config: Dict[str, Any], rename_mapping: Dict[str, str]) -> pd.DataFrame:
     all_source_text_and_categorical_cols = list(set(config["text_features"] + config["categorical_features"])) # Gets a list of all text-based columns.
     for col_original in all_source_text_and_categorical_cols:
         col_in_df = rename_mapping.get(col_original, col_original)
@@ -213,8 +233,9 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
                 df[col_in_df] = df[col_in_df].replace('', config["fill_na_categorical_strategy"])
                 df[col_in_df] = df[col_in_df].fillna(config["fill_na_categorical_strategy"])
             print(f"Filled missing values in '{col_in_df}' (from original '{col_original}') with '{config['fill_na_categorical_strategy']}'.")
+    return df
 
-    # This section does a final check to make sure all numerical columns are actually numbers.
+def _recoerce_and_impute_numerical(df: pd.DataFrame, config: Dict[str, Any], rename_mapping: Dict[str, str]) -> pd.DataFrame:
     for col_original in config["numerical_features"]:
         col_in_df = rename_mapping.get(col_original, col_original)
         if col_in_df in df.columns:
@@ -229,13 +250,11 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
                 elif isinstance(config["fill_na_numerical_strategy"], (int, float)):
                     df[col_in_df] = df[col_in_df].fillna(config["fill_na_numerical_strategy"])
                 print(f"Re-imputed '{col_in_df}' after numeric coercion errors.")
+    return df
 
-
-    # This section creates our target variable, 'my_rating', which is what the model will learn to predict.
-    # For Music, it's derived from 'Popularity'. For others, it's taken directly.
+def _derive_my_rating_and_like_dislike(df: pd.DataFrame, content_type: str, config: Dict[str, Any]) -> pd.DataFrame:
     if content_type == "Music":
         if "Popularity" in df.columns:
-            # This formula scales the Popularity score (0-100) to our desired rating scale (1-5).
             min_popularity = 0
             max_popularity = 100
             new_min_rating = 1
@@ -254,19 +273,10 @@ def load_content_data(content_type: str) -> pd.DataFrame:                       
         if len(df) < original_rows:
             print(f"Dropped {original_rows - len(df)} rows due to missing 'my_rating'.")
 
-        # This creates a second target variable, 'like_dislike', for classification.
         my_rating_threshold = config.get("my_rating_threshold", 4.0)
         df['like_dislike'] = (df["my_rating"] >= my_rating_threshold).astype(int)
         print(f"Created 'like_dislike' target based on 'my_rating' >= {my_rating_threshold}.")
 
     else:
-        # This warning is shown if, after all processing, there's no 'my_rating' column to use for training.
-        print("Warning: Generic target column 'my_rating' not found in DataFrame for {content_type}. 'like_dislike' will not be created. Please check CONTENT_COLUMN_MAPPING and input CSVs for 'my_rating_source_col'.")
-
-
-    print(f"\nDataFrame info after cleaning for {content_type}:")
-    df.info()
-    print(f"\nDataFrame head after cleaning for {content_type}:")
-    print(df.head())
-
+        print(f"Warning: Generic target column 'my_rating' not found in DataFrame for {content_type}. 'like_dislike' will not be created. Please check CONTENT_COLUMN_MAPPING and input CSVs for 'my_rating_source_col'.")
     return df
