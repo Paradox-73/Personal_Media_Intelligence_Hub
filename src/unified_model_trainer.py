@@ -12,8 +12,6 @@ from src.data_loader import load_content_data, CONTENT_COLUMN_MAPPING           
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))) # Adds the project's main folder to Python's search path.
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))) # Adds the project's main folder to Python's search path.
-
 def get_unified_feature_config():                                                   # Defines a function to get the configuration for features used by the unified model.
     # Define a unified set of features to be used across all content types
     # These are the "generic" column names after mapping in data_loader

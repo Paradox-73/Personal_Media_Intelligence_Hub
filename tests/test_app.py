@@ -17,9 +17,13 @@ from src.app import (
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-
+# Module-level patch for builtins.input to prevent tests from hanging
+# Provides default inputs for any unmocked input() calls
+@patch('builtins.input', side_effect=['1', 'test_query', '1'])
+# Module-level patch for builtins.input to prevent tests from hanging
+# Provides default inputs for any unmocked input() calls
+@patch('builtins.input', side_effect=['1', 'test_query', '1'])
 # --- Fixtures ---
-
 @pytest.fixture
 def mock_details():
     """Provides a sample details dictionary for a movie."""

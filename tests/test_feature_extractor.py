@@ -6,6 +6,7 @@ import torch
 import os
 import sys
 from src.feature_extractor import FeatureExtractor
+from src.data_loader import CONTENT_COLUMN_MAPPING
 
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -100,35 +101,134 @@ def test_extract_image_features(mock_auto_model, mock_image_processor, mock_down
     assert embeddings.shape[1] > 0
     assert mock_download.call_count == 2  # Called for the two valid URLs
 
-# --- Tests for Fit and Transform ---
+# --- New tests for Fit method components ---
 
-@patch('src.feature_extractor.FeatureExtractor._load_transformer_models')
+# Helper to configure _load_transformer_models mock
+def configure_load_transformer_models_mock(mock_load_models_func, fe_instance):
+    """Configures the mock for _load_transformer_models to set required attributes."""
+    def side_effect_func():
+        fe_instance.text_model = MagicMock()
+        fe_instance.image_processor = MagicMock()
+        fe_instance.image_model = MagicMock()
+        # Mocking config.hidden_size for image model
+        fe_instance.image_model.config.hidden_size = 128
+    mock_load_models_func.side_effect = side_effect_func
+
+@patch('src.feature_extractor.ColumnTransformer')
 @patch('src.feature_extractor.StandardScaler')
 @patch('src.feature_extractor.OneHotEncoder')
-@patch('src.feature_extractor.PCA')
-def test_fit(mock_pca, mock_one_hot_encoder, mock_standard_scaler, mock_load_models, feature_extractor, sample_data):
+@patch.object(FeatureExtractor, '_load_transformer_models')
+def test_fit_column_transformer(mock_load_models, mock_one_hot_encoder, mock_standard_scaler, mock_column_transformer, feature_extractor, sample_data):
     """
-    Tests the fit method to ensure all components are fitted correctly.
+    Tests that ColumnTransformer is initialized and fitted correctly.
     """
-    # Mock the content column mapping
-    with patch('src.feature_extractor.CONTENT_COLUMN_MAPPING', {
+    mock_ct_instance = MagicMock()
+    mock_column_transformer.return_value = mock_ct_instance
+
+    # Configure the mock _load_transformer_models for this test
+    configure_load_transformer_models_mock(mock_load_models, feature_extractor)
+
+    # Ensure CONTENT_COLUMN_MAPPING is temporarily set for the test
+    with patch.dict(CONTENT_COLUMN_MAPPING, {
         'test_content': {
             'numerical_features': ['num_col'],
             'categorical_features': ['cat_col'],
-            'text_features': ['text_col'],
-            'image_url': 'image_url'
+            'text_features': [],
+            'image_url': None # Ensure image_url is None for this test to avoid image feature extraction
         }
-    }):
+    }, clear=True):
         feature_extractor.fit(sample_data, 'test_content')
 
-    mock_standard_scaler.return_value.fit_transform.return_value = np.array([[1.0], [2.0], [3.0]])
-    mock_one_hot_encoder.return_value.fit_transform.return_value = np.array([[1, 0], [0, 1], [1, 0]])
-    assert feature_extractor.column_transformer is not None
+    mock_column_transformer.assert_called_once()
+    mock_ct_instance.fit.assert_called_once_with(sample_data)
+    assert feature_extractor.column_transformer is mock_ct_instance
+    mock_load_models.assert_called_once() # Verify that _load_transformer_models was called
 
-    # Check if PCA was called for text and image features
-    assert mock_pca.call_count == 2
-    assert feature_extractor.text_pca is not None
-    assert feature_extractor.image_pca is not None
+@patch.object(FeatureExtractor, '_load_transformer_models')
+@patch.object(FeatureExtractor, 'extract_text_features')
+@patch('src.feature_extractor.PCA')
+def test_fit_text_pca(mock_pca, mock_extract_text_features, mock_load_models, feature_extractor, sample_data):
+    """
+    Tests that PCA is initialized and fitted for text features.
+    """
+    mock_text_pca_instance = MagicMock()
+    mock_pca.return_value = mock_text_pca_instance
+    mock_extract_text_features.return_value = torch.randn(len(sample_data), 100) # Mock text embeddings
+
+    # Configure the mock _load_transformer_models for this test
+    configure_load_transformer_models_mock(mock_load_models, feature_extractor)
+
+    # Create sample_data WITHOUT an 'image_url' column for this test
+    text_only_sample_data = pd.DataFrame({
+        'text_col': sample_data['text_col'],
+        'num_col': sample_data['num_col'],
+        'cat_col': sample_data['cat_col']
+    })
+
+    with patch.dict(CONTENT_COLUMN_MAPPING, {
+        'test_content': {
+            'numerical_features': [],
+            'categorical_features': [],
+            'text_features': ['text_col'],
+            'image_url': None # Explicitly None for this test's mapping
+        }
+    }, clear=True):
+        feature_extractor.fit(text_only_sample_data, 'test_content')
+
+    mock_extract_text_features.assert_called_once()
+    # Adjust expected n_components based on sample_data (3 samples) and mock_extract_text_features (100 features)
+    # max_components = min(3 - 1, 100) = min(2, 100) = 2
+    # n_components = min(50, 2) = 2
+    mock_pca.assert_called_once_with(n_components=2)
+    mock_text_pca_instance.fit.assert_called_once()
+    assert feature_extractor.text_pca is mock_text_pca_instance
+    mock_load_models.assert_called_once() # Verify that _load_transformer_models was called
+
+
+@patch.object(FeatureExtractor, '_load_transformer_models')
+@patch.object(FeatureExtractor, 'extract_image_features')
+@patch('src.feature_extractor.PCA')
+def test_fit_image_pca(mock_pca, mock_extract_image_features, mock_load_models, feature_extractor, sample_data):
+    """
+    Tests that PCA is initialized and fitted for image features.
+    """
+    mock_image_pca_instance = MagicMock()
+    mock_pca.return_value = mock_image_pca_instance
+    mock_extract_image_features.return_value = torch.randn(len(sample_data), 200) # Mock image embeddings
+
+    # Configure the mock _load_transformer_models for this test
+    configure_load_transformer_models_mock(mock_load_models, feature_extractor)
+
+    # Create sample_data WITHOUT a 'text_col' (or with empty text_features in mapping)
+    # and ensuring 'image_url' is present for this test.
+    image_only_sample_data = pd.DataFrame({
+        'text_col': [''] * len(sample_data), # Empty text to prevent text PCA
+        'image_url': sample_data['image_url'],
+        'num_col': sample_data['num_col'],
+        'cat_col': sample_data['cat_col']
+    })
+
+
+    with patch.dict(CONTENT_COLUMN_MAPPING, {
+        'test_content': {
+            'numerical_features': [],
+            'categorical_features': [],
+            'text_features': [], # Explicitly empty text_features
+            'image_url': 'image_url'
+        }
+    }, clear=True):
+        feature_extractor.fit(image_only_sample_data, 'test_content')
+
+    mock_extract_image_features.assert_called_once()
+    # Adjust expected n_components based on sample_data (3 samples) and mock_extract_image_features (200 features)
+    # max_components = min(3 - 1, 200) = min(2, 200) = 2
+    # n_components = min(50, 2) = 2
+    mock_pca.assert_called_once_with(n_components=2)
+    mock_image_pca_instance.fit.assert_called_once()
+    assert feature_extractor.image_pca is mock_image_pca_instance
+    mock_load_models.assert_called_once() # Verify that _load_transformer_models was called
+
+# --- Tests for Transform ---
 
 @patch('src.feature_extractor.FeatureExtractor.extract_text_features')
 @patch('src.feature_extractor.FeatureExtractor.extract_image_features')

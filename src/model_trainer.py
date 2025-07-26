@@ -8,6 +8,8 @@ import torch
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score  # type: ignore
 from sklearn.model_selection import train_test_split  # type: ignore
 from xgboost import XGBRegressor
+from xgboost.plotting import plot_importance
+import matplotlib.pyplot as plt  # type: ignore
 
 from src.data_loader import load_content_data, CONTENT_COLUMN_MAPPING
 from src.feature_extractor import FeatureExtractor
@@ -52,8 +54,7 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):    
 
     # 1. Load Data
     df = load_content_data(content_type)                                            # Loads and preprocesses the data for the specified content type.
-    print(f"\nShow rating distribution:\n{df['my_rating'].value_counts()}")       # Prints how many times each rating appears in the data.
-    print(f"Show like/dislike distribution:\n{df['like_dislike'].value_counts()}") # Prints how many items are liked vs. disliked.
+
     if df.empty:                                                                    # Checks if the data loading failed.
         print(f"Data loading failed for {content_type}. Exiting training.")        # If so, prints an error.
         return                                                                      # And stops the training process.
@@ -68,6 +69,9 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):    
     if len(df) < 2:                                                                 # Checks if there are at least 2 rows of data (needed for splitting).
         print(f"Not enough data for {content_type} after cleaning ({len(df)} samples). Skipping training.") # If not, prints a message.
         return                                                                      # And stops training.
+
+    print(f"\nShow rating distribution:\n{df['my_rating'].value_counts()}")       # Prints how many times each rating appears in the data.
+    print(f"Show like/dislike distribution:\n{df['like_dislike'].value_counts()}") # Prints how many items are liked vs. disliked.
 
 
     # Define features and target
@@ -170,10 +174,6 @@ def train_model(content_type: str, data_base_dir: str, model_base_dir: str):    
 
     joblib.dump(xgb_model, os.path.join(model_dir, f'xgboost_model_{content_type.lower()}.pkl')) # Saves the trained XGBoost model to a file.
     feature_extractor.save(os.path.join(model_dir, 'feature_extractor'))            # Saves the fitted FeatureExtractor to a directory.
-
-    # 9. Save Diagnostics
-    import matplotlib.pyplot as plt                                                 # Imports matplotlib for plotting.
-    from xgboost import plot_importance                                             # Imports a function from XGBoost to plot feature importance.
 
     fig, ax = plt.subplots(figsize=(10, 8))                                         # Creates a new plot figure and axes.
     plot_importance(xgb_model, ax=ax, max_num_features=20, title=f'Feature Importance for {content_type}') # Plots the importance of each feature in the model.
