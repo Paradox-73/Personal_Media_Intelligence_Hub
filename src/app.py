@@ -5,6 +5,7 @@ import traceback
 
 import joblib  # type: ignore
 import pandas as pd
+from typing import Any
 
 # This block of code checks if the script is being run directly.
 # If so, it adds the project's main folder to the list of places Python looks for files.
@@ -187,20 +188,6 @@ def prepare_dataframe_for_unified_prediction(details: dict, content_type: str) -
     else:
         df['critic_rating_normalized'] = 5.0
 
-def _calculate_critic_rating_normalized(df: pd.DataFrame, content_type: str) -> pd.Series:
-    """Calculates a normalized critic rating based on content type."""
-    if content_type == 'Game':
-        return df.get('metacritic', df.get('rating', 50)) / 10
-    elif content_type == 'Show':
-        return df.get('rating_avg', 5)
-    elif content_type == 'Movie':
-        return df.get('imdb_rating', df.get('metascore', 50) / 10)
-    elif content_type == 'Music':
-        return df.get('my_rating', 50) / 10
-    elif content_type == 'Book':
-        return df.get('averageRating', 2.5) * 2
-    return pd.Series([5.0]) # Default if content_type not matched
-
     # Define the full set of features the unified model expects
     unified_text_features = ['title', 'description', 'genres']
     unified_categorical_features = [
@@ -232,6 +219,20 @@ def _calculate_critic_rating_normalized(df: pd.DataFrame, content_type: str) -> 
             df[col] = df[col].fillna("Unknown")
 
     return df
+
+def _calculate_critic_rating_normalized(df: pd.DataFrame, content_type: str) -> "pd.Series[Any]":
+    """Calculates a normalized critic rating based on content type."""
+    if content_type == 'Game':
+        return df.get('metacritic', pd.Series([50])) / 10
+    elif content_type == 'Show':
+        return df.get('rating_avg', pd.Series([5]))
+    elif content_type == 'Movie':
+        return df.get('imdb_rating', df.get('metascore', pd.Series([50])) / 10)
+    elif content_type == 'Music':
+        return df.get('my_rating', pd.Series([50])) / 10
+    elif content_type == 'Book':
+        return df.get('averageRating', pd.Series([2.5])) * 2
+    return pd.Series([5.0])
 
 def get_user_input():
     """Gets content type and search query from the user."""
