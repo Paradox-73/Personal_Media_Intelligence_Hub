@@ -1,0 +1,12 @@
+streamlit
+pandas
+xgboost
+tmdbv3api
+omdb
+scikit-learn
+plotly
+tqdm
+numpy
+python-dotenv
+joblib
+statsmodels

@@ -1,0 +1,9 @@
+data/
+.env
+__pycache__/
+*.pyc
+content_rec/
+data/
+models/
+srs.txt
+log.txt
