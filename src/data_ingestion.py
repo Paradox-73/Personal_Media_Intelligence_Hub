@@ -56,6 +56,46 @@ def fetch_omdb_direct(imdb_id=None, title=None, year=None):
     except: pass
     return None
 
+def search_movies_by_query(query: str, limit: int = 5) -> list:
+    """
+    Searches for movies by title using TMDB and returns a list of dictionaries
+    with movie details for display in a search dropdown.
+    """
+    if not query:
+        return []
+
+    try:
+        results = tmdb_movie.search(query)
+        movies_found = []
+        for res in results:
+            if not hasattr(res, 'release_date') or not res.release_date: continue
+            
+            # Fetch director (requires another API call to get details/credits)
+            director = "N/A"
+            try:
+                credits = tmdb_movie.credits(res.id)
+                directors = [c['name'] for c in getattr(credits, 'crew', []) if c['job'] == 'Director']
+                if directors:
+                    director = directors[0] # Get primary director
+            except Exception as e:
+                # print(f"Warning: Could not fetch director for {res.title} (ID: {res.id}): {e}")
+                pass # Continue without director if fetch fails
+
+            movies_found.append({
+                'id': res.id,
+                'title': res.title,
+                'year': int(res.release_date.split('-')[0]) if res.release_date else None,
+                'poster_path': res.poster_path,
+                'director': director,
+                'raw_tmdb_data': res.__dict__ # Store raw TMDB data for later detailed fetch
+            })
+            if len(movies_found) >= limit:
+                break
+        return movies_found
+    except Exception as e:
+        print(f"Error searching TMDB for '{query}': {e}")
+        return []
+
 def smart_search_tmdb(title, target_year):
     """Find movie on TMDB matching Name AND Year (+/- 1 year)."""
     if not target_year: return None
@@ -188,6 +228,30 @@ def fetch_fresh_data(row, tmdb_cache, omdb_cache):
         'website': tmdb_data.get('homepage'),
         'processing_status': 'success' if tmdb_data.get('tmdb_id') else 'failed'
     }
+
+def fetch_movie_details_by_tmdb_id(tmdb_id: int):
+    """
+    Fetches full movie details using a TMDB ID, by constructing a dummy row
+    and calling fetch_fresh_data.
+    """
+    try:
+        details = tmdb_movie.details(tmdb_id)
+        
+        # Construct a dummy row that fetch_fresh_data can process
+        dummy_row = {
+            'Name': details.title,
+            'Year': int(details.release_date.split('-')[0]) if details.release_date else None,
+            'Letterboxd URI': '', # Not applicable here
+            'Rating': 0,          # Not applicable here
+            'imdb_id': getattr(details, 'imdb_id', None) # Pass IMDb ID if available
+        }
+        
+        # fetch_fresh_data expects tmdb_cache and omdb_cache, but we don't need to populate them here
+        # as we are just doing a one-off fetch for the UI.
+        return fetch_fresh_data(dummy_row, {}, {})
+    except Exception as e:
+        print(f"Error fetching movie details for TMDB ID {tmdb_id}: {e}")
+        return {'processing_status': 'failed'}
 
 def run_repair(limit=None):
     print("🔧 STARTING SMART REPAIR...")
