@@ -1,7 +1,6 @@
 import pandas as pd
 import json
 import os
-import time
 import argparse
 import sys
 import requests
@@ -32,18 +31,46 @@ tmdb_movie = Movie()
 # --- 2. HELPERS ---
 
 def clean_year(val):
-    """Robust year extraction."""
     try:
         s = str(val).replace('.0', '').strip()
-        if not s or s.lower() == 'nan': return None
+        if not s or s.lower() in ['nan', 'none', '']: return None
         return int(s[:4])
     except:
         return None
 
-def fetch_omdb_direct(imdb_id=None, title=None, year=None):
-    """Fallback OMDB Fetcher."""
+def clean_float(val):
     try:
-        if imdb_id:
+        if not val or str(val).lower() in ['nan', 'n/a', 'none', '', 'null']: return None
+        return float(val)
+    except:
+        return None
+
+def clean_int(val):
+    try:
+        if not val or str(val).lower() in ['nan', 'n/a', 'none', '', 'null']: return None
+        return int(str(val).replace(',', '').split('.')[0])
+    except:
+        return None
+
+def is_effectively_empty(val):
+    """Checks if a value is effectively missing (NaN, None, empty string, '0', 'N/A')."""
+    if val is None: return True
+    
+    # CRASH FIX: Check for lists/arrays BEFORE calling pd.isna
+    if isinstance(val, (list, tuple, np.ndarray)):
+        return len(val) == 0
+        
+    try:
+        if pd.isna(val): return True
+    except:
+        pass
+        
+    s = str(val).strip().lower()
+    return s in ['', 'nan', 'n/a', 'none', 'null', 'unknown', 'false', '0', '0.0', 'not rated', 'unrated']
+
+def fetch_omdb_direct(imdb_id=None, title=None, year=None):
+    try:
+        if imdb_id and str(imdb_id).lower() != 'nan':
             url = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_KEY}"
             res = requests.get(url, timeout=5).json()
             if res.get('Response') == 'True': return res
@@ -56,48 +83,7 @@ def fetch_omdb_direct(imdb_id=None, title=None, year=None):
     except: pass
     return None
 
-def search_movies_by_query(query: str, limit: int = 5) -> list:
-    """
-    Searches for movies by title using TMDB and returns a list of dictionaries
-    with movie details for display in a search dropdown.
-    """
-    if not query:
-        return []
-
-    try:
-        results = tmdb_movie.search(query)
-        movies_found = []
-        for res in results:
-            if not hasattr(res, 'release_date') or not res.release_date: continue
-            
-            # Fetch director (requires another API call to get details/credits)
-            director = "N/A"
-            try:
-                credits = tmdb_movie.credits(res.id)
-                directors = [c['name'] for c in getattr(credits, 'crew', []) if c['job'] == 'Director']
-                if directors:
-                    director = directors[0] # Get primary director
-            except Exception as e:
-                # print(f"Warning: Could not fetch director for {res.title} (ID: {res.id}): {e}")
-                pass # Continue without director if fetch fails
-
-            movies_found.append({
-                'id': res.id,
-                'title': res.title,
-                'year': int(res.release_date.split('-')[0]) if res.release_date else None,
-                'poster_path': res.poster_path,
-                'director': director,
-                'raw_tmdb_data': res.__dict__ # Store raw TMDB data for later detailed fetch
-            })
-            if len(movies_found) >= limit:
-                break
-        return movies_found
-    except Exception as e:
-        print(f"Error searching TMDB for '{query}': {e}")
-        return []
-
 def smart_search_tmdb(title, target_year):
-    """Find movie on TMDB matching Name AND Year (+/- 1 year)."""
     if not target_year: return None
     try:
         results = tmdb_movie.search(title)
@@ -109,154 +95,182 @@ def smart_search_tmdb(title, target_year):
     except: pass
     return None
 
-def load_cache(path):
-    if path.exists():
-        try:
-            with open(path, 'r') as f: return json.load(f)
-        except: return {}
-    return {}
+# --- 3. CORE LOGIC ---
 
-def save_cache(data, path):
-    try:
-        with open(path, 'w') as f: json.dump(data, f)
-    except: pass
-
-# --- 3. ROW PROCESSING ---
-
-def fetch_fresh_data(row, tmdb_cache, omdb_cache):
-    """Fetches data from scratch for a single row."""
-    lb_name = str(row['Name'])
-    lb_year = clean_year(row['Year'])
+def get_movie_metadata(title, year, tmdb_id=None, imdb_id=None):
+    """
+    Fetches available data from TMDB and OMDB.
+    """
     
-    # 1. TMDB
-    target = smart_search_tmdb(lb_name, lb_year)
     tmdb_data = {}
+    omdb_data = {}
     
-    if target:
-        details = tmdb_movie.details(target.id)
-        credits = tmdb_movie.credits(target.id)
-        
-        def get_names(obj_list): return [x['name'] for x in obj_list] if obj_list else []
+    # --- A. FETCH TMDB ---
+    target = None
+    if tmdb_id and not is_effectively_empty(tmdb_id):
+        try:
+            target = tmdb_movie.details(int(float(tmdb_id)))
+            target.credits = tmdb_movie.credits(target.id) 
+        except: pass
+    
+    if not target:
+        target = smart_search_tmdb(title, year)
+        if target:
+            try:
+                detailed = tmdb_movie.details(target.id)
+                detailed.credits = tmdb_movie.credits(target.id)
+                target = detailed
+            except: pass
 
+    if target:
+        def get_names(obj_list): return [x['name'] for x in obj_list] if obj_list else []
+        
         tmdb_data = {
             'tmdb_id': target.id,
-            'imdb_id': getattr(details, 'imdb_id', None),
-            'title': getattr(details, 'title', lb_name),
-            'overview': getattr(details, 'overview', ''),
-            'tagline': getattr(details, 'tagline', ''),
-            'runtime': getattr(details, 'runtime', 0),
-            'release_date': getattr(details, 'release_date', ''),
-            'genres_list': get_names(getattr(details, 'genres', [])),
-            'production_companies': get_names(getattr(details, 'production_companies', [])),
-            'cast_list': get_names(getattr(credits, 'cast', [])),
-            'directors_list': [c['name'] for c in getattr(credits, 'crew', []) if c['job'] == 'Director'],
-            'writers_list': [c['name'] for c in getattr(credits, 'crew', []) if c['department'] == 'Writing'],
-            'poster_path': getattr(details, 'poster_path', ''),
-            'backdrop_path': getattr(details, 'backdrop_path', ''),
-            'vote_average': getattr(details, 'vote_average', 0),
-            'vote_count': getattr(details, 'vote_count', 0),
-            'popularity': getattr(details, 'popularity', 0),
-            'original_language': getattr(details, 'original_language', ''),
-            'homepage': getattr(details, 'homepage', '')
+            'imdb_id': getattr(target, 'imdb_id', None),
+            'title': getattr(target, 'title', title),
+            'overview': getattr(target, 'overview', ''),
+            'tagline': getattr(target, 'tagline', ''),
+            'runtime': getattr(target, 'runtime', 0),
+            'release_date': getattr(target, 'release_date', ''),
+            'genres': get_names(getattr(target, 'genres', [])),
+            'production': get_names(getattr(target, 'production_companies', [])),
+            'cast': get_names(getattr(target.credits, 'cast', [])),
+            'director': [c['name'] for c in getattr(target.credits, 'crew', []) if c['job'] == 'Director'],
+            'writer': [c['name'] for c in getattr(target.credits, 'crew', []) if c['department'] == 'Writing'],
+            'vote_average': getattr(target, 'vote_average', 0),
+            'vote_count': getattr(target, 'vote_count', 0),
+            'original_language': getattr(target, 'original_language', ''),
+            # Removed: poster_path, backdrop_path, homepage (website)
         }
-    
-    # 2. OMDB
-    imdb_id = tmdb_data.get('imdb_id') or row.get('imdb_id')
-    omdb_res = fetch_omdb_direct(imdb_id=imdb_id, title=lb_name, year=lb_year)
-    omdb_data = {}
 
+    # --- B. FETCH OMDB ---
+    oid = tmdb_data.get('imdb_id') or imdb_id
+    omdb_res = fetch_omdb_direct(imdb_id=oid, title=title, year=year)
+    
     if omdb_res:
         rt_score = next((r['Value'] for r in omdb_res.get('Ratings', []) if r['Source'] == 'Rotten Tomatoes'), None)
         omdb_data = {
+            'title': omdb_res.get('Title'),
             'rated': omdb_res.get('Rated'),
-            'awards': omdb_res.get('Awards'),
+            'released': omdb_res.get('Released'),
+            'runtime': omdb_res.get('Runtime'),
+            'genre': omdb_res.get('Genre'),
+            'director': omdb_res.get('Director'),
+            'writer': omdb_res.get('Writer'),
+            'actors': omdb_res.get('Actors'),
+            'plot': omdb_res.get('Plot'),
+            'language': omdb_res.get('Language'),
             'country': omdb_res.get('Country'),
+            'awards': omdb_res.get('Awards'),
+            'metascore': omdb_res.get('Metascore'),
             'imdb_rating': omdb_res.get('imdbRating'),
             'imdb_votes': omdb_res.get('imdbVotes'),
-            'metascore': omdb_res.get('Metascore'),
-            'rotten_tomatoes_rating': rt_score,
             'box_office': omdb_res.get('BoxOffice'),
-            'type': omdb_res.get('Type'),
+            'rotten_tomatoes_rating': rt_score,
             'dvd': omdb_res.get('DVD'),
-            'omdb_genre': omdb_res.get('Genre'),
-            'omdb_director': omdb_res.get('Director'),
-            'omdb_actors': omdb_res.get('Actors')
+            # Removed: Poster, Type
         }
 
-    # 3. MERGE
+    # --- C. MERGE ---
     def pick(*args):
         for val in args:
-            if val is not None and str(val) != '' and str(val).lower() != 'nan' and str(val) != 'N/A':
-                return val
+            if not is_effectively_empty(val): return val
         return None
 
     return {
-        'letterboxd_name': lb_name,
-        'year': lb_year,
         'tmdb_id': tmdb_data.get('tmdb_id'),
         'imdb_id': pick(tmdb_data.get('imdb_id'), imdb_id),
-        'letterboxd_uri': row.get('Letterboxd URI'),
-        'user_rating': row.get('Rating'),
-        'is_liked': row.get('is_liked', 0),
+        'title': pick(tmdb_data.get('title'), omdb_data.get('title'), title),
         
-        'title': pick(tmdb_data.get('title'), omdb_res.get('Title') if omdb_res else None, lb_name),
+        # DISTINCT FIELDS FOR OVERVIEW AND PLOT
+        'overview': tmdb_data.get('overview'),
+        'plot': omdb_data.get('plot'),
+        
         'tagline': tmdb_data.get('tagline'),
-        'overview': tmdb_data.get('overview'), # Plot removed as requested
-        'genre': pick(tmdb_data.get('genres_list'), omdb_data.get('omdb_genre')),
-        
-        'director': pick(tmdb_data.get('directors_list'), omdb_data.get('omdb_director')),
-        'writer': tmdb_data.get('writers_list'), 
-        'actors': pick(tmdb_data.get('cast_list'), omdb_data.get('omdb_actors')),
-        
-        'imdb_rating': omdb_data.get('imdb_rating'),
-        'imdb_votes': omdb_data.get('imdb_votes'),
-        'metascore': omdb_data.get('metascore'),
+        'director': pick(tmdb_data.get('director'), omdb_data.get('director')),
+        'writer': pick(tmdb_data.get('writer'), omdb_data.get('writer')),
+        'actors': pick(tmdb_data.get('cast'), omdb_data.get('actors')),
+        'genre': pick(tmdb_data.get('genres'), omdb_data.get('genre')),
+        'imdb_rating': clean_float(omdb_data.get('imdb_rating')),
+        'imdb_votes': clean_int(omdb_data.get('imdb_votes')),
+        'metascore': clean_int(omdb_data.get('metascore')),
         'rotten_tomatoes_rating': omdb_data.get('rotten_tomatoes_rating'),
-        'vote_average': tmdb_data.get('vote_average'),
-        
-        'runtime': pick(tmdb_data.get('runtime'), omdb_res.get('Runtime') if omdb_res else None),
-        'released': pick(tmdb_data.get('release_date'), omdb_res.get('Released') if omdb_res else None),
+        'vote_average': clean_float(tmdb_data.get('vote_average')),
+        'vote_count': clean_int(tmdb_data.get('vote_count')),
         'rated': omdb_data.get('rated'),
-        'language': tmdb_data.get('original_language'),
+        'year': year,
+        'released': pick(tmdb_data.get('release_date'), omdb_data.get('released')),
+        'runtime': pick(tmdb_data.get('runtime'), omdb_data.get('runtime')),
+        'language': pick(tmdb_data.get('original_language'), omdb_data.get('language')),
         'country': omdb_data.get('country'),
         'awards': omdb_data.get('awards'),
-        
-        'poster': pick(tmdb_data.get('poster_path'), omdb_res.get('Poster') if omdb_res else None),
-        'backdrop_path': tmdb_data.get('backdrop_path'),
-        
-        'production': tmdb_data.get('production_companies'),
-        'website': tmdb_data.get('homepage'),
-        'processing_status': 'success' if tmdb_data.get('tmdb_id') else 'failed'
+        'box_office': omdb_data.get('box_office'),
+        'production': pick(tmdb_data.get('production'), None),
+        # Removed: poster, backdrop_path, website
+        'poster': getattr(target, 'poster_path', None) if target else None # Retaining poster purely for UI visualization if needed
     }
 
-def fetch_movie_details_by_tmdb_id(tmdb_id: int):
+def fetch_fresh_data(row, tmdb_cache, omdb_cache):
+    """Wrapper for initial ingestion."""
+    lb_name = str(row['Name'])
+    lb_year = clean_year(row['Year'])
+    
+    metadata = get_movie_metadata(lb_name, lb_year, imdb_id=row.get('imdb_id'))
+    
+    metadata['letterboxd_name'] = lb_name
+    metadata['letterboxd_uri'] = row.get('Letterboxd URI')
+    metadata['user_rating'] = row.get('Rating')
+    metadata['is_liked'] = row.get('is_liked', 0)
+    # Removed: processing_status
+    
+    return metadata
+
+# --- 4. ORACLE / UI FUNCTIONS ---
+
+def search_movies_by_query(query):
     """
-    Fetches full movie details using a TMDB ID, by constructing a dummy row
-    and calling fetch_fresh_data.
+    Searches TMDB for a movie by query string.
+    Returns a list of dicts with basic info for the UI.
+    """
+    results = []
+    try:
+        search_res = tmdb_movie.search(query)
+        for res in search_res:
+            results.append({
+                'id': res.id,
+                'title': getattr(res, 'title', 'Unknown'),
+                'year': clean_year(getattr(res, 'release_date', '')),
+                'poster_path': getattr(res, 'poster_path', ''),
+                'director': 'Unknown' # TMDB search result doesn't give director easily without details fetch
+            })
+    except Exception as e:
+        print(f"Search error: {e}")
+    return results
+
+def fetch_movie_details_by_tmdb_id(tmdb_id):
+    """
+    Fetches full metadata for a specific TMDB ID (used by Oracle).
     """
     try:
-        details = tmdb_movie.details(tmdb_id)
+        # 1. Fetch basic details first to get Title/Year/IMDb ID
+        target = tmdb_movie.details(int(tmdb_id))
+        title = getattr(target, 'title', '')
+        year = clean_year(getattr(target, 'release_date', ''))
+        imdb_id = getattr(target, 'imdb_id', None)
         
-        # Construct a dummy row that fetch_fresh_data can process
-        dummy_row = {
-            'Name': details.title,
-            'Year': int(details.release_date.split('-')[0]) if details.release_date else None,
-            'Letterboxd URI': '', # Not applicable here
-            'Rating': 0,          # Not applicable here
-            'imdb_id': getattr(details, 'imdb_id', None) # Pass IMDb ID if available
-        }
-        
-        # fetch_fresh_data expects tmdb_cache and omdb_cache, but we don't need to populate them here
-        # as we are just doing a one-off fetch for the UI.
-        return fetch_fresh_data(dummy_row, {}, {})
+        # 2. Use the main metadata fetcher to get the full enriched dict (TMDB + OMDB)
+        metadata = get_movie_metadata(title, year, tmdb_id=tmdb_id, imdb_id=imdb_id)
+        metadata['processing_status'] = 'success'
+        return metadata
     except Exception as e:
-        print(f"Error fetching movie details for TMDB ID {tmdb_id}: {e}")
+        print(f"Error fetching details by ID: {e}")
         return {'processing_status': 'failed'}
 
+# --- 5. MODES ---
+
 def run_repair(limit=None):
-    print("🔧 STARTING SMART REPAIR...")
-    
-    # 1. Load Master List
+    print("🔧 STARTING SMART REPAIR (Ingestion Mode)...")
     try:
         ratings = pd.read_csv(config.RATINGS_PATH)
         liked = pd.read_csv(config.LIKED_PATH)
@@ -267,12 +281,10 @@ def run_repair(limit=None):
         print(f"❌ Error loading source CSVs: {e}")
         return
 
-    # 2. Load Existing Data (To preserve it)
     existing_data_map = {}
     if os.path.exists(config.ENRICHED_DATA_PATH):
         try:
             df_exist = pd.read_csv(config.ENRICHED_DATA_PATH)
-            # Create a lookup key based on Name+Year to find existing entries easily
             for _, row in df_exist.iterrows():
                 key = f"{str(row.get('letterboxd_name'))}_{clean_year(row.get('year'))}"
                 existing_data_map[key] = row.to_dict()
@@ -280,68 +292,88 @@ def run_repair(limit=None):
         except Exception as e:
             print(f"⚠️ Could not read existing file: {e}")
 
-    # 3. Load Caches
-    tmdb_cache = load_cache(config.TMDB_CACHE_PATH)
-    omdb_cache = load_cache(config.OMDB_CACHE_PATH)
-    
-    if limit: ratings = ratings.head(limit)
-
     final_rows = []
+    if limit: ratings = ratings.head(limit)
     
-    # 4. Iterate Master List
     for idx, row in ratings.iterrows():
         lb_name = str(row['Name'])
         lb_year = clean_year(row['Year'])
         key = f"{lb_name}_{lb_year}"
         
-        # --- DECISION LOGIC ---
-        use_existing = False
-        
         if key in existing_data_map:
-            existing_row = existing_data_map[key]
-            
-            # CHECK: Is the existing data actually valid?
-            has_tmdb_id = existing_row.get('tmdb_id') and str(existing_row.get('tmdb_id')) != 'nan'
-            
-            # STRICT YEAR CHECK: Does the data we fetched actually match the CSV year?
-            fetched_year = clean_year(str(existing_row.get('released', ''))[:4])
-            year_match = True
-            if fetched_year and lb_year:
-                if abs(fetched_year - lb_year) > 1:
-                    year_match = False
-            
-            if has_tmdb_id and year_match:
-                use_existing = True
+            if not is_effectively_empty(existing_data_map[key].get('tmdb_id')):
+                final_rows.append(existing_data_map[key])
+                continue
         
-        if use_existing:
-            # print(f"[{idx+1}] ✅ Keeping: {lb_name}")
-            final_rows.append(existing_data_map[key])
-        else:
-            print(f"[{idx+1}] 🔄 Refetching: {lb_name} ({lb_year})")
-            # Fetch fresh
-            try:
-                new_data = fetch_fresh_data(row, tmdb_cache, omdb_cache)
-                final_rows.append(new_data)
-            except Exception as e:
-                print(f"   ❌ Failed: {e}")
-                final_rows.append(row.to_dict()) # Fallback
+        print(f"[{idx+1}] 🔄 Refetching: {lb_name} ({lb_year})")
+        new_data = fetch_fresh_data(row, {}, {})
+        final_rows.append(new_data)
 
-        if idx % 20 == 0:
-            save_cache(tmdb_cache, config.TMDB_CACHE_PATH)
-
-    # 5. Save
-    save_cache(tmdb_cache, config.TMDB_CACHE_PATH)
-    
     df_final = pd.DataFrame(final_rows)
     df_final.to_csv(config.ENRICHED_DATA_PATH, index=False)
+    print(f"✅ DONE. Saved to: {config.ENRICHED_DATA_PATH}")
+
+def run_fill_missing():
+    print("🩹 STARTING UNIVERSAL GAP FILL...")
     
+    if not os.path.exists(config.ENRICHED_DATA_PATH):
+        print("❌ Enriched data file not found.")
+        return
+
+    try:
+        # Load as object to avoid type inference issues
+        df = pd.read_csv(config.ENRICHED_DATA_PATH, dtype=object)
+    except Exception as e:
+        print(f"❌ Error loading enriched CSV: {e}")
+        return
+
+    modified_count = 0
+    
+    for index, row in df.iterrows():
+        missing_cols = []
+        for col in df.columns:
+            if is_effectively_empty(row[col]):
+                missing_cols.append(col)
+        
+        if not missing_cols:
+            continue
+
+        print(f"[{index+1}] {row.get('title')} - Missing: {len(missing_cols)} fields")
+        
+        metadata = get_movie_metadata(
+            title=row.get('title') or row.get('letterboxd_name'),
+            year=clean_year(row.get('year')),
+            tmdb_id=row.get('tmdb_id'),
+            imdb_id=row.get('imdb_id')
+        )
+
+        updates = []
+        for col in missing_cols:
+            # Check if we have data for this missing column in our fresh metadata
+            if col in metadata and not is_effectively_empty(metadata[col]):
+                df.at[index, col] = metadata[col]
+                updates.append(col)
+        
+        if updates:
+            print(f"   ✨ Filled {len(updates)} cols: {', '.join(updates[:5])}...")
+            modified_count += 1
+        else:
+            print("   ⚠️ No new data available from APIs.")
+
+        if index > 0 and index % 20 == 0:
+            df.to_csv(config.ENRICHED_DATA_PATH, index=False)
+
+    df.to_csv(config.ENRICHED_DATA_PATH, index=False)
     print("-" * 30)
-    print(f"✅ DONE. Total Rows: {len(df_final)}")
-    print(f"📂 Saved to: {config.ENRICHED_DATA_PATH}")
+    print(f"✅ DONE. Updated {modified_count} rows.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--fill-missing", action="store_true", help="Scan ALL columns and fill ANY missing value from APIs")
     args = parser.parse_args()
     
-    run_repair(limit=args.limit)
+    if args.fill_missing:
+        run_fill_missing()
+    else:
+        run_repair(limit=args.limit)

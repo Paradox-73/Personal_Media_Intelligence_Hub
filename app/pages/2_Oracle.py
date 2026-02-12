@@ -9,6 +9,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+# Ensure data_ingestion has the updated functions from the previous fix
 from src.data_ingestion import fetch_fresh_data, search_movies_by_query, fetch_movie_details_by_tmdb_id
 from src.feature_engineering import transform_single_movie, find_similar_movies, explain_similarity
 
@@ -145,7 +146,16 @@ if st.session_state['selected_movie_raw_data']:
                 st.write(f"**Cast:** {', '.join(acts[:5])}")
                 st.write(f"**Genre:** {', '.join(genres)}")
                 st.caption(raw_data.get('overview'))
-                st.markdown(f"**Runtime:** {raw_data.get('runtime')}m | **Box Office:** ${raw_data.get('box_office', 0):,.0f}")
+                
+                # --- FIX: Safe Box Office Processing ---
+                bo_raw = raw_data.get('box_office', 0)
+                try:
+                    # Remove '$' and ',' then convert to float
+                    bo_val = float(str(bo_raw).replace('$', '').replace(',', ''))
+                except (ValueError, TypeError):
+                    bo_val = 0
+                
+                st.markdown(f"**Runtime:** {raw_data.get('runtime')}m | **Box Office:** ${bo_val:,.0f}")
 
             # 5. DISPLAY SIMILAR MOVIES AND EXPLANATIONS
             st.subheader("💡 You might also like...")
