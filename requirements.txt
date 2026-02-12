@@ -10,3 +10,5 @@ numpy
 python-dotenv
 joblib
 statsmodels
+google-api-python-client
+isodate

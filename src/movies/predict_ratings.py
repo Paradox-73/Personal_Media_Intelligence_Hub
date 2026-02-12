@@ -6,7 +6,7 @@ from pathlib import Path
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 # Add project root to path
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.feature_engineering import transform_dataframe_for_prediction
 
@@ -14,7 +14,7 @@ def batch_predict_ratings():
     print("🚀 Starting Batch Prediction...")
 
     # Ensure output directory exists
-    predictions_dir = Path("data/predictions")
+    predictions_dir = Path("data/predictions/movies")
     predictions_dir.mkdir(parents=True, exist_ok=True)
     
     # 1. Load Artifacts
@@ -22,7 +22,7 @@ def batch_predict_ratings():
         regressor = joblib.load(config.MODEL_REGRESSOR)
         preprocessor_state = joblib.load(config.PREPROCESSOR_STATE)
     except FileNotFoundError:
-        print("❌ Error: Model or preprocessor state not found. Run `python src/model_trainer.py` first.")
+        print("❌ Error: Model or preprocessor state not found. Run `python src/movies/model_trainer.py` first.")
         return
 
     # 2. Load Enriched Data

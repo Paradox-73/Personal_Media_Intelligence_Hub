@@ -10,7 +10,7 @@ from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 # Add Project Root to Path
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 
 # --- UPDATED CONFIG (Stricter Thresholds) ---
@@ -63,7 +63,7 @@ def process_features():
     
     # 1. Load Data
     try:
-        df = pd.read_csv(config.ENRICHED_DATA_PATH)
+        df = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
     except FileNotFoundError:
         print("❌ Error: enriched_data.csv not found.")
         return

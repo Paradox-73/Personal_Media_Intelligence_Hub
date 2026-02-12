@@ -48,22 +48,28 @@ The project is organized into logical directories to maintain clarity and scalab
 -   `app/`: Contains the Streamlit application code.
     -   `main.py`: The main entry point for the Streamlit application, defining the multi-page structure.
     -   `pages/`: Individual Streamlit pages.
-        -   `1_Dashboard.py`: Implements the interactive data visualization dashboard.
-        -   `2_Oracle.py`: Implements the movie prediction and recommendation engine.
+        -   `1_Movies_Dashboard.py`: Implements the interactive data visualization dashboard for movies.
+        -   `2_Movies_Oracle.py`: Implements the movie prediction and recommendation engine.
+        -   `*_Dashboard.py`: Other domain-specific dashboards (e.g., TV Shows, Music, Games, Books).
+        -   `*_Oracle.py`: Other domain-specific prediction and recommendation engines.
 -   `content_rec/`: (Likely virtual environment or dependency related files)
 -   `data/`: Stores all data related to the project.
     -   `cache/`: Cached API responses or intermediate data.
-    -   `letterboxd/`: Original Letterboxd export files.
     -   `predictions/`: Output of model predictions.
     -   `processed/`: Enriched and preprocessed data (`enriched_data.csv`).
     -   `raw/`: Raw input data (e.g., `ratings.csv`, `liked.csv`).
 -   `models/`: Stores trained machine learning models and preprocessing objects.
--   `src/`: Source code for data processing, feature engineering, model training, and utility functions.
+-   `src/`: Source code for data processing, feature engineering, model training, and utility functions, organized by media domain.
     -   `config.py`: Centralized configuration for file paths, API keys, and model parameters.
-    -   `data_ingestion.py`: Script for ingesting raw data and enriching it with external APIs.
-    -   `feature_engineering.py`: Script for creating features from enriched data for model training.
-    -   `model_trainer.py`: Script for training and saving the machine learning models.
-    -   `predict_ratings.py`: Script for batch prediction using trained models.
+    -   `src/movies/`:
+        -   `ingestion.py`: Script for ingesting raw data and enriching it with external APIs for movies.
+        -   `feature_engineering.py`: Script for creating features from enriched movie data for model training.
+        -   `model_trainer.py`: Script for training and saving the machine learning models for movies.
+        -   `predict_ratings.py`: Script for batch prediction using trained movie models.
+    -   `src/shows/`: (Similar scripts for TV Shows)
+    -   `src/music/`: (Similar scripts for Music)
+    -   `src/games/`: (Similar scripts for Games)
+    -   `src/books/`: (Similar scripts for Books)
 
 ## Technology Stack
 -   **Core Language:** Python
@@ -252,10 +258,10 @@ Overall, these results suggest that the model is highly effective and reliable i
 -   `app/pages/1_Dashboard.py`: Contains the logic for generating interactive charts and statistics for the user's movie history. Utilizes `pandas` and `plotly` for data analysis and visualization.
 -   `app/pages/2_Oracle.py`: Manages user interactions for movie search, prediction, and similarity-based recommendations. It loads pre-trained models and dynamically fetches movie data.
 -   `src/config.py`: Defines constants and configurations, centralizing paths to data, models, and API keys. Essential for maintaining a consistent project structure.
--   `src/data_ingestion.py`: Handles the initial data processing, including reading raw Letterboxd CSVs and enriching movie entries with data from TMDB and OMDb. It's crucial for building a comprehensive dataset.
--   `src/feature_engineering.py`: Processes the enriched data, converting raw information into features suitable for machine learning models. This involves tasks like one-hot encoding, text processing, and feature scaling. It also contains the logic for calculating movie similarity.
--   `src/model_trainer.py`: Script responsible for building, training, and saving the XGBoost Regressor and Classifier models. It manages the training pipeline from feature input to model persistence.
--   `src/predict_ratings.py`: A utility script for performing batch predictions using the trained models and generating a performance report, useful for model evaluation and monitoring.
+-   `src/<domain>/ingestion.py`: Handles the initial data processing for a specific domain (e.g., `src/movies/ingestion.py`), including reading raw CSVs and enriching entries with external data. It's crucial for building a comprehensive dataset.
+-   `src/<domain>/feature_engineering.py`: Processes the enriched data for a specific domain, converting raw information into features suitable for machine learning models. This involves tasks like one-hot encoding, text processing, and feature scaling. It also contains the logic for calculating movie similarity.
+-   `src/<domain>/model_trainer.py`: Script responsible for building, training, and saving the XGBoost Regressor and Classifier models for a specific domain. It manages the training pipeline from feature input to model persistence.
+-   `src/<domain>/predict_ratings.py`: A utility script for performing batch predictions using the trained models for a specific domain and generating a performance report, useful for model evaluation and monitoring.
 
 ## Future Enhancements
 To further enhance the Personal Movie Intelligence Hub, several avenues can be explored:

@@ -65,7 +65,7 @@ def get_highly_rated_items(df, col_name, top_n=10, min_count=3):
 @st.cache_data
 def load_data():
     try:
-        df = pd.read_csv(config.ENRICHED_DATA_PATH)
+        df = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
         
         # Clean Numerics
         df['rotten_tomatoes_rating'] = df['rotten_tomatoes_rating'].apply(clean_percentage)

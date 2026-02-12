@@ -10,8 +10,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 # Ensure data_ingestion has the updated functions from the previous fix
-from src.data_ingestion import fetch_fresh_data, search_movies_by_query, fetch_movie_details_by_tmdb_id
-from src.feature_engineering import transform_single_movie, find_similar_movies, explain_similarity
+from src.movies.ingestion import search_movies_by_query, fetch_movie_details_by_tmdb_id
+from src.movies.feature_engineering import transform_single_movie, find_similar_movies, explain_similarity
 
 st.set_page_config(page_title="The Oracle", page_icon="🔮")
 
@@ -38,7 +38,7 @@ def load_artifacts():
 regressor, classifier, state = load_artifacts()
 
 if regressor is None:
-    st.error("❌ Models not found! Run `python src/model_trainer.py` first.")
+    st.error("❌ Models not found! Run `python src/movies/model_trainer.py` first.")
     st.stop()
 
 # --- INPUTS (Search Functionality) ---

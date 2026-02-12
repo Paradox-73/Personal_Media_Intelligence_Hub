@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from tmdbv3api import TMDb, Movie
 
 # Add project root to path
-sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 
 # Load Environment Variables
@@ -310,6 +310,8 @@ def run_repair(limit=None):
         final_rows.append(new_data)
 
     df_final = pd.DataFrame(final_rows)
+    # Clean null characters before saving
+    df_final = df_final.replace({r'\x00': ''}, regex=True)
     df_final.to_csv(config.ENRICHED_DATA_PATH, index=False)
     print(f"✅ DONE. Saved to: {config.ENRICHED_DATA_PATH}")
 
