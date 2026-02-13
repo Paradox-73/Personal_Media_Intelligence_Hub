@@ -4,6 +4,7 @@ import ast
 import joblib
 import sys
 from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from pathlib import Path
 
 # Add project root to path
@@ -18,8 +19,19 @@ def safe_eval(val):
     except (ValueError, SyntaxError):
         return [x.strip() for x in str(val).split(',') if x.strip()]
 
+def get_primary_network(val):
+    if pd.isna(val) or val == "": return "Other"
+    try:
+        if "[" in str(val):
+            val_list = ast.literal_eval(str(val))
+            if val_list and len(val_list) > 0:
+                return val_list[0].strip()
+        return str(val).split(',')[0].strip()
+    except:
+        return "Other"
+
 def run_feature_engineering():
-    print("⚙️ STARTING TV SHOW FEATURE ENGINEERING...")
+    print("⚙️ STARTING TV SHOW FEATURE ENGINEERING (Robust Mode)...")
 
     if not config.TV_SHOWS_ENRICHED_DATA_PATH.exists():
         print(f"❌ Error: Enriched data not found at {config.TV_SHOWS_ENRICHED_DATA_PATH}")
@@ -27,75 +39,111 @@ def run_feature_engineering():
 
     df = pd.read_csv(config.TV_SHOWS_ENRICHED_DATA_PATH)
     
-    # Filter for Training: Rows with user_rating
-    df_train = df[df['user_rating'].notna()].copy()
-    print(f"   Training on {len(df_train)} rated shows.")
+    # Filter for Training (Must have a user rating)
+    df = df[df['user_rating'].notna()].copy()
+    print(f"   Input Data: {len(df)} rated shows.")
 
-    # --- 1. Numerical Features ---
-    num_cols = [
-        'year', 'vote_average', 'vote_count', 
-        'imdb_rating', 'imdb_votes', 
-        'number_of_episodes', 'number_of_seasons', 'runtime'
-    ]
+    # --- 1. Numericals ---
+    df['vote_count_log'] = np.log1p(pd.to_numeric(df['vote_count'], errors='coerce').fillna(0))
     
-    median_values = {}
-    for col in num_cols:
-        df_train[col] = pd.to_numeric(df_train[col], errors='coerce')
-        median_val = df_train[col].median()
-        df_train[col] = df_train[col].fillna(median_val)
-        median_values[col] = median_val
+    # Calculate medians BEFORE filling NaNs (Critical for Model State)
+    median_vote = df['vote_average'].median()
+    if pd.isna(median_vote): median_vote = 7.0 # Fallback
+    
+    median_year = df['year'].median()
+    if pd.isna(median_year): median_year = 2010 # Fallback
 
-    # --- 2. Genres (Multi-Label) ---
-    df_train['genres'] = df_train['genres'].apply(safe_eval)
-    mlb_genres = MultiLabelBinarizer()
-    genres_encoded = mlb_genres.fit_transform(df_train['genres'])
-    genres_df = pd.DataFrame(genres_encoded, columns=[f"genre_{c}" for c in mlb_genres.classes_], index=df_train.index)
+    # Fill NaNs
+    df['vote_average'] = pd.to_numeric(df['vote_average'], errors='coerce').fillna(median_vote)
+    df['year'] = pd.to_numeric(df['year'], errors='coerce').fillna(median_year)
+    df['season_count'] = pd.to_numeric(df['number_of_seasons'], errors='coerce').fillna(1)
+    
+    # --- 2. Vibe Features (Network) ---
+    df['primary_network'] = df['network'].apply(get_primary_network)
+    
+    # Determine top networks
+    top_networks = df['primary_network'].value_counts().nlargest(10).index.tolist()
+    
+    df['network_clean'] = df['primary_network'].apply(lambda x: x if x in top_networks else "Other")
+    network_dummies = pd.get_dummies(df['network_clean'], prefix='net')
 
-    # --- 3. Categoricals ---
-    cat_cols = ['status', 'age_rating', 'type', 'language']
-    df_encoded_cats = pd.get_dummies(df_train[cat_cols], dummy_na=True)
+    # Adult Content
+    df['is_adult'] = df['age_rating'].apply(lambda x: 1 if str(x) in ['TV-MA', 'R', '18+'] else 0)
 
-    # --- 4. Combine ---
-    X = pd.concat([df_train[num_cols], genres_df, df_encoded_cats], axis=1)
+    # --- 3. Genres ---
+    df['genres_list'] = df['genres'].apply(safe_eval)
+    mlb = MultiLabelBinarizer()
+    genres_encoded = mlb.fit_transform(df['genres_list'])
     
-    # --- 5. Create Targets (ROBUST) ---
-    y_reg = df_train['user_rating']
+    # Create temp dataframe for frequency calculation
+    temp_genre_df = pd.DataFrame(genres_encoded, columns=[f"g_{c}" for c in mlb.classes_], index=df.index)
     
-    # Calculate dynamic threshold to ensure we have both 0s and 1s
-    user_median = df_train['user_rating'].median()
-    print(f"   User Median Rating: {user_median}")
+    # Remove rare genres to reduce noise
+    min_freq = 0.05 * len(df)
+    kept_genres = temp_genre_df.columns[temp_genre_df.sum() >= min_freq].tolist()
+    genre_df = temp_genre_df[kept_genres]
     
-    # If median is high (e.g. 8), we split there. If median is low, we split there.
-    # We use '>' strictly to try and force a split if many values equal the median
-    y_class = (df_train['user_rating'] > user_median).astype(int)
-    
-    # FALLBACK: If strictly greater results in only one class (e.g. all ratings are identical), 
-    # try >=. If that still fails, the model trainer will handle it.
-    if len(y_class.unique()) < 2:
-         y_class = (df_train['user_rating'] >= user_median).astype(int)
+    print(f"   Selected {len(kept_genres)} common genres.")
 
-    class_counts = y_class.value_counts()
-    print(f"   Class Balance: {class_counts.to_dict()} (0=Lower, 1=Higher)")
+    # --- 4. NLP ---
+    print("   Processing NLP features...")
+    df['overview'] = df['overview'].fillna('')
+    tfidf = TfidfVectorizer(stop_words='english', max_features=30, min_df=2)
+    tfidf_matrix = tfidf.fit_transform(df['overview'])
+    tfidf_cols = [f"txt_{word}" for word in tfidf.get_feature_names_out()]
+    tfidf_df = pd.DataFrame(tfidf_matrix.toarray(), columns=tfidf_cols, index=df.index)
 
-    # --- 6. Save ---
-    train_output = X.copy()
-    train_output['target_reg'] = y_reg
-    train_output['target_class'] = y_class
+    # --- 5. Combine ---
+    # Ensure numerical columns are clearly selected
+    feature_cols = ['year', 'vote_average', 'vote_count_log', 'season_count', 'is_adult']
     
-    train_output.to_csv(config.TV_SHOWS_TRAINING_DATA_PATH, index=False)
+    X = pd.concat([df[feature_cols], genre_df, network_dummies, tfidf_df], axis=1)
     
+    # --- 6. Targets & Save Data ---
+    y_reg = df['user_rating']
+    
+    # Classification Target (for potential future use)
+    user_median = df['user_rating'].median()
+    y_class = (df['user_rating'] > user_median).astype(int)
+    if y_class.value_counts().min() < 5: 
+        y_class = (df['user_rating'] >= user_median).astype(int)
+
+    output = X.copy()
+    output['target_reg'] = y_reg
+    output['target_class'] = y_class
+    
+    output.to_csv(config.TV_SHOWS_TRAINING_DATA_PATH, index=False)
+    
+    # --- 7. Save Artifacts (CRITICAL FIX) ---
     artifacts = {
+        # Feature Columns (Required for prediction alignment)
         'features_columns': X.columns.tolist(),
-        'mlb_genres': mlb_genres,
-        'median_values': median_values,
-        'cat_cols': cat_cols
+        
+        # --- DUAL COMPATIBILITY MODE ---
+        # 1. Flat keys (for predict_ratings.py)
+        'median_vote_avg': median_vote,
+        'median_year': median_year,
+        
+        # 2. Nested keys (for Streamlit Oracle App)
+        'median_values': {
+            'year': median_year,
+            'vote_average': median_vote,
+        },
+        
+        # Encoders & Lists
+        'top_networks': top_networks,
+        'mlb_genres': mlb,              # For Oracle App input transformation
+        'kept_genres': kept_genres,     # For predict_ratings.py reconstruction
+        'tfidf_model': tfidf,
+        'tfidf_cols': tfidf_cols
     }
     
     config.TV_SHOWS_PREPROCESSOR_STATE.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(artifacts, config.TV_SHOWS_PREPROCESSOR_STATE)
     
-    print(f"✅ Features processed. Shape: {X.shape}")
-    print(f"✅ Data saved to: {config.TV_SHOWS_TRAINING_DATA_PATH}")
+    print(f"✅ Features processed & Artifacts saved.")
+    print(f"   Shape: {X.shape}")
+    print(f"   Artifacts path: {config.TV_SHOWS_PREPROCESSOR_STATE}")
 
 if __name__ == "__main__":
     run_feature_engineering()

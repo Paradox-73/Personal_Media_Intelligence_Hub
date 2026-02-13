@@ -25,7 +25,7 @@ LIKED_PATH = MOVIES_RAW_DIR / "liked.csv"
 
 MOVIES_ENRICHED_DATA_PATH = MOVIES_PROCESSED_DIR / "enriched_data.csv"
 TRAINING_DATA_PATH = MOVIES_PROCESSED_DIR / "training_features.csv"
-FULL_VIEW_PATH = MOVIES_PROCESSED_DIR / "dashboard_view.csv" # For EDA
+MOVIES_PREDICTIONS_DIR = MOVIES_PROCESSED_DIR / "dashboard_view.csv" # For EDA
 
 # Movie Model Artifacts
 MODEL_REGRESSOR = MOVIES_MODEL_DIR / "xgb_regressor.pkl"

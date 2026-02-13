@@ -4,7 +4,7 @@ import joblib
 import sys
 from sklearn.ensemble import GradientBoostingRegressor, GradientBoostingClassifier
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, accuracy_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error, accuracy_score
 from pathlib import Path
 
 # Add project root to path
@@ -12,56 +12,62 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 
 def train_models():
-    print("🤖 STARTING TV SHOW MODEL TRAINING...")
+    print("🤖 STARTING TV SHOW MODEL TRAINING (DEEPER LEARNING)...")
 
     if not config.TV_SHOWS_TRAINING_DATA_PATH.exists():
-        print("❌ Error: Training data not found. Run feature_engineering.py first.")
+        print("❌ Error: Training data not found.")
         return
 
     df = pd.read_csv(config.TV_SHOWS_TRAINING_DATA_PATH)
     
-    # Verify Columns
-    required_cols = ['target_reg', 'target_class']
-    if not all(col in df.columns for col in required_cols):
-        print(f"❌ Error: Missing columns {required_cols}. Run feature_engineering.py again.")
-        return
-
     X = df.drop(columns=['target_reg', 'target_class'])
     y_reg = df['target_reg']
     y_class = df['target_class']
 
-    print(f"   Training on {len(df)} samples...")
+    # 80/20 Split
+    X_train, X_test, y_train_reg, y_test_reg = train_test_split(X, y_reg, test_size=0.2, random_state=42)
+    _, _, y_train_clf, y_test_clf = train_test_split(X, y_class, test_size=0.2, random_state=42)
+
+    print(f"   Training Set: {len(X_train)} | Test Set: {len(X_test)}")
 
     # --- 1. Regressor ---
     print("\n   📉 Training Regressor...")
-    X_train, X_test, y_train, y_test = train_test_split(X, y_reg, test_size=0.2, random_state=42)
+    regressor = GradientBoostingRegressor(
+        n_estimators=100,      # Back to 100 to let it learn nuanced patterns
+        max_depth=4,           # INCREASED: Allows complex interactions (Network + Genre + Year)
+        learning_rate=0.03,    # Slower learning for better generalization
+        subsample=0.7,         # Aggressive regularization to prevent overfitting
+        random_state=42
+    )
+    regressor.fit(X_train, y_train_reg)
     
-    regressor = GradientBoostingRegressor(n_estimators=100, learning_rate=0.05, max_depth=3, random_state=42)
-    regressor.fit(X_train, y_train)
+    # Test Metrics
+    preds_reg = regressor.predict(X_test)
+    rmse = np.sqrt(mean_squared_error(y_test_reg, preds_reg))
+    mae = mean_absolute_error(y_test_reg, preds_reg)
+    print(f"      [TEST SET] RMSE: {rmse:.4f}")
+    print(f"      [TEST SET] MAE:  {mae:.4f}")
     
-    rmse = np.sqrt(mean_squared_error(y_test, regressor.predict(X_test)))
-    print(f"      Regressor RMSE: {rmse:.4f}")
     joblib.dump(regressor, config.TV_SHOWS_MODEL_REGRESSOR)
 
     # --- 2. Classifier ---
     print("\n   🎯 Training Classifier...")
-    X_train_c, X_test_c, y_train_c, y_test_c = train_test_split(X, y_class, test_size=0.2, random_state=42)
-    
-    # SAFETY CHECK: Do we have at least 2 classes (0 and 1)?
-    if len(np.unique(y_train_c)) < 2:
-        print("      ⚠️ WARNING: Only 1 class found in training data (e.g., all 'Liked').")
-        print("      Skipping Classifier training to prevent crash.")
-        # We don't save a broken classifier, or we could save a dummy one.
-        # For now, we just don't save a new one, or delete the old one to avoid confusion.
-    else:
-        classifier = GradientBoostingClassifier(n_estimators=100, learning_rate=0.05, max_depth=3, random_state=42)
-        classifier.fit(X_train_c, y_train_c)
-        
-        acc = accuracy_score(y_test_c, classifier.predict(X_test_c))
-        print(f"      Classifier Accuracy: {acc*100:.2f}%")
+    classifier = GradientBoostingClassifier(
+        n_estimators=100,
+        max_depth=3,
+        learning_rate=0.03,
+        subsample=0.7,
+        random_state=42
+    )
+    if len(np.unique(y_train_clf)) > 1:
+        classifier.fit(X_train, y_train_clf)
+        acc = accuracy_score(y_test_clf, classifier.predict(X_test))
+        print(f"      [TEST SET] Accuracy: {acc*100:.2f}%")
         joblib.dump(classifier, config.TV_SHOWS_MODEL_CLASSIFIER)
+    else:
+        print("      ⚠️ Skipping Classifier (Single class)")
 
-    print(f"\n✅ Training Complete. Artifacts in {config.TV_SHOWS_MODEL_DIR}")
+    print(f"\n✅ Models saved to {config.TV_SHOWS_MODEL_DIR}")
 
 if __name__ == "__main__":
     train_models()

@@ -3,6 +3,7 @@ import numpy as np
 import joblib
 import ast
 import sys
+import re
 from pathlib import Path
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import PCA
@@ -13,436 +14,267 @@ from sklearn.metrics.pairwise import cosine_similarity
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 
-# --- UPDATED CONFIG (Stricter Thresholds) ---
-MIN_DIRECTOR_COUNT = 4  # Increased to reduce columns
-MIN_ACTOR_COUNT = 8     # Increased to reduce columns
-PCA_COMPONENTS = 8      # Reduced dimensionality
+# --- CONFIG ---
+MIN_DIRECTOR_COUNT = 3  
+MIN_ACTOR_COUNT = 5     
+MIN_WRITER_COUNT = 3    
+MIN_PROD_COUNT = 5      
+PCA_COMPONENTS = 10     
 
-def clean_percentage(x):
-    if pd.isna(x): return np.nan
-    x = str(x).replace('%', '').strip()
+# --- HELPERS ---
+def clean_money(x):
+    if pd.isna(x): return 0
+    if isinstance(x, (int, float)): return x
+    x = str(x).replace('$', '').replace(',', '').strip()
     try: return float(x)
-    except: return np.nan
+    except: return 0
+
+def clean_text_value(x):
+    if pd.isna(x): return 'Unknown'
+    s = str(x).strip()
+    s = s.replace('[', '').replace(']', '').replace("'", "").replace('"', "")
+    return s.strip()
 
 def parse_list(x):
-    # Handle explicit None or numpy NaN
-    if x is None or (isinstance(x, float) and np.isnan(x)):
-        return []
-    # If it's already a list, return it directly
-    if isinstance(x, list):
-        return x
-    # If it's a pandas Series/array-like with one element, extract the element
-    if isinstance(x, (pd.Series, np.ndarray)):
-        if len(x) == 1:
-            x = x.iloc[0] if isinstance(x, pd.Series) else x[0]
-            if x is None or (isinstance(x, float) and np.isnan(x)):
-                return []
-        else: # If it's a multi-element array, which is not expected for a single movie attribute
-            return []
+    # FIX: Check for list/array types FIRST to avoid "Ambiguous truth value" error
+    if isinstance(x, list): return x
+    if isinstance(x, np.ndarray): return x.tolist()
     
-    # Now x should be a scalar (str, int, etc.)
-    s_x = str(x).strip()
-    if not s_x: # Handle empty string after stripping
-        return []
-
+    if pd.isna(x) or x == "": return []
     try:
-        # Attempt to evaluate as a literal if it looks like a string representation of a list
-        if s_x.startswith('[') and s_x.endswith(']'):
-            return ast.literal_eval(s_x)
-        # Otherwise, treat as a single string element in a list
-        return [s_x]
-    except (ValueError, SyntaxError):
-        # If ast.literal_eval fails, treat the string as a single element
-        return [s_x]
-    except Exception:
-        # Catch any other unexpected errors and return an empty list
-        return []
+        if "[" in str(x): return ast.literal_eval(str(x))
+        return [str(x)]
+    except: return []
 
+def get_primary(val_list):
+    return val_list[0] if val_list and len(val_list) > 0 else 'Unknown'
+
+def categorize_rating(r):
+    r = str(r).upper()
+    if 'R' in r or 'NC-17' in r or 'TV-MA' in r: return 'Adult'
+    if 'PG' in r or 'TV-14' in r: return 'Teen'
+    return 'General'
+
+def sanitize_col(col_name):
+    # Matches XGBoost strict rules
+    return re.sub(r"[\[\]<']", "", str(col_name))
+
+# --- MAIN TRAINING FUNCTION ---
 def process_features():
-    print("🛠️ Starting Feature Engineering...")
+    print("🛠️ Starting Movie Feature Engineering (Data Type Fix)...")
     
-    # 1. Load Data
-    try:
-        df = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
-    except FileNotFoundError:
-        print("❌ Error: enriched_data.csv not found.")
-        return
+    if not config.MOVIES_ENRICHED_DATA_PATH.exists(): return
 
-    # 2. Clean Target
-    df = df.dropna(subset=['user_rating'])
-    y_reg = df['user_rating']
-    
-    def classify(r):
-        if r <= 2.5: return 0
-        elif r < 4.0: return 1
-        else: return 2
-    y_class = df['user_rating'].apply(classify)
+    df = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
+    df = df.dropna(subset=['user_rating']).copy()
+    print(f"   Input Data: {len(df)} rated movies.")
 
-    # 3. Numeric Features
+    # 1. Numerics
     if df['rotten_tomatoes_rating'].dtype == object:
-        df['rotten_tomatoes_rating'] = df['rotten_tomatoes_rating'].apply(clean_percentage)
+        def clean_pct(x):
+            if pd.isna(x): return np.nan
+            return float(str(x).replace('%', '').strip())
+        df['rotten_tomatoes_rating'] = df['rotten_tomatoes_rating'].apply(clean_pct)
     
-    num_cols = ['year', 'runtime', 'imdb_rating', 'metascore', 'rotten_tomatoes_rating', 'vote_average', 'popularity']
+    df['box_office_clean'] = df['box_office'].apply(clean_money)
+    df['box_office_log'] = np.log1p(df['box_office_clean'])
+    
+    num_cols = ['year', 'runtime', 'imdb_rating', 'metascore', 'rotten_tomatoes_rating', 'vote_average', 'vote_count', 'box_office_log']
     for col in num_cols:
-        if col not in df.columns: df[col] = np.nan
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-        df[col] = df[col].fillna(df[col].median())
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(df[col].median())
 
     X_num = df[num_cols].reset_index(drop=True)
 
-    # 4. Categorical: Director
-    df['director_list'] = df['director'].apply(parse_list)
-    df['primary_director'] = df['director_list'].apply(lambda x: x[0] if len(x) > 0 else 'Unknown')
-    
-    dir_counts = df['primary_director'].value_counts()
-    valid_dirs = dir_counts[dir_counts >= MIN_DIRECTOR_COUNT].index
-    df['primary_director'] = df['primary_director'].apply(lambda x: x if x in valid_dirs else 'Other_Director')
-    
-    X_dir = pd.get_dummies(df['primary_director'], prefix='dir')
+    # 2. Categoricals
+    for role, min_cnt in [('director', MIN_DIRECTOR_COUNT), ('actors', MIN_ACTOR_COUNT), ('writer', MIN_WRITER_COUNT)]:
+        df[f'{role}_list'] = df[role].apply(parse_list)
+        df[f'primary_{role}'] = df[f'{role}_list'].apply(get_primary)
+        df[f'primary_{role}'] = df[f'primary_{role}'].apply(clean_text_value)
+        
+        counts = df[f'primary_{role}'].value_counts()
+        valid = counts[counts >= min_cnt].index.tolist()
+        df[f'clean_{role}'] = df[f'primary_{role}'].apply(lambda x: x if x in valid else 'Other')
 
-    # 5. Categorical: Actors
-    df['actors_list'] = df['actors'].apply(parse_list)
-    df['primary_actor'] = df['actors_list'].apply(lambda x: x[0] if len(x) > 0 else 'Unknown')
-    
-    act_counts = df['primary_actor'].value_counts()
-    valid_actors = act_counts[act_counts >= MIN_ACTOR_COUNT].index
-    df['primary_actor'] = df['primary_actor'].apply(lambda x: x if x in valid_actors else 'Other_Actor')
-    
-    X_act = pd.get_dummies(df['primary_actor'], prefix='act')
+    X_dir = pd.get_dummies(df['clean_director'], prefix='dir')
+    X_act = pd.get_dummies(df['clean_actors'], prefix='act')
+    X_wri = pd.get_dummies(df['clean_writer'], prefix='wri')
 
-    # 6. Categorical: Genres
+    # 3. Production
+    df['primary_prod'] = df['production'].apply(lambda x: str(x).split(',')[0] if pd.notna(x) else 'Unknown')
+    df['primary_prod'] = df['primary_prod'].apply(clean_text_value)
+    prod_counts = df['primary_prod'].value_counts()
+    valid_prod = prod_counts[prod_counts >= MIN_PROD_COUNT].index.tolist()
+    df['clean_prod'] = df['primary_prod'].apply(lambda x: x if x in valid_prod else 'Other')
+    X_prod = pd.get_dummies(df['clean_prod'], prefix='studio')
+
+    # 4. MPAA
+    df['mpaa_cat'] = df['rated'].apply(categorize_rating)
+    X_mpaa = pd.get_dummies(df['mpaa_cat'], prefix='rated')
+
+    # 5. Genres
     df['genre_list'] = df['genre'].apply(parse_list)
     mlb = MultiLabelBinarizer()
-    X_genre = pd.DataFrame(mlb.fit_transform(df['genre_list']), columns=mlb.classes_, index=df.index)
-    X_genre.columns = [f"gen_{c}" for c in X_genre.columns]
+    X_genre = pd.DataFrame(mlb.fit_transform(df['genre_list']), columns=[f"gen_{c}" for c in mlb.classes_], index=df.index)
 
-    # 7. Text Features
+    # 6. Text
     df['text_content'] = df['overview'].fillna('') + " " + df['tagline'].fillna('')
-    
-    tfidf = TfidfVectorizer(max_features=500, stop_words='english')
+    tfidf = TfidfVectorizer(max_features=1000, stop_words='english')
     tfidf_matrix = tfidf.fit_transform(df['text_content'])
-    
     pca = PCA(n_components=PCA_COMPONENTS)
     pca_features = pca.fit_transform(tfidf_matrix.toarray())
     X_text = pd.DataFrame(pca_features, columns=[f'pca_{i}' for i in range(PCA_COMPONENTS)])
 
-    # 8. Combine
-    X_final = pd.concat([X_num, X_dir.reset_index(drop=True), X_act.reset_index(drop=True), X_genre.reset_index(drop=True), X_text.reset_index(drop=True)], axis=1)
+    # 7. Combine & Sanitize
+    X_final = pd.concat([X_num, X_dir, X_act, X_wri, X_prod, X_mpaa, X_genre, X_text], axis=1)
     
-    print(f"📊 Training Data Shape: {X_final.shape}")
+    new_cols = [sanitize_col(col) for col in X_final.columns]
+    X_final.columns = new_cols
+    X_final = X_final.loc[:, ~X_final.columns.duplicated()]
+
+    # Targets
+    X_final['target_reg'] = df['user_rating'].reset_index(drop=True)
+    user_median = df['user_rating'].median()
+    X_final['target_class'] = (df['user_rating'] > user_median).astype(int).reset_index(drop=True)
     
-    # 9. Save
+    X_final.to_csv(config.TRAINING_DATA_PATH, index=False)
+    
     state = {
-        'valid_directors': valid_dirs,
-        'valid_actors': valid_actors,
+        'valid_directors': df['clean_director'].unique().tolist(),
+        'valid_actors': df['clean_actors'].unique().tolist(),
+        'valid_writers': df['clean_writer'].unique().tolist(),
+        'valid_studios': df['clean_prod'].unique().tolist(),
         'mlb_genre': mlb,
         'tfidf': tfidf,
         'pca': pca,
-        'training_columns': X_final.columns.tolist(),
-        'median_values': df[num_cols].median().to_dict()
+        'median_values': df[num_cols].median().to_dict(),
+        'training_columns': [c for c in X_final.columns if 'target' not in c]
     }
     joblib.dump(state, config.PREPROCESSOR_STATE)
-    
-    X_final['target_reg'] = y_reg.reset_index(drop=True)
-    X_final['target_class'] = y_class.reset_index(drop=True)
-    
-    X_final['target_class'] = y_class.reset_index(drop=True)
-    
-    X_final.to_csv(config.TRAINING_DATA_PATH, index=False)
-    print(f"✅ Features saved to {config.TRAINING_DATA_PATH}")
+    print(f"✅ Features processed. Shape: {X_final.shape}")
 
-def transform_single_movie(raw_movie_data: dict, preprocessor_state: dict) -> pd.DataFrame:
-    """
-    Transforms raw movie data into a feature vector using the loaded preprocessor state.
-    
-    Args:
-        raw_movie_data (dict): A dictionary containing raw movie data (e.g., from TMDB/OMDB).
-        preprocessor_state (dict): The loaded preprocessor state from joblib.
-        
-    Returns:
-        pd.DataFrame: A DataFrame with a single row representing the feature vector.
-    """
-    training_cols = preprocessor_state['training_columns']
-    feature_cols = [c for c in training_cols if c not in ['target_reg', 'target_class']]
-    
-    input_df = pd.DataFrame(0, index=[0], columns=feature_cols)
+# --- INFERENCE FUNCTIONS (FOR APP) ---
 
-    # A. Numeric Features
-    num_cols = ['year', 'runtime', 'imdb_rating', 'metascore', 'rotten_tomatoes_rating', 'vote_average', 'popularity']
+def transform_single_movie(movie_data, state):
+    # 1. Numerics
+    # Initialize with median defaults
+    row = {col: state['median_values'].get(col, 0) for col in state['median_values']}
     
-    # Handle Rotten Tomatoes (string "87%" -> float 87.0)
-    rt = raw_movie_data.get('rotten_tomatoes_rating')
-    if isinstance(rt, str) and '%' in rt:
-        rt = float(rt.replace('%', ''))
-    
-    num_map = {
-        'year': raw_movie_data.get('year'),
-        'runtime': raw_movie_data.get('runtime'),
-        'imdb_rating': raw_movie_data.get('imdb_rating'),
-        'metascore': raw_movie_data.get('metascore'),
-        'vote_average': raw_movie_data.get('vote_average'),
-        'popularity': raw_movie_data.get('popularity'),
-        'rotten_tomatoes_rating': rt
-    }
-    
-    for col in num_cols:
-        val = num_map.get(col)
-        if col in input_df.columns:
-            if val is None or val == '' or str(val).lower() == 'nan':
-                input_df.loc[0, col] = preprocessor_state['median_values'].get(col, 0)
-            else:
-                input_df.loc[0, col] = float(val)
-
-    # B. Categorical: Director
-    dirs = parse_list(raw_movie_data.get('director'))
-    primary_dir = dirs[0] if dirs else 'Unknown'
-    if primary_dir not in preprocessor_state['valid_directors']:
-        primary_dir = 'Other_Director'
-    
-    dir_col = f"dir_{primary_dir}"
-    if dir_col in input_df.columns:
-        input_df.loc[0, dir_col] = 1
-
-    # C. Categorical: Actor
-    acts = parse_list(raw_movie_data.get('actors'))
-    primary_act = acts[0] if acts else 'Unknown'
-    if primary_act not in preprocessor_state['valid_actors']:
-        primary_act = 'Other_Actor'
-        
-    act_col = f"act_{primary_act}"
-    if act_col in input_df.columns:
-        input_df.loc[0, act_col] = 1
-        
-    # D. Categorical: Genres (Multi-hot)
-    genres = parse_list(raw_movie_data.get('genre'))
-    # Use the fitted MultiLabelBinarizer to ensure consistent encoding
-    if 'mlb_genre' in preprocessor_state:
-        mlb = preprocessor_state['mlb_genre']
-        genre_encoded = mlb.transform([genres])
-        for i, genre_name in enumerate(mlb.classes_):
-            col_name = f"gen_{genre_name}"
-            if col_name in input_df.columns:
-                input_df.loc[0, col_name] = genre_encoded[0, i]
-    else: # Fallback if mlb_genre is not in state (shouldn't happen if state is properly saved)
-        for g in genres:
-            gen_col = f"gen_{g}"
-            if gen_col in input_df.columns:
-                input_df.loc[0, gen_col] = 1
-
-    # E. Text Features (PCA)
-    text = (str(raw_movie_data.get('overview', '')) + " " + str(raw_movie_data.get('tagline', ''))).strip()
-    if text and 'tfidf' in preprocessor_state and 'pca' in preprocessor_state:
-        tfidf_vec = preprocessor_state['tfidf'].transform([text])
-        pca_vec = preprocessor_state['pca'].transform(tfidf_vec.toarray())
-        
-        for i in range(pca_vec.shape[1]):
-            col_name = f"pca_{i}"
-            if col_name in input_df.columns:
-                input_df.loc[0, col_name] = pca_vec[0][i]
-
-    return input_df
-
-def find_similar_movies(raw_input_movie_data: dict, input_movie_df: pd.DataFrame, preprocessor_state: dict, n: int = 5):
-    """
-    Finds movies from the enriched data that are most similar to the input movie.
-    
-    Args:
-        raw_input_movie_data (dict): The raw data of the movie currently being queried.
-        input_movie_df (pd.DataFrame): DataFrame of the input movie's feature vector.
-        preprocessor_state (dict): The loaded preprocessor state from joblib.
-        n (int): Number of top similar movies to return.
-        
-    Returns:
-        list: A list of dictionaries, each containing movie title, year, similarity score, and raw_movie_data.
-    """
-    try:
-        enriched_df = pd.read_csv(config.ENRICHED_DATA_PATH)
-    except FileNotFoundError:
-        print("❌ Error: enriched_data.csv not found for similarity calculation.")
-        return []
-
-    input_title = raw_input_movie_data.get('title')
-    input_year = raw_input_movie_data.get('year')
-    
-    similarities_with_raw_data = []
-    all_movie_features = []
-    
-    for index, row in enriched_df.iterrows():
-        movie_raw_data = {k: row.get(k) for k in row.index if k in ['title', 'year', 'director', 'actors', 'genre', 'overview', 'tagline', 
-                                                  'runtime', 'imdb_rating', 'metascore', 'rotten_tomatoes_rating', 
-                                                  'vote_average', 'popularity']}
-        
-        # Ensure 'title' and 'year' are present for comparison
-        if not movie_raw_data.get('title') or not movie_raw_data.get('year'):
-            continue
-
-        if movie_raw_data['title'] == input_title and movie_raw_data['year'] == input_year:
-            continue
-            
+    # --- HELPER: Safe Numeric Cast ---
+    def safe_num(val, default_val):
         try:
-            features = transform_single_movie(movie_raw_data, preprocessor_state)
-            if not features.empty:
-                all_movie_features.append({
-                    'title': movie_raw_data['title'],
-                    'year': movie_raw_data['year'],
-                    'features': features,
-                    'raw_data': movie_raw_data # Store raw data for explanation
+            if val is None or str(val).lower() in ['nan', 'n/a', '', 'none']:
+                return default_val
+            # Clean string artifacts like commas
+            clean_s = str(val).replace(',', '').strip()
+            return float(clean_s)
+        except:
+            return default_val
+
+    # Apply safe cast to all potential string fields
+    row['year'] = safe_num(movie_data.get('year'), row.get('year'))
+    row['runtime'] = safe_num(movie_data.get('runtime'), row.get('runtime'))
+    row['imdb_rating'] = safe_num(movie_data.get('imdb_rating'), row.get('imdb_rating'))
+    row['metascore'] = safe_num(movie_data.get('metascore'), row.get('metascore')) # FIX: Safe Cast
+    row['vote_average'] = safe_num(movie_data.get('vote_average'), row.get('vote_average'))
+    row['vote_count'] = safe_num(movie_data.get('vote_count'), row.get('vote_count'))
+    
+    # Handle Box Office & RT special cases
+    bo = clean_money(movie_data.get('box_office', 0))
+    row['box_office_log'] = np.log1p(bo)
+    
+    rt = movie_data.get('rotten_tomatoes_rating')
+    if isinstance(rt, str) and '%' in rt: rt = float(rt.replace('%', ''))
+    row['rotten_tomatoes_rating'] = safe_num(rt, row.get('rotten_tomatoes_rating'))
+
+    df_row = pd.DataFrame([row])
+
+    # 2. Categoricals
+    def set_cat(raw_val, prefix, valid_list):
+        clean_val = clean_text_value(get_primary(parse_list(raw_val)))
+        if clean_val not in valid_list: clean_val = 'Other'
+        return sanitize_col(f"{prefix}_{clean_val}")
+
+    dir_col = set_cat(movie_data.get('director'), 'dir', state['valid_directors'])
+    act_col = set_cat(movie_data.get('actors'), 'act', state['valid_actors'])
+    wri_col = set_cat(movie_data.get('writer'), 'wri', state['valid_writers'])
+    
+    raw_prod = str(movie_data.get('production', '')).split(',')[0]
+    prod_val = clean_text_value(raw_prod)
+    if prod_val not in state['valid_studios']: prod_val = 'Other'
+    prod_col = sanitize_col(f"studio_{prod_val}")
+
+    mpaa = categorize_rating(movie_data.get('rated', ''))
+    mpaa_col = sanitize_col(f"rated_{mpaa}")
+
+    # 3. Text & Genres
+    txt = str(movie_data.get('overview', '')) + " " + str(movie_data.get('tagline', ''))
+    tfidf_vec = state['tfidf'].transform([txt])
+    pca_vec = state['pca'].transform(tfidf_vec.toarray())
+    
+    genres = parse_list(movie_data.get('genre', []))
+    gen_vec = state['mlb_genre'].transform([genres])
+
+    # 4. Construct Final DataFrame
+    final_df = pd.DataFrame(0, index=[0], columns=state['training_columns'])
+    
+    # Ensure all inputs are numeric in the final dataframe
+    for col in df_row.columns:
+        if col in final_df.columns: final_df[col] = df_row[col].astype(float)
+            
+    for col in [dir_col, act_col, wri_col, prod_col, mpaa_col]:
+        if col in final_df.columns: final_df[col] = 1.0
+            
+    for i, gen_name in enumerate(state['mlb_genre'].classes_):
+        col_name = sanitize_col(f"gen_{gen_name}")
+        if col_name in final_df.columns: final_df[col_name] = float(gen_vec[0, i])
+            
+    for i in range(pca_vec.shape[1]):
+        col_name = sanitize_col(f"pca_{i}")
+        if col_name in final_df.columns: final_df[col_name] = float(pca_vec[0, i])
+
+    # Explicitly force float type for safety
+    final_df = final_df.astype(float)
+    return final_df
+
+def find_similar_movies(input_data, input_features, state, top_n=5):
+    try:
+        db_df = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
+        train_df = pd.read_csv(config.TRAINING_DATA_PATH)
+        train_feats = train_df.drop(columns=['target_reg', 'target_class'], errors='ignore')
+        common_cols = train_feats.columns.intersection(input_features.columns)
+        
+        sim_scores = cosine_similarity(input_features[common_cols], train_feats[common_cols])
+        top_indices = sim_scores[0].argsort()[-top_n:][::-1]
+        
+        results = []
+        for idx in top_indices:
+            if idx < len(db_df):
+                row = db_df.iloc[idx]
+                results.append({
+                    'title': row.get('title'),
+                    'year': row.get('year'),
+                    'score': sim_scores[0][idx],
+                    'overview': row.get('overview')
                 })
-        except Exception as e:
-            print(f"Error processing movie {movie_raw_data.get('title')}: {e}")
-            continue
-
-    if not all_movie_features:
+        return results
+    except Exception as e:
+        print(f"Error in similarity: {e}")
         return []
+
+def explain_similarity(movie_a, movie_b_row):
+    reasons = []
+    if movie_a.get('director') and str(movie_b_row.get('director')) in str(movie_a.get('director')):
+        reasons.append("Shared Director")
+    
+    genres_a = set(parse_list(movie_a.get('genre')))
+    genres_b = set(parse_list(movie_b_row.get('genre')))
+    if not genres_b and 'genre' in movie_b_row: genres_b = set(parse_list(movie_b_row['genre']))
+         
+    common_gen = genres_a.intersection(genres_b)
+    if common_gen: reasons.append(f"Shared Genres ({', '.join(list(common_gen)[:2])})")
         
-    all_features_df = pd.concat([mf['features'] for mf in all_movie_features], ignore_index=True)
-
-    sim_scores = cosine_similarity(input_movie_df, all_features_df)[0]
-    
-    for i, score in enumerate(sim_scores):
-        similarities_with_raw_data.append({
-            'title': all_movie_features[i]['title'],
-            'year': all_movie_features[i]['year'],
-            'similarity': score,
-            'raw_data': all_movie_features[i]['raw_data']
-        })
-
-    similarities_with_raw_data = sorted(similarities_with_raw_data, key=lambda x: x['similarity'], reverse=True)
-    return similarities_with_raw_data[:n]
-
-def explain_similarity(raw_movie_1: dict, raw_movie_2: dict, preprocessor_state: dict) -> str:
-    """
-    Generates a textual explanation of the similarity between two movies.
-    
-    Args:
-        raw_movie_1 (dict): Raw data for the first movie.
-        raw_movie_2 (dict): Raw data for the second movie.
-        preprocessor_state (dict): The loaded preprocessor state.
-        
-    Returns:
-        str: A human-readable explanation of their similarities.
-    """
-    explanations = []
-
-    # Directors
-    dirs1 = parse_list(raw_movie_1.get('director'))
-    dirs2 = parse_list(raw_movie_2.get('director'))
-    common_dirs = list(set(dirs1) & set(dirs2))
-    if common_dirs:
-        explanations.append(f"Both directed by: {', '.join(common_dirs)}.")
-
-    # Actors
-    acts1 = parse_list(raw_movie_1.get('actors'))
-    acts2 = parse_list(raw_movie_2.get('actors'))
-    common_acts = list(set(acts1) & set(acts2))
-    if common_acts:
-        explanations.append(f"Both star: {', '.join(common_acts[:3])}{'...' if len(common_acts) > 3 else ''}.")
-
-    # Genres
-    genres1 = parse_list(raw_movie_1.get('genre'))
-    genres2 = parse_list(raw_movie_2.get('genre'))
-    common_genres = list(set(genres1) & set(genres2))
-    if common_genres:
-        explanations.append(f"Share genres like: {', '.join(common_genres)}.")
-
-    # Numeric Features (simplified comparison)
-    year1, year2 = raw_movie_1.get('year'), raw_movie_2.get('year')
-    if year1 and year2 and abs(year1 - year2) <= 5: # Within 5 years
-        explanations.append(f"Released around the same time (within {abs(year1 - year2)} years).")
-    
-    runtime1, runtime2 = raw_movie_1.get('runtime'), raw_movie_2.get('runtime')
-    if runtime1 and runtime2 and abs(runtime1 - runtime2) <= 20: # Within 20 minutes
-        explanations.append(f"Have similar runtimes (within {abs(runtime1 - runtime2)} minutes).")
-
-    # Textual content similarity (qualitative, based on presence)
-    text1_present = bool(raw_movie_1.get('overview') or raw_movie_1.get('tagline'))
-    text2_present = bool(raw_movie_2.get('overview') or raw_movie_2.get('tagline'))
-    if text1_present and text2_present:
-        # Since PCA components are abstract, we can't easily explain "why" from them directly.
-        # Just acknowledge that their textual content was used in similarity.
-        explanations.append("Their plot descriptions also contributed to their similarity.")
-
-    if not explanations:
-        return "Their similarity is based on subtle combinations of features."
-    
-    return " ".join(explanations)
-
-def transform_dataframe_for_prediction(df: pd.DataFrame, preprocessor_state: dict) -> pd.DataFrame:
-    """
-    Transforms a DataFrame of raw movie data into a feature-engineered DataFrame
-    suitable for model prediction, using the loaded preprocessor state.
-
-    Args:
-        df (pd.DataFrame): DataFrame containing raw movie data.
-        preprocessor_state (dict): The loaded preprocessor state from joblib.
-
-    Returns:
-        pd.DataFrame: A feature-engineered DataFrame ready for prediction.
-    """
-    processed_df = df.copy()
-
-    # 1. Numeric Features
-    num_cols = ['year', 'runtime', 'imdb_rating', 'metascore', 'rotten_tomatoes_rating', 'vote_average', 'popularity']
-    
-    for col in num_cols:
-        if col not in processed_df.columns:
-            processed_df[col] = np.nan
-        # Handle Rotten Tomatoes (string "87%" -> float 87.0)
-        if col == 'rotten_tomatoes_rating' and processed_df[col].dtype == object:
-            processed_df[col] = processed_df[col].apply(clean_percentage)
-        
-        processed_df[col] = pd.to_numeric(processed_df[col], errors='coerce')
-        # Fill with median from preprocessor state
-        processed_df[col] = processed_df[col].fillna(preprocessor_state['median_values'].get(col, 0))
-
-    X_num = processed_df[num_cols].reset_index(drop=True)
-
-    # 2. Categorical: Director
-    processed_df['director_list'] = processed_df['director'].apply(parse_list)
-    processed_df['primary_director'] = processed_df['director_list'].apply(lambda x: x[0] if len(x) > 0 else 'Unknown')
-    processed_df['primary_director'] = processed_df['primary_director'].apply(
-        lambda x: x if x in preprocessor_state['valid_directors'] else 'Other_Director'
-    )
-    X_dir = pd.get_dummies(processed_df['primary_director'], prefix='dir')
-
-    # 3. Categorical: Actors
-    processed_df['actors_list'] = processed_df['actors'].apply(parse_list)
-    processed_df['primary_actor'] = processed_df['actors_list'].apply(lambda x: x[0] if len(x) > 0 else 'Unknown')
-    processed_df['primary_actor'] = processed_df['primary_actor'].apply(
-        lambda x: x if x in preprocessor_state['valid_actors'] else 'Other_Actor'
-    )
-    X_act = pd.get_dummies(processed_df['primary_actor'], prefix='act')
-
-    # 4. Categorical: Genres
-    processed_df['genre_list'] = processed_df['genre'].apply(parse_list)
-    mlb = preprocessor_state['mlb_genre']
-    genre_encoded = mlb.transform(processed_df['genre_list'])
-    X_genre = pd.DataFrame(genre_encoded, columns=[f"gen_{c}" for c in mlb.classes_], index=processed_df.index)
-
-    # 5. Text Features
-    processed_df['text_content'] = processed_df['overview'].fillna('') + " " + processed_df['tagline'].fillna('')
-    tfidf = preprocessor_state['tfidf']
-    pca = preprocessor_state['pca']
-    
-    tfidf_matrix = tfidf.transform(processed_df['text_content'])
-    pca_features = pca.transform(tfidf_matrix.toarray())
-    X_text = pd.DataFrame(pca_features, columns=[f'pca_{i}' for i in range(pca_features.shape[1])], index=processed_df.index)
-
-    # 6. Combine all features
-    X_final = pd.concat([X_num, X_dir, X_act, X_genre, X_text], axis=1)
-    
-    # 7. Align columns with training data to ensure consistency
-    training_columns = [c for c in preprocessor_state['training_columns'] if c not in ['target_reg', 'target_class']]
-    
-    # Add missing columns with 0
-    missing_cols = set(training_columns) - set(X_final.columns)
-    for col in missing_cols:
-        X_final[col] = 0
-    
-    # Reorder columns to match training data
-    X_final = X_final[training_columns]
-
-    return X_final
+    if not reasons: return "Similar Plot & Vibe"
+    return ", ".join(reasons)
 
 if __name__ == "__main__":
     process_features()
