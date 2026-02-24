@@ -7,3 +7,5 @@ data/
 models/
 log.txt
 srs.txt
+err.txt
+src/movies/ratings.csv

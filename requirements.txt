@@ -12,3 +12,5 @@ joblib
 statsmodels
 google-api-python-client
 isodate
+matplotlib
+seaborn

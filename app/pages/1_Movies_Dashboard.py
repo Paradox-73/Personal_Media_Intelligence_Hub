@@ -61,6 +61,23 @@ def get_highly_rated_items(df, col_name, top_n=10, min_count=3):
     stats = stats[stats['count'] >= min_count]
     return stats.sort_values('avg_rating', ascending=False).head(top_n)
 
+def calculate_entropy(series):
+    """Calculates the Shannon entropy for a series of lists."""
+    import math
+    all_items = [item for sublist in series for item in sublist]
+    if not all_items:
+        return 0
+    
+    counts = Counter(all_items)
+    total_items = len(all_items)
+    
+    entropy = 0.0
+    for count in counts.values():
+        probability = count / total_items
+        entropy -= probability * math.log2(probability)
+        
+    return entropy
+
 # --- LOAD DATA ---
 @st.cache_data
 def load_data():
@@ -92,12 +109,15 @@ if df is None:
 st.title("📊 Personal Movie Intelligence")
 
 # 1. METRICS
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 c1.metric("Total Movies", len(df))
 c2.metric("Avg User Rating", f"{df['user_rating'].mean():.2f}")
 c3.metric("Avg Runtime", f"{int(df['runtime'].mean())} min")
 c4.metric("Liked Movies", f"{df['is_liked'].sum()}")
 c5.metric("Total Watch Time", f"{int(df['runtime'].sum() / 60)} hrs")
+if 'genre_list' in df.columns:
+    entropy = calculate_entropy(df['genre_list'])
+    c6.metric("Taste Diversity", f"{entropy:.2f}", help="A measure of genre diversity (Shannon Entropy). A higher value means your taste is more varied; a lower value means it's more specific.")
 
 st.divider()
 

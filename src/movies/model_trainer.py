@@ -5,7 +5,7 @@ import sys
 import numpy as np
 from pathlib import Path
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, accuracy_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, accuracy_score
 
 # Add Project Root to Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
@@ -25,7 +25,6 @@ def train_models():
     y_class = df['target_class']
     
     # 80/20 Split
-    # We split X, y_reg, and y_class all at once to ensure indices match
     X_train, X_test, y_reg_train, y_reg_test, y_clf_train, y_clf_test = train_test_split(
         X, y_reg, y_class, test_size=0.2, random_state=42
     )
@@ -44,9 +43,26 @@ def train_models():
     )
     regressor.fit(X_train, y_reg_train)
     
-    preds_reg = regressor.predict(X_test)
+    preds_reg_raw = regressor.predict(X_test)
+    preds_reg = np.round(np.clip(preds_reg_raw, 0, 5) * 2) / 2
+    
     rmse = np.sqrt(mean_squared_error(y_reg_test, preds_reg))
+    mae = mean_absolute_error(y_reg_test, preds_reg)
+    r2 = r2_score(y_reg_test, preds_reg)
+    
     print(f"   📉 [TEST SET] Regressor RMSE: {rmse:.4f}")
+    print(f"   📉 [TEST SET] Regressor MAE:  {mae:.4f}")
+    print(f"   📈 [TEST SET] Regressor R²:   {r2:.4f}")
+
+    # Detailed Diff Report
+    diffs = np.abs(y_reg_test - preds_reg)
+    total = len(diffs)
+    print("\n" + "   " + "-"*40)
+    print(f"   Exact (0.0):  {(diffs == 0.0).sum():<3} ({((diffs == 0.0).sum()/total)*100:.1f}%)")
+    print(f"   Off by 0.5:   {(diffs == 0.5).sum():<3} ({((diffs == 0.5).sum()/total)*100:.1f}%)")
+    print(f"   Off by 1.0:   {(diffs == 1.0).sum():<3} ({((diffs == 1.0).sum()/total)*100:.1f}%)")
+    print(f"   Off by >1.0:  {(diffs > 1.0).sum():<3} ({((diffs > 1.0).sum()/total)*100:.1f}%)")
+    print("   " + "-"*40 + "\n")
     
     # --- 2. Classifier ---
     print(f"   Training Classifier...")
@@ -56,7 +72,6 @@ def train_models():
         max_depth=3,
         random_state=42
     )
-    # FIX: Use X_train, not X_clf_train
     classifier.fit(X_train, y_clf_train)
     
     acc = accuracy_score(y_clf_test, classifier.predict(X_test))

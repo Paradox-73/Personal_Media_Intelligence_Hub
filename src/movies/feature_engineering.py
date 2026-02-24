@@ -36,15 +36,22 @@ def clean_text_value(x):
     return s.strip()
 
 def parse_list(x):
-    # FIX: Check for list/array types FIRST to avoid "Ambiguous truth value" error
-    if isinstance(x, list): return x
-    if isinstance(x, np.ndarray): return x.tolist()
-    
-    if pd.isna(x) or x == "": return []
+    if isinstance(x, (list, np.ndarray)):
+        return x if isinstance(x, list) else x.tolist()
+
+    if pd.isna(x): return []
+    s = str(x).strip()
+    if not s: return []
+
     try:
-        if "[" in str(x): return ast.literal_eval(str(x))
-        return [str(x)]
-    except: return []
+        # If it looks like a Python list literal, evaluate it
+        if s.startswith('[') and s.endswith(']'):
+            return ast.literal_eval(s)
+        # Otherwise, assume it's a comma-separated string (or a single item)
+        return [item.strip() for item in s.split(',')]
+    except (ValueError, SyntaxError):
+        # Fallback for single, non-parsable items
+        return [s]
 
 def get_primary(val_list):
     return val_list[0] if val_list and len(val_list) > 0 else 'Unknown'

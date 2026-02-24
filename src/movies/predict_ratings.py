@@ -6,6 +6,8 @@ import ast
 import re
 from pathlib import Path
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
@@ -119,9 +121,7 @@ def batch_predict_ratings():
     # --- Predict ---
     preds = model.predict(X_final)
     
-    # --- CRITICAL FIX: SCALE 0 to 5 ---
-    # We clip to 0-5 (or 0.5-5.0 if you never rate 0)
-    df['predicted_rating'] = np.clip(preds, 0, 5).round(1) 
+    df['predicted_rating'] = np.round(np.clip(preds, 0, 5) * 2) / 2
     df['name'] = df['title'].fillna(df['letterboxd_name'])
 
     # --- Report ---
@@ -133,6 +133,7 @@ def batch_predict_ratings():
         rmse = np.sqrt(mean_squared_error(y_true, y_pred))
         r2 = r2_score(y_true, y_pred)
         diffs = np.abs(y_true - y_pred)
+        total = len(diffs)
         
         print("\n" + "="*40)
         print("📊 ML ENGINEER PERFORMANCE REPORT")
@@ -143,13 +144,30 @@ def batch_predict_ratings():
         print(f"📉 RMSE: {rmse:.4f}")
         print(f"📈 R²:   {r2:.4f}")
         print("-" * 40)
-        print(f"   Exact (0.0):    {(diffs == 0).sum():<3} ({((diffs == 0).sum()/len(diffs))*100:.1f}%)")
-        print(f"   Tiny (0.1-0.4): {((diffs > 0) & (diffs <= 0.4)).sum():<3} ({(((diffs > 0) & (diffs <= 0.4)).sum()/len(diffs))*100:.1f}%)")
-        print(f"   Small (0.5-0.9):{((diffs >= 0.5) & (diffs <= 0.9)).sum():<3} ({(((diffs >= 0.5) & (diffs <= 0.9)).sum()/len(diffs))*100:.1f}%)")
-        print(f"   Large (>= 1.0): {(diffs >= 1.0).sum():<3} ({((diffs >= 1.0).sum()/len(diffs))*100:.1f}%)")
+        print(f"   Exact (0.0):  {(diffs == 0.0).sum():<3} ({((diffs == 0.0).sum()/total)*100:.1f}%)")
+        print(f"   Off by 0.5:   {(diffs == 0.5).sum():<3} ({((diffs == 0.5).sum()/total)*100:.1f}%)")
+        print(f"   Off by 1.0:   {(diffs == 1.0).sum():<3} ({((diffs == 1.0).sum()/total)*100:.1f}%)")
+        print(f"   Off by >1.0:  {(diffs > 1.0).sum():<3} ({((diffs > 1.0).sum()/total)*100:.1f}%)")
         print("="*40 + "\n")
         
         df.loc[eval_df.index, 'abs_diff'] = diffs
+
+        # Add histogram plot
+        plt.figure(figsize=(10, 6))
+        sns.histplot(y_true, bins=np.arange(0, 5.75, 0.5), 
+                     color='blue', alpha=0.5, label='Actual Ratings', kde=False)
+        sns.histplot(y_pred, bins=np.arange(0, 5.75, 0.5), 
+                     color='orange', alpha=0.5, label='Predicted Ratings', kde=False)
+        plt.title('Distribution of Actual vs Predicted Ratings (Full Dataset)')
+        plt.xlabel('Rating')
+        plt.ylabel('Count')
+        plt.xticks(np.arange(0.5, 5.5, 0.5))
+        plt.legend()
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        
+        plot_path = config.PREDICTIONS_DIR / "ratings_distribution_histogram.png"
+        plt.savefig(plot_path)
+        print(f"📈 Histogram of rating distributions saved to {plot_path}")
 
     # Save
     out_cols = ['name', 'year', 'user_rating', 'predicted_rating', 'abs_diff', 'director', 'production']

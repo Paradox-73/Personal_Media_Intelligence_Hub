@@ -8,9 +8,11 @@ RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
 CACHE_DIR = DATA_DIR / "cache"
 MODEL_DIR = BASE_DIR / "models"
+PREDICTIONS_DIR = DATA_DIR / "predictions"
+
 
 # Ensure directories exist
-for d in [DATA_DIR, RAW_DIR, PROCESSED_DIR, CACHE_DIR, MODEL_DIR]:
+for d in [DATA_DIR, RAW_DIR, PROCESSED_DIR, CACHE_DIR, MODEL_DIR, PREDICTIONS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # --- MOVIES ---
@@ -18,6 +20,8 @@ for d in [DATA_DIR, RAW_DIR, PROCESSED_DIR, CACHE_DIR, MODEL_DIR]:
 MOVIES_RAW_DIR = RAW_DIR / "movies"
 MOVIES_PROCESSED_DIR = PROCESSED_DIR / "movies"
 MOVIES_MODEL_DIR = MODEL_DIR / "movies"
+MOVIES_PREDICTIONS_DIR = PREDICTIONS_DIR / "movies"
+
 
 # Movie Files
 RATINGS_PATH = MOVIES_RAW_DIR / "ratings.csv"
@@ -25,12 +29,18 @@ LIKED_PATH = MOVIES_RAW_DIR / "liked.csv"
 
 MOVIES_ENRICHED_DATA_PATH = MOVIES_PROCESSED_DIR / "enriched_data.csv"
 TRAINING_DATA_PATH = MOVIES_PROCESSED_DIR / "training_features.csv"
-MOVIES_PREDICTIONS_DIR = MOVIES_PROCESSED_DIR / "dashboard_view.csv" # For EDA
+# This path seems to be incorrect, PREDICTIONS_DIR is not a subdirectory of PROCESSED_DIR
+# Let's place it in the top-level predictions dir
+MOVIES_DASHBOARD_VIEW_PATH = MOVIES_PREDICTIONS_DIR / "dashboard_view.csv" 
 
 # Movie Model Artifacts
 MODEL_REGRESSOR = MOVIES_MODEL_DIR / "xgb_regressor.pkl"
 MODEL_CLASSIFIER = MOVIES_MODEL_DIR / "xgb_classifier.pkl"
 PREPROCESSOR_STATE = MOVIES_MODEL_DIR / "preprocessor_state.pkl" # Saves PCA, Threshold lists
+
+# New Item-Similarity Model Artifacts
+SIMILARITY_MATRIX = MOVIES_MODEL_DIR / "item_similarity_matrix.pkl"
+SIMILARITY_PREDICTIONS_PATH = MOVIES_PREDICTIONS_DIR / "similarity_predictions.csv"
 
 
 # --- TV SHOWS ---

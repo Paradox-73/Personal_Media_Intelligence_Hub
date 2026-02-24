@@ -52,27 +52,90 @@ def get_ultimate_movie_metadata(tmdb_id):
                 
     return tmdb_data
 
+def predict_rating_with_similarity(target_movie_uri, artifacts, top_n=15):
+    """
+    Predicts a movie rating based on weighted average of similar rated movies.
+    This is for on-the-fly prediction in the Oracle.
+    """
+    sim_matrix = artifacts.get('similarity_matrix')
+    uri_to_idx = artifacts.get('movie_uri_to_idx')
+    user_ratings = artifacts.get('user_ratings') # FIX: Correct key
+
+    if sim_matrix is None or uri_to_idx is None or user_ratings is None:
+        return None, "Similarity model artifacts are missing or incomplete."
+
+    if target_movie_uri not in uri_to_idx:
+         return None, "This movie was not in the set used to build the similarity model, so a prediction cannot be made."
+
+    target_idx = uri_to_idx[target_movie_uri]
+    sim_scores = sim_matrix[target_idx]
+    
+    idx_to_uri = {i: uri for uri, i in uri_to_idx.items()}
+
+    # Calculate weighted average
+    numerator = 0
+    denominator = 0
+    count = 0
+    
+    # Sort similarities to find top N
+    sorted_sim_indices = np.argsort(sim_scores)[::-1]
+    
+    rated_uris = set(user_ratings.index)
+
+    for idx in sorted_sim_indices:
+        if count >= top_n:
+            break
+        
+        # Skip itself
+        if idx == target_idx:
+            continue
+
+        uri = idx_to_uri.get(idx)
+        if uri and uri in rated_uris:
+            rating = user_ratings.loc[uri, 'user_rating']
+            similarity = sim_scores[idx]
+            
+            numerator += similarity * rating
+            denominator += similarity
+            count += 1
+            
+    if denominator == 0:
+        avg_rating = user_ratings['user_rating'].mean()
+        return np.round(avg_rating * 2) / 2, "No similar rated movies found; returning average rating."
+
+    prediction = np.round((numerator / denominator) * 2) / 2
+    return prediction, f"Based on {count} similar rated movies."
+
+
 # --- LOAD ARTIFACTS ---
 @st.cache_resource
 def load_artifacts():
+    artifacts = {'reg': None, 'clf': None, 'state': None, 'sim': None}
     try:
-        reg = joblib.load(config.MODEL_REGRESSOR)
-        state = joblib.load(config.PREPROCESSOR_STATE)
+        artifacts['reg'] = joblib.load(config.MODEL_REGRESSOR)
+        artifacts['state'] = joblib.load(config.PREPROCESSOR_STATE)
         
-        # Classifier is optional
-        clf = None
-        if os.path.exists(config.MODEL_CLASSIFIER):
-            clf = joblib.load(config.MODEL_CLASSIFIER)
+        if config.MODEL_CLASSIFIER.exists():
+            artifacts['clf'] = joblib.load(config.MODEL_CLASSIFIER)
             
-        return reg, clf, state
-    except FileNotFoundError:
-        return None, None, None
+        if config.SIMILARITY_MATRIX.exists():
+            artifacts['sim'] = joblib.load(config.SIMILARITY_MATRIX)
+            
+    except FileNotFoundError as e:
+        st.warning(f"Could not load all artifacts. Missing: {e.filename}")
+        
+    return artifacts
 
-regressor, classifier, state = load_artifacts()
+artifacts = load_artifacts()
+regressor, classifier, state, similarity_artifacts = artifacts['reg'], artifacts['clf'], artifacts['state'], artifacts['sim']
+
 
 if regressor is None:
-    st.error("❌ Models not found! Run `python src/movies/model_trainer.py` first.")
+    st.error("❌ Main XGBoost model not found! Run `python src/movies/model_trainer.py` first.")
     st.stop()
+if similarity_artifacts is None:
+    st.warning("🔮 Similarity model not found. Predictions will be from the main model only. Run `python src/movies/similarity_model_trainer.py`")
+
 
 # --- INPUTS (Search Functionality) ---
 if 'search_query_input' not in st.session_state:
@@ -130,13 +193,19 @@ if st.session_state['selected_movie_raw_data']:
     
     if st.button("Consult the Oracle", key="consult_button"):
         with st.spinner("Analyzing Directors, Writers, Box Office, and Vibes..."):
-            # 2. PREPROCESS
+            # 1. PREPROCESS for XGBoost
             input_df = transform_single_movie(raw_data, state)
 
-            # 3. PREDICT
-            pred_score = regressor.predict(input_df)[0]
-            # Clip to 0-5 scale
-            final_score = np.clip(pred_score, 0, 5)
+            # 2. PREDICT with XGBoost
+            pred_score_xgb = regressor.predict(input_df)[0]
+            final_score_xgb = np.round(np.clip(pred_score_xgb, 0, 5) * 2) / 2
+            
+            # 3. PREDICT with Similarity Model
+            sim_pred, sim_reason = None, "Not available."
+            if similarity_artifacts and raw_data.get('letterboxd_uri'):
+                sim_pred, sim_reason = predict_rating_with_similarity(
+                    raw_data['letterboxd_uri'], similarity_artifacts
+                )
             
             # Classification Verdict
             verdict = "N/A"
@@ -144,7 +213,6 @@ if st.session_state['selected_movie_raw_data']:
             if classifier:
                 try:
                     pred_probs = classifier.predict_proba(input_df)[0]
-                    # Assuming class 1 is "Good"
                     if len(pred_probs) > 1:
                         verdict = "Watch it! 🍿" if pred_probs[1] > 0.5 else "Skip it ❌"
                         confidence = max(pred_probs) * 100
@@ -153,9 +221,15 @@ if st.session_state['selected_movie_raw_data']:
             # 4. DISPLAY
             st.divider()
             c1, c2, c3 = st.columns(3)
-            c1.metric("Predicted Rating", f"⭐ {final_score:.1f}/5.0")
-            c2.metric("Verdict", verdict)
-            if classifier: c3.metric("Confidence", f"{confidence:.1f}%")
+            c1.metric("XGBoost Prediction", f"⭐ {final_score_xgb:.1f}/5.0")
+            if sim_pred is not None:
+                c2.metric("Similarity Prediction", f"🤝 {sim_pred:.1f}/5.0")
+                st.caption(f"Similarity model reason: {sim_reason}")
+            else:
+                c2.metric("Similarity Prediction", "N/A")
+                st.caption(f"Similarity model reason: {sim_reason}")
+
+            c3.metric("Verdict", verdict)
             
             # Context
             st.subheader(f"{raw_data.get('title')}")
@@ -170,9 +244,8 @@ if st.session_state['selected_movie_raw_data']:
                 st.write(f"**Metascore:** {raw_data.get('metascore', 'N/A')}")
                 st.caption(raw_data.get('overview'))
 
-            # 5. SIMILARITY (Fixed Argument Error)
-            st.subheader("💡 Analysis based on similar movies:")
-            # FIX: Use top_n instead of n
+            # 5. SIMILARITY ANALYSIS
+            st.subheader("💡 Analysis based on similar movies (XGBoost Features):")
             similar_movies = find_similar_movies(raw_data, input_df, state, top_n=3)
 
             if similar_movies:
