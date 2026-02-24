@@ -172,20 +172,28 @@ def run_test_on_new_movies(csv_path):
     print("="*45 + "\n")
 
     # 6. Visualization
-    plt.figure(figsize=(10, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
     
+    # My Ratings Spread
     sns.histplot(df_results['Actual'], bins=np.arange(0.25, 5.75, 0.5), 
-                 color='blue', alpha=0.5, label='Actual Ratings', kde=False)
+                 ax=axes[0], color='royalblue', kde=True)
+    axes[0].set_title('My Actual Ratings Distribution')
+    axes[0].set_xlabel('Rating (0.5 - 5.0)')
+    axes[0].set_ylabel('Count')
+    axes[0].set_xticks(np.arange(0.5, 5.5, 0.5))
+    axes[0].grid(axis='y', linestyle='--', alpha=0.7)
     
+    # ML's Ratings Spread
     sns.histplot(df_results['Predicted'], bins=np.arange(0.25, 5.75, 0.5), 
-                 color='orange', alpha=0.5, label='Predicted Ratings', kde=False)
-    
-    plt.title('Distribution of Actual vs Predicted Ratings')
-    plt.xlabel('Rating (0.5 - 5.0)')
-    plt.ylabel('Count')
-    plt.xticks(np.arange(0.5, 5.5, 0.5))
-    plt.legend()
-    plt.grid(axis='y', linestyle='--', alpha=0.7)
+                 ax=axes[1], color='darkorange', kde=True)
+    axes[1].set_title("ML's Predicted Ratings Distribution")
+    axes[1].set_xlabel('Rating (0.5 - 5.0)')
+    axes[1].set_ylabel('') # Hide y-axis label for clarity
+    axes[1].set_xticks(np.arange(0.5, 5.5, 0.5))
+    axes[1].grid(axis='y', linestyle='--', alpha=0.7)
+
+    fig.suptitle('Comparison of Rating Distributions', fontsize=16)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout to make room for the suptitle
     
     plot_path = Path("new_movies_eval_histogram.png")
     plt.savefig(plot_path)

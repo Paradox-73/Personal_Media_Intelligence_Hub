@@ -8,6 +8,7 @@ from pathlib import Path
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sentence_transformers import SentenceTransformer
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
@@ -19,12 +20,6 @@ def clean_money(x):
     x = str(x).replace('$', '').replace(',', '').strip()
     try: return float(x)
     except: return 0
-
-def clean_text_value(x):
-    if pd.isna(x): return 'Unknown'
-    s = str(x).strip()
-    s = s.replace('[', '').replace(']', '').replace("'", "").replace('"', "")
-    return s.strip()
 
 def parse_list(x):
     if pd.isna(x) or x == "": return []
@@ -40,11 +35,14 @@ def categorize_rating(r):
     if 'PG' in r or 'TV-14' in r: return 'Teen'
     return 'General'
 
+def sanitize_col(col_name):
+    return re.sub(r"[\[\]<']", "", str(col_name))
+
 def batch_predict_ratings():
     print("🚀 Starting Batch Prediction (Scale 0-5 Fixed)...")
 
-    if not config.MODEL_REGRESSOR.exists():
-        print("❌ Model not found.")
+    if not config.MODEL_REGRESSOR.exists() or not config.PREPROCESSOR_STATE.exists():
+        print("❌ Model or Preprocessor State not found.")
         return
         
     model = joblib.load(config.MODEL_REGRESSOR)
@@ -57,72 +55,88 @@ def batch_predict_ratings():
         print("❌ Data not found.")
         return
 
+    print("   Processing features...")
+    
     # --- Feature Engineering ---
-    # A. Numerics
+    # 1. Numerics
+    if df['rotten_tomatoes_rating'].dtype == 'object':
+        df['rotten_tomatoes_rating'] = df['rotten_tomatoes_rating'].str.replace('%', '', regex=False).astype(float)
+
     df['box_office_clean'] = df['box_office'].apply(clean_money)
     df['box_office_log'] = np.log1p(df['box_office_clean'])
+    
+    df['total_wins'] = df['awards'].str.extract(r'(\d+)\s+win', flags=re.IGNORECASE)[0].astype(float).fillna(0)
+    df['total_nominations'] = df['awards'].str.extract(r'(\d+)\s+nomination', flags=re.IGNORECASE)[0].astype(float).fillna(0)
+
+    # Re-calculate the critic average feature
+    df['imdb_rating_100'] = df['imdb_rating'] * 10
+    df['vote_average_100'] = df['vote_average'] * 10
+    critic_scores = df[['imdb_rating_100', 'metascore', 'rotten_tomatoes_rating', 'vote_average_100']]
+    df['critic_avg_100'] = critic_scores.mean(axis=1)
+    df['critic_avg_5'] = (df['critic_avg_100'] / 100) * 5
+
+    if 'imdb_votes' in df.columns:
+        df.rename(columns={'imdb_votes': 'vote_count'}, inplace=True)
     
     for col, med_val in state['median_values'].items():
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(med_val)
         else:
             df[col] = med_val
-
-    # B. Categoricals
-    get_primary = lambda x: parse_list(x)[0] if parse_list(x) else 'Unknown'
     
-    def create_dummy_df(raw_col, prefix, valid_list, clean_func=None):
-        if clean_func:
-            clean_vals = df[raw_col].apply(clean_func)
-            clean_vals = clean_vals.apply(clean_text_value)
-        else:
-            clean_vals = df[raw_col].apply(clean_text_value)
-            
-        clean_vals = clean_vals.apply(lambda x: x if x in valid_list else 'Other')
-        all_categories = sorted(list(set(valid_list) | {'Other'}))
-        cat_type = pd.CategoricalDtype(categories=all_categories, ordered=False)
-        return pd.get_dummies(clean_vals.astype(cat_type), prefix=prefix)
+    # 2. Languages
+    def map_language(lang_str):
+        if pd.isna(lang_str): return 'Other'
+        langs = [l.strip() for l in lang_str.split(',')]
+        for lang in langs:
+            if lang in state['top_languages']:
+                return lang
+        return 'Other'
+    df['language_cleaned'] = df['language'].apply(map_language)
+    X_lang = pd.get_dummies(df['language_cleaned'], prefix='lang')
 
-    X_dir = create_dummy_df('director', 'dir', state['valid_directors'], get_primary)
-    X_act = create_dummy_df('actors', 'act', state['valid_actors'], get_primary)
-    X_wri = create_dummy_df('writer', 'wri', state['valid_writers'], get_primary)
+    # 3. Text Embeddings
+    print("   Generating text embeddings...")
+    df['text_content'] = "Title: " + df['title'].fillna('Unknown') + \
+                         ". Directed by: " + df['director'].fillna('Unknown') + \
+                         ". Starring: " + df['actors'].fillna('Unknown') + \
+                         ". Written by: " + df['writer'].fillna('Unknown') + \
+                         ". Produced by: " + df['production'].fillna('Unknown') + \
+                         ". " + df['tagline'].fillna('') + \
+                         " " + df['overview'].fillna('') + \
+                         " " + df['plot'].fillna('')
     
-    df['primary_prod'] = df['production'].apply(lambda x: str(x).split(',')[0] if pd.notna(x) else 'Unknown')
-    X_prod = create_dummy_df('primary_prod', 'studio', state['valid_studios'], None)
+    transformer_model = SentenceTransformer(state.get('sentence_transformer', 'all-MiniLM-L6-v2'))
+    text_embeddings = transformer_model.encode(df['text_content'].tolist(), show_progress_bar=True)
+    pca_vec = state['pca'].transform(text_embeddings)
+    X_text = pd.DataFrame(pca_vec, columns=[f'pca_{i}' for i in range(pca_vec.shape[1])], index=df.index)
 
-    # C. MPAA & Genres
-    df['mpaa_cat'] = df['rated'].apply(categorize_rating)
-    X_mpaa = pd.DataFrame()
-    for cat in ['Adult', 'Teen', 'General']:
-        X_mpaa[f'rated_{cat}'] = (df['mpaa_cat'] == cat).astype(int)
-
+    # 4. Genres
     df['genre_list'] = df['genre'].apply(parse_list)
     genre_encoded = state['mlb_genre'].transform(df['genre_list'])
     X_genre = pd.DataFrame(genre_encoded, columns=[f"gen_{c}" for c in state['mlb_genre'].classes_], index=df.index)
 
-    # D. Text
-    df['text_content'] = df['overview'].fillna('') + " " + df['tagline'].fillna('')
-    tfidf_mat = state['tfidf'].transform(df['text_content'])
-    pca_mat = state['pca'].transform(tfidf_mat.toarray())
-    X_text = pd.DataFrame(pca_mat, columns=[f'pca_{i}' for i in range(pca_mat.shape[1])], index=df.index)
+    # 5. MPAA
+    df['mpaa_cat'] = df['rated'].apply(categorize_rating)
+    X_mpaa = pd.get_dummies(df['mpaa_cat'], prefix='rated')
 
-    # E. Assembly
-    X_temp = pd.concat([df[list(state['median_values'].keys())], X_dir, X_act, X_wri, X_prod, X_mpaa, X_genre, X_text], axis=1)
-    
-    # Sanitize
-    new_cols = [re.sub(r"[\[\]<']", "", str(col)) for col in X_temp.columns]
-    X_temp.columns = new_cols
+    # 6. Assemble
+    X_temp = pd.concat([df[list(state['median_values'].keys())], X_lang, X_genre, X_mpaa, X_text], axis=1)
+    X_temp.columns = [sanitize_col(col) for col in X_temp.columns]
+    X_temp = X_temp.loc[:, ~X_temp.columns.duplicated()]
 
-    # F. Alignment
+    # 7. Alignment with training columns (Implicitly drops popularity if removed from training)
     X_final = pd.DataFrame(0, index=df.index, columns=state['training_columns'])
     common_cols = list(set(X_temp.columns) & set(state['training_columns']))
     X_final[common_cols] = X_temp[common_cols]
 
+    print("   Predicting ratings...")
+    
     # --- Predict ---
     preds = model.predict(X_final)
     
     df['predicted_rating'] = np.round(np.clip(preds, 0, 5) * 2) / 2
-    df['name'] = df['title'].fillna(df['letterboxd_name'])
+    df['name'] = df['title'].fillna(df.get('letterboxd_name', 'Unknown'))
 
     # --- Report ---
     if 'user_rating' in df.columns and not df['user_rating'].isna().all():
@@ -152,27 +166,38 @@ def batch_predict_ratings():
         
         df.loc[eval_df.index, 'abs_diff'] = diffs
 
-        # Add histogram plot
-        plt.figure(figsize=(10, 6))
-        sns.histplot(y_true, bins=np.arange(0, 5.75, 0.5), 
-                     color='blue', alpha=0.5, label='Actual Ratings', kde=False)
-        sns.histplot(y_pred, bins=np.arange(0, 5.75, 0.5), 
-                     color='orange', alpha=0.5, label='Predicted Ratings', kde=False)
-        plt.title('Distribution of Actual vs Predicted Ratings (Full Dataset)')
-        plt.xlabel('Rating')
-        plt.ylabel('Count')
-        plt.xticks(np.arange(0.5, 5.5, 0.5))
-        plt.legend()
-        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        # Side-by-Side Histograms
+        fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
         
+        sns.histplot(y_true, bins=np.arange(0.25, 5.75, 0.5), 
+                     ax=axes[0], color='royalblue', kde=True)
+        axes[0].set_title('My Actual Ratings Distribution')
+        axes[0].set_xlabel('Rating (0.5 - 5.0)')
+        axes[0].set_ylabel('Count')
+        axes[0].set_xticks(np.arange(0.5, 5.5, 0.5))
+        axes[0].grid(axis='y', linestyle='--', alpha=0.7)
+        
+        sns.histplot(y_pred, bins=np.arange(0.25, 5.75, 0.5), 
+                     ax=axes[1], color='darkorange', kde=True)
+        axes[1].set_title("ML's Predicted Ratings Distribution")
+        axes[1].set_xlabel('Rating (0.5 - 5.0)')
+        axes[1].set_ylabel('')
+        axes[1].set_xticks(np.arange(0.5, 5.5, 0.5))
+        axes[1].grid(axis='y', linestyle='--', alpha=0.7)
+
+        fig.suptitle('Comparison of Rating Distributions (Full Dataset)', fontsize=16)
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        
+        config.PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
         plot_path = config.PREDICTIONS_DIR / "ratings_distribution_histogram.png"
         plt.savefig(plot_path)
-        print(f"📈 Histogram of rating distributions saved to {plot_path}")
+        print(f"📈 Histogram saved to {plot_path}")
 
     # Save
     out_cols = ['name', 'year', 'user_rating', 'predicted_rating', 'abs_diff', 'director', 'production']
     final_df = df[[c for c in out_cols if c in df.columns]].sort_values(by='predicted_rating', ascending=False)
     
+    config.MOVIES_PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = config.MOVIES_PREDICTIONS_DIR / "predicted_ratings.csv"
     final_df.to_csv(out_path, index=False)
     print(f"✅ Saved to {out_path}")

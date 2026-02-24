@@ -202,10 +202,14 @@ if st.session_state['selected_movie_raw_data']:
             
             # 3. PREDICT with Similarity Model
             sim_pred, sim_reason = None, "Not available."
-            if similarity_artifacts and raw_data.get('letterboxd_uri'):
-                sim_pred, sim_reason = predict_rating_with_similarity(
-                    raw_data['letterboxd_uri'], similarity_artifacts
-                )
+            if similarity_artifacts:
+                if raw_data.get('letterboxd_uri'):
+                    sim_pred, sim_reason = predict_rating_with_similarity(
+                        raw_data['letterboxd_uri'], similarity_artifacts
+                    )
+                else:
+                    sim_reason = "Letterboxd URI missing in movie data, cannot use similarity model."
+                    st.warning(sim_reason)
             
             # Classification Verdict
             verdict = "N/A"
