@@ -8,6 +8,7 @@ from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import MultiLabelBinarizer
+from sklearn.metrics.pairwise import cosine_similarity  # Added import
 
 # Add Project Root to Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
@@ -72,8 +73,6 @@ def process_features():
     df['total_nominations'] = df['awards'].str.extract(r'(\d+)\s+nomination', flags=re.IGNORECASE)[0].astype(float).fillna(0)
 
     # Engineer Critic vs. User Rating Feature
-    # I am using critic_avg_5 instead of rating_diff to prevent data leakage,
-    # as using user_rating to create a feature to predict user_rating is problematic.
     df['imdb_rating_100'] = df['imdb_rating'] * 10
     df['vote_average_100'] = df['vote_average'] * 10
     critic_scores = df[['imdb_rating_100', 'metascore', 'rotten_tomatoes_rating', 'vote_average_100']]
@@ -92,14 +91,8 @@ def process_features():
     for col in num_cols:
         if col not in df.columns:
             df[col] = 0
-        
-        # First, convert column to numeric, coercing errors to NaN
         numeric_series = pd.to_numeric(df[col], errors='coerce')
-        
-        # Then, calculate the median from this numeric series
         median_val = numeric_series.median()
-        
-        # Finally, fill any NaNs (from coercion or original data) with the median
         df[col] = numeric_series.fillna(median_val)
 
     X_num = df[num_cols].reset_index(drop=True)
@@ -251,6 +244,64 @@ def transform_single_movie(movie_data, state):
 
     final_df = final_df.astype(float)
     return final_df
+
+# --- NEW SIMILARITY FUNCTIONS FOR ORACLE ---
+def find_similar_movies(movie_data, input_df, state, top_n=3):
+    """Finds top N similar movies based STRICTLY on Embeddings and Genre (ignores Year/Ratings)."""
+    try:
+        df_train = pd.read_csv(config.TRAINING_DATA_PATH)
+        df_enriched = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
+        df_enriched = df_enriched.dropna(subset=['user_rating']).reset_index(drop=True)
+        
+        # THE FIX: Only compare the PCA (text) and GEN (genre) columns. 
+        # This completely ignores Year, Runtime, Box Office, etc.
+        sim_cols = [c for c in state['training_columns'] if c.startswith('pca_')]
+        
+        X_train_sim = df_train[sim_cols]
+        input_sim = input_df[sim_cols]
+        
+        # Calculate similarity using ONLY the text and genre features
+        sim_scores = cosine_similarity(input_sim, X_train_sim)[0]
+        top_indices = np.argsort(sim_scores)[::-1][:top_n]
+        
+        similar_movies = []
+        for idx in top_indices:
+            row = df_enriched.iloc[idx]
+            similar_movies.append({
+                'title': row['title'],
+                'year': row['year'],
+                'score': sim_scores[idx],
+                'director': row.get('director', 'Unknown'),
+                'genre': row.get('genre', 'Unknown'),
+            })
+        return similar_movies
+    except Exception as e:
+        print(f"Error finding similar movies: {e}")
+        return []
+
+def explain_similarity(target_movie, similar_movie):
+    """Generates a simple text explanation of why two movies matched."""
+    shared = []
+    
+    # Check Directors
+    target_dirs = set(parse_list(target_movie.get('director', [])))
+    sim_dirs = set(parse_list(similar_movie.get('director', [])))
+    common_dirs = target_dirs.intersection(sim_dirs)
+    if common_dirs and 'Unknown' not in common_dirs:
+        shared.append(f"Director ({', '.join(common_dirs)})")
+        
+    # Check Genres
+    target_genres = set(parse_list(target_movie.get('genre', [])))
+    sim_genres = set(parse_list(similar_movie.get('genre', [])))
+    common_genres = target_genres.intersection(sim_genres)
+    if common_genres and 'Unknown' not in common_genres:
+        shared.append(f"Genres ({', '.join(common_genres)})")
+        
+    if shared:
+        return " & ".join(shared)
+    
+    # If no explicit metadata matches, it was matched purely on the PCA text embeddings / numbers
+    return "Similar plot/vibe (Semantic Match)"
 
 if __name__ == "__main__":
     process_features()

@@ -110,7 +110,8 @@ def get_omdb_data(imdb_id):
         'awards': data.get('Awards'),
         'box_office': data.get('BoxOffice'),
         'rated': data.get('Rated'),
-        'poster_omdb': data.get('Poster')
+        'poster_omdb': data.get('Poster'),
+        'plot': data.get('Plot')
     }
 
 def search_movies_by_query(query):
