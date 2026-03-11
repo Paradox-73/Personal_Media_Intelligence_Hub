@@ -9,4 +9,5 @@ log.txt
 srs.txt
 catboost_info/
 err.txt
+req.txt
 src/movies/ratings.csv

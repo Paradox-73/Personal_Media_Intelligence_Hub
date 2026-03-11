@@ -4,7 +4,6 @@ import joblib
 import numpy as np
 import sys
 import ast
-import os
 from pathlib import Path
 
 # Add project root to path
@@ -12,13 +11,13 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 
 # Import ingestion & engineering tools
-from src.movies.ingestion import search_movies_by_query, fetch_movie_details_by_tmdb_id, get_omdb_data
+from src.movies.ingestion import search_movies_by_query, get_movie_metadata
 from src.movies.feature_engineering import transform_single_movie, find_similar_movies, explain_similarity
 
 st.set_page_config(page_title="The Oracle", page_icon="🔮", layout="wide")
 
 st.header("🔮 The Oracle")
-st.markdown("Predict your rating for any movie using a Stacking Ensemble, NLP Plot Embeddings, and an aggressive Classifier.")
+st.markdown("Predict your rating for any movie using a Stacking Ensemble, Ordinal Probability Engine, and Semantic Text Embeddings.")
 
 # --- HELPERS ---
 def parse_list(x):
@@ -27,34 +26,18 @@ def parse_list(x):
     except: return []
 
 def get_ultimate_movie_metadata(tmdb_id):
-    """
-    Fetches data from TMDB AND OMDB to ensure the model has 
-    Box Office, Rotten Tomatoes, and Metascore data.
-    """
-    tmdb_data = fetch_movie_details_by_tmdb_id(tmdb_id)
-    if tmdb_data.get('processing_status') != 'success':
-        return tmdb_data
-        
-    imdb_id = tmdb_data.get('imdb_id')
-    if imdb_id:
-        omdb_data = get_omdb_data(imdb_id)
-        if omdb_data:
-            tmdb_data['rotten_tomatoes_rating'] = omdb_data.get('rotten_tomatoes_rating')
-            tmdb_data['metascore'] = omdb_data.get('metascore')
-            tmdb_data['awards'] = omdb_data.get('awards')
-            tmdb_data['rated'] = omdb_data.get('rated')
-            tmdb_data['plot'] = omdb_data.get('plot', '')
-            
-            if not tmdb_data.get('box_office') and omdb_data.get('box_office'):
-                tmdb_data['box_office'] = omdb_data.get('box_office')
-                
-    return tmdb_data
+    """Refactored to use core ingestion logic for parity with batch processing."""
+    metadata = get_movie_metadata(None, None, tmdb_id=tmdb_id)
+    if not metadata or not metadata.get('title'):
+        return {'processing_status': 'error'}
+    metadata['processing_status'] = 'success'
+    return metadata
 
 
 # --- LOAD ARTIFACTS ---
 @st.cache_resource
 def load_artifacts():
-    artifacts = {'stacking': None, 'xgb': None, 'svr': None, 'cat': None, 'clf': None, 'state': None}
+    artifacts = {'stacking': None, 'xgb': None, 'svr': None, 'cat': None, 'ordinal': None, 'clf': None, 'state': None}
     ensemble_dir = config.MODEL_DIR / "movies" / "ensemble"
     
     try:
@@ -62,6 +45,7 @@ def load_artifacts():
         artifacts['xgb'] = joblib.load(ensemble_dir / "xgb_base_regressor.joblib")
         artifacts['svr'] = joblib.load(ensemble_dir / "svr_base_regressor.joblib")
         artifacts['cat'] = joblib.load(ensemble_dir / "catboost_base_regressor.joblib")
+        artifacts['ordinal'] = joblib.load(ensemble_dir / "ordinal_classifier.joblib")
         artifacts['state'] = joblib.load(config.PREPROCESSOR_STATE)
         
         if config.MODEL_CLASSIFIER.exists():
@@ -132,7 +116,7 @@ if st.session_state['selected_movie_raw_data']:
     raw_data = st.session_state['selected_movie_raw_data']
     st.divider()
     
-    # Split UI into 3 columns: Poster | Context | Predictions
+    # Split UI into 3 columns
     c_img, c_meta, c_pred = st.columns([1, 2, 2])
     
     with c_img:
@@ -162,7 +146,15 @@ if st.session_state['selected_movie_raw_data']:
                 v_cat = round_half(artifacts['cat'].predict(input_df)[0])
                 v_xgb = round_half(artifacts['xgb'].predict(input_df)[0])
                 
-                # 2. Classifier Verdict (Tiers)
+                # 2. Ordinal Classifier Probabilities & Expected Value
+                ord_probs = None
+                v_ordinal_ev = None
+                if artifacts['ordinal']:
+                    ord_probs = artifacts['ordinal'].predict_proba(input_df)[0]
+                    bucket_vals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])
+                    v_ordinal_ev = round_half(np.sum(ord_probs * bucket_vals))
+                
+                # 3. Classifier Verdict (Tiers)
                 verdict = "N/A"
                 if artifacts['clf']:
                     try:
@@ -174,20 +166,24 @@ if st.session_state['selected_movie_raw_data']:
                 
                 st.markdown("### The Verdict")
                 
-                # Tooltip for individual models
+                c_stack, c_ord, c_tier = st.columns(3)
                 hover_text = f"SVR: {v_svr:.1f}\nCatBoost: {v_cat:.1f}\nXGBoost: {v_xgb:.1f}"
-                
-                st.metric(
-                    label="Oracle Score (Stacking Ensemble)", 
-                    value=f"⭐ {v_stack:.1f} / 5.0", 
-                    help=hover_text
-                )
-                
-                st.metric(
-                    label="Classifier Tier", 
-                    value=verdict, 
-                    help="0: Skip (<= 2.5) | 1: Watchable (3.0-3.5) | 2: Masterpiece (>= 4.0)"
-                )
+                c_stack.metric(label="Stacking Ensemble", value=f"⭐ {v_stack:.1f}", help=hover_text)
+                if v_ordinal_ev is not None:
+                    c_ord.metric(label="Ordinal (EV)", value=f"⭐ {v_ordinal_ev:.1f}", help="Expected Value from the probability distribution.")
+                c_tier.metric(label="Classifier Tier", value=verdict, help="0: Skip | 1: Watchable | 2: Masterpiece")
+
+                # Confidence Engine Chart
+                if ord_probs is not None:
+                    st.markdown("#### Confidence Engine (Ordinal Spread)")
+                    st.caption("Probability distribution across all 10 rating buckets.")
+                    bucket_labels = [f"{i:.1f}" for i in np.arange(0.5, 5.5, 0.5)]
+                    prob_df = pd.DataFrame({
+                        "Rating Bucket": bucket_labels,
+                        "Probability (%)": ord_probs * 100
+                    })
+                    st.bar_chart(data=prob_df.set_index("Rating Bucket"), use_container_width=True, height=150)
+
 
     # --- SIMILAR MOVIES (SEMANTIC TEXT MATCH) ---
     if consult_btn:

@@ -8,7 +8,7 @@ from pathlib import Path
 from sentence_transformers import SentenceTransformer
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import MultiLabelBinarizer
-from sklearn.metrics.pairwise import cosine_similarity  # Added import
+from sklearn.metrics.pairwise import cosine_similarity 
 
 # Add Project Root to Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
@@ -113,12 +113,7 @@ def process_features():
     print("   Generating text embeddings...")
     df['text_content'] = "Title: " + df['title'].fillna('Unknown') + \
                          ". Directed by: " + df['director'].fillna('Unknown') + \
-                         ". Starring: " + df['actors'].fillna('Unknown') + \
-                         ". Written by: " + df['writer'].fillna('Unknown') + \
-                         ". Produced by: " + df['production'].fillna('Unknown') + \
-                         ". " + df['tagline'].fillna('') + \
-                         " " + df['overview'].fillna('') + \
-                         " " + df['plot'].fillna('')
+                         ". " + df['plot'].fillna('')
     transformer_model = SentenceTransformer('all-MiniLM-L6-v2')
     text_embeddings = transformer_model.encode(df['text_content'].tolist(), show_progress_bar=True)
 
@@ -150,6 +145,10 @@ def process_features():
         labels=[0, 1, 2],
         right=True
     ).astype(int).reset_index(drop=True)
+    
+    # NEW: Ordinal target mapping (10 buckets: 0 to 9)
+    mapping = {0.5: 0, 1.0: 1, 1.5: 2, 2.0: 3, 2.5: 4, 3.0: 5, 3.5: 6, 4.0: 7, 4.5: 8, 5.0: 9}
+    X_final['target_ordinal'] = df['user_rating'].map(mapping).fillna(5).astype(int).reset_index(drop=True)
 
     # 9. Save Data and Preprocessor State
     X_final.to_csv(config.TRAINING_DATA_PATH, index=False)
@@ -166,6 +165,7 @@ def process_features():
 
 # --- INFERENCE FUNCTIONS (FOR APP) ---
 def transform_single_movie(movie_data, state):
+    # Initialize with medians
     row = {col: state['median_values'].get(col, 0) for col in state['median_values']}
 
     def safe_num(val, default_val):
@@ -173,6 +173,7 @@ def transform_single_movie(movie_data, state):
         try: return float(str(val).replace(',', '').replace('%', '').strip())
         except: return default_val
 
+    # Mapping movie_data keys to feature columns
     row['year'] = safe_num(movie_data.get('year'), row.get('year'))
     row['runtime'] = safe_num(movie_data.get('runtime'), row.get('runtime'))
     row['imdb_rating'] = safe_num(movie_data.get('imdb_rating'), row.get('imdb_rating'))
@@ -180,33 +181,39 @@ def transform_single_movie(movie_data, state):
     row['rotten_tomatoes_rating'] = safe_num(movie_data.get('rotten_tomatoes_rating'), row.get('rotten_tomatoes_rating'))
     row['vote_average'] = safe_num(movie_data.get('vote_average'), row.get('vote_average'))
     row['popularity'] = safe_num(movie_data.get('popularity'), row.get('popularity'))
-    row['vote_count'] = safe_num(movie_data.get('vote_count'), row.get('vote_count'))
+    
+    # Handle the vote_count -> imdb_votes mapping
+    votes = safe_num(movie_data.get('imdb_votes'), None)
+    if votes is None:
+        votes = safe_num(movie_data.get('vote_count'), row.get('imdb_votes'))
+    row['imdb_votes'] = votes
 
     bo = clean_money(movie_data.get('box_office', 0))
     row['box_office_log'] = np.log1p(bo)
 
-    awards_str = movie_data.get('awards', '')
+    awards_str = str(movie_data.get('awards', ''))
     wins_match = re.search(r'(\d+)\s+win', awards_str, re.IGNORECASE)
     row['total_wins'] = float(wins_match.group(1)) if wins_match else 0
     noms_match = re.search(r'(\d+)\s+nomination', awards_str, re.IGNORECASE)
     row['total_nominations'] = float(noms_match.group(1)) if noms_match else 0
     
+    # Engineer Critic vs. User Rating Feature (Matches predict_ratings.py)
     imdb_100 = safe_num(movie_data.get('imdb_rating'), 0) * 10
     meta = safe_num(movie_data.get('metascore'), 0)
     rt = safe_num(movie_data.get('rotten_tomatoes_rating'), 0)
     va = safe_num(movie_data.get('vote_average'), 0) * 10
-    critic_scores = [s for s in [imdb_100, meta, rt, va] if s > 0]
-    avg_critic_100 = np.mean(critic_scores) if critic_scores else 0
-    row['critic_avg_5'] = (avg_critic_100 / 100) * 5
+    critic_scores = pd.Series([imdb_100, meta, rt, va])
+    row['critic_avg_5'] = (critic_scores.mean() / 100) * 5
     
-    final_df = pd.DataFrame(0, index=[0], columns=state['training_columns'])
+    # Initialize DF with all training columns
+    final_df = pd.DataFrame(0.0, index=[0], columns=state['training_columns'])
     for col in row:
         if col in final_df.columns:
-            final_df[col] = row[col]
+            final_df[col] = float(row[col])
 
     def map_language_single(lang_str, top_langs):
         if pd.isna(lang_str): return 'Other'
-        langs = [l.strip() for l in lang_str.split(',')]
+        langs = [l.strip() for l in str(lang_str).split(',')]
         for lang in langs:
             if lang in top_langs:
                 return lang
@@ -224,16 +231,12 @@ def transform_single_movie(movie_data, state):
 
     mpaa = categorize_rating(movie_data.get('rated', ''))
     mpaa_col = sanitize_col(f"rated_{mpaa}")
-    if mpaa_col in final_df.columns: final_df[mpaa_col] = 1.0
+    if mpa_col in final_df.columns: final_df[mpaa_col] = 1.0
 
+    # Match predict_ratings.py text_content construction exactly
     text_content = "Title: " + str(movie_data.get('title', 'Unknown')) + \
                    ". Directed by: " + str(movie_data.get('director', 'Unknown')) + \
-                   ". Starring: " + str(movie_data.get('actors', 'Unknown')) + \
-                   ". Written by: " + str(movie_data.get('writer', 'Unknown')) + \
-                   ". Produced by: " + str(movie_data.get('production', 'Unknown')) + \
-                   ". " + str(movie_data.get('tagline', '')) + \
-                   " " + str(movie_data.get('overview', '')) + \
-                   " " + str(movie_data.get('plot', ''))
+                   ". " + str(movie_data.get('plot', ''))
     
     transformer_model = SentenceTransformer(state['sentence_transformer'])
     embedding = transformer_model.encode([text_content])
@@ -242,25 +245,20 @@ def transform_single_movie(movie_data, state):
         col_name = f'pca_{i}'
         if col_name in final_df.columns: final_df[col_name] = float(pca_vec[0, i])
 
-    final_df = final_df.astype(float)
-    return final_df
+    return final_df.astype(float)
 
 # --- NEW SIMILARITY FUNCTIONS FOR ORACLE ---
 def find_similar_movies(movie_data, input_df, state, top_n=3):
-    """Finds top N similar movies based STRICTLY on Embeddings and Genre (ignores Year/Ratings)."""
     try:
         df_train = pd.read_csv(config.TRAINING_DATA_PATH)
         df_enriched = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
         df_enriched = df_enriched.dropna(subset=['user_rating']).reset_index(drop=True)
         
-        # THE FIX: Only compare the PCA (text) and GEN (genre) columns. 
-        # This completely ignores Year, Runtime, Box Office, etc.
         sim_cols = [c for c in state['training_columns'] if c.startswith('pca_')]
         
         X_train_sim = df_train[sim_cols]
         input_sim = input_df[sim_cols]
         
-        # Calculate similarity using ONLY the text and genre features
         sim_scores = cosine_similarity(input_sim, X_train_sim)[0]
         top_indices = np.argsort(sim_scores)[::-1][:top_n]
         
@@ -280,17 +278,14 @@ def find_similar_movies(movie_data, input_df, state, top_n=3):
         return []
 
 def explain_similarity(target_movie, similar_movie):
-    """Generates a simple text explanation of why two movies matched."""
     shared = []
     
-    # Check Directors
     target_dirs = set(parse_list(target_movie.get('director', [])))
     sim_dirs = set(parse_list(similar_movie.get('director', [])))
     common_dirs = target_dirs.intersection(sim_dirs)
     if common_dirs and 'Unknown' not in common_dirs:
         shared.append(f"Director ({', '.join(common_dirs)})")
         
-    # Check Genres
     target_genres = set(parse_list(target_movie.get('genre', [])))
     sim_genres = set(parse_list(similar_movie.get('genre', [])))
     common_genres = target_genres.intersection(sim_genres)
@@ -300,7 +295,6 @@ def explain_similarity(target_movie, similar_movie):
     if shared:
         return " & ".join(shared)
     
-    # If no explicit metadata matches, it was matched purely on the PCA text embeddings / numbers
     return "Similar plot/vibe (Semantic Match)"
 
 if __name__ == "__main__":

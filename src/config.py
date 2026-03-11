@@ -70,6 +70,18 @@ MUSIC_MODEL_REGRESSOR = MUSIC_MODEL_DIR / "xgb_regressor.pkl"
 MUSIC_MODEL_CLASSIFIER = MUSIC_MODEL_DIR / "xgb_classifier.pkl"
 MUSIC_PREPROCESSOR_STATE = MUSIC_MODEL_DIR / "preprocessor_state.pkl"
 
+# API Keys
+SPOTIPY_CLIENT_ID = 'your_spotify_id'
+SPOTIPY_CLIENT_SECRET = 'your_spotify_secret'
+SPOTIPY_REDIRECT_URI = 'http://localhost:8888/callback'
+GENIUS_ACCESS_TOKEN = 'your_genius_token'
+
+# Data Settings
+MUSIC_RAW_DATA_PATH = MUSIC_RAW_DIR / "liked_and_playlists.csv"
+MUSIC_TASTE_PROFILE = MUSIC_MODEL_DIR / "taste_profile.pkl"
+BATCH_SIZE = 50 # How often to save progress
+
+
 
 # --- GAMES ---
 GAMES_RAW_DIR = RAW_DIR / "games"
@@ -97,6 +109,20 @@ BOOKS_FULL_VIEW_PATH = BOOKS_PROCESSED_DIR / "dashboard_view.csv"
 BOOKS_MODEL_REGRESSOR = BOOKS_MODEL_DIR / "xgb_regressor.pkl"
 BOOKS_MODEL_CLASSIFIER = BOOKS_MODEL_DIR / "xgb_classifier.pkl"
 BOOKS_PREPROCESSOR_STATE = BOOKS_MODEL_DIR / "preprocessor_state.pkl"
+
+
+# --- UNIFIED MODEL ---
+UNIFIED_PROCESSED_DIR = PROCESSED_DIR / "unified"
+UNIFIED_MODEL_DIR = MODEL_DIR / "unified"
+UNIFIED_PREDICTIONS_DIR = PREDICTIONS_DIR / "unified"
+UNIFIED_ENSEMBLE_DIR = UNIFIED_MODEL_DIR / "ensemble"
+
+UNIFIED_TRAINING_DATA_PATH = UNIFIED_PROCESSED_DIR / "training_features.csv"
+UNIFIED_PREPROCESSOR_STATE = UNIFIED_MODEL_DIR / "preprocessor_state.pkl"
+
+# Ensure directories exist
+for d in [UNIFIED_PROCESSED_DIR, UNIFIED_MODEL_DIR, UNIFIED_PREDICTIONS_DIR, UNIFIED_ENSEMBLE_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
 
 
 # Cache Files (These are general and can remain in CACHE_DIR)

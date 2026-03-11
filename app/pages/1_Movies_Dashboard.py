@@ -135,6 +135,17 @@ def get_highly_rated_items(df, col_name, top_n=10, min_count=3):
     stats['avg_rating'] = stats['avg_rating'].round(3)
     return stats.sort_values('avg_rating', ascending=False).head(top_n)
 
+def get_lowest_rated_items(df, col_name, top_n=10, min_count=3):
+    df_exploded = df.explode(col_name)
+    df_exploded = df_exploded[~df_exploded[col_name].isin(['Unknown', 'nan', np.nan, ''])]
+    stats = df_exploded.groupby(col_name).agg(
+        avg_rating=('user_rating', 'mean'),
+        count=('user_rating', 'count')
+    ).reset_index()
+    stats = stats[stats['count'] >= min_count]
+    stats['avg_rating'] = stats['avg_rating'].round(3)
+    return stats.sort_values('avg_rating', ascending=True).head(top_n)
+
 def calculate_entropy(series):
     """Calculates Shannon Entropy, robustly handling both lists and scalar values."""
     import math
@@ -277,7 +288,7 @@ def render_people_tab(col_list, label, min_count_threshold):
     ent = calculate_entropy(df[col_list])
     st.caption(f"**{label} Diversity (Entropy):** {ent:.2f}")
     
-    c_freq, c_rate = st.columns(2)
+    c_freq, c_high, c_low = st.columns(3)
     with c_freq:
         st.caption(f"**Most Watched {label}**")
         freq = get_frequent_items_with_avg(df, col_list)
@@ -285,7 +296,7 @@ def render_people_tab(col_list, label, min_count_threshold):
         fig.update_layout(yaxis={'categoryorder':'total ascending'})
         fig.update_traces(marker_line_width=1, marker_line_color="#2C343F")
         st.plotly_chart(fig, use_container_width=True)
-    with c_rate:
+    with c_high:
         st.caption(f"**Highest Rated {label}** (Min {min_count_threshold} Movies)")
         rated = get_highly_rated_items(df, col_list, min_count=min_count_threshold)
         if not rated.empty:
@@ -295,7 +306,18 @@ def render_people_tab(col_list, label, min_count_threshold):
             fig.update_traces(marker_line_width=1, marker_line_color="#2C343F")
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info(f"Not enough data (need >{min_count_threshold-1} movies per person)")
+            st.info(f"Not enough data")
+    with c_low:
+        st.caption(f"**Lowest Rated {label}** (Min {min_count_threshold} Movies)")
+        low_rated = get_lowest_rated_items(df, col_list, min_count=min_count_threshold)
+        if not low_rated.empty:
+            fig = px.bar(low_rated, x='avg_rating', y=col_list, orientation='h', color='avg_rating', 
+                         color_continuous_scale=[[0, "#ff4b4b"], [1, HUB_PALETTE[0]]], range_x=[0, 5], hover_data={'count': True})
+            fig.update_layout(yaxis={'categoryorder':'total descending'})
+            fig.update_traces(marker_line_width=1, marker_line_color="#2C343F")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info(f"Not enough data")
 
 with tab_dir: render_people_tab('director_list', "Directors", 3)
 with tab_act: render_people_tab('actors_list', "Actors", 7) 

@@ -22,12 +22,12 @@ def clean_money(x):
     except: return 0
 
 def parse_list(x):
+    if isinstance(x, (list, np.ndarray)): return x if isinstance(x, list) else x.tolist()
     if pd.isna(x) or x == "": return []
     try:
-        if isinstance(x, list): return x
         if "[" in str(x): return ast.literal_eval(str(x))
-        return [str(x)]
-    except: return []
+        return [item.strip() for item in str(x).split(',')]
+    except: return [str(x)]
 
 def categorize_rating(r):
     r = str(r).upper()
@@ -38,56 +38,85 @@ def categorize_rating(r):
 def sanitize_col(col_name):
     return re.sub(r"[\[\]<']", "", str(col_name))
 
-def batch_predict_ratings():
-    print("🚀 Starting Batch Prediction (Ensemble Mode)...")
+def batch_predict_unified_ratings():
+    print("🚀 Starting Batch Prediction (Unified Ensemble Mode)...")
 
-    # --- 1. Load Models ---
-    ensemble_dir = config.MODEL_DIR / "movies" / "ensemble"
+    # --- 1. Load Models & State ---
+    ensemble_dir = config.UNIFIED_ENSEMBLE_DIR
     model_paths = {
-        "XGB": ensemble_dir / "xgb_base_regressor.joblib",
-        "SVR": ensemble_dir / "svr_base_regressor.joblib",
-        "CatBoost": ensemble_dir / "catboost_base_regressor.joblib",
-        "Stacking": ensemble_dir / "stacking_ensemble_regressor.joblib",
-        "Ordinal_EV": ensemble_dir / "ordinal_classifier.joblib"
+        "XGB": ensemble_dir / "xgb_base.joblib",
+        "SVR": ensemble_dir / "svr_base.joblib",
+        "CatBoost": ensemble_dir / "catboost_base.joblib",
+        "Stacking": ensemble_dir / "stacking_ensemble.joblib"
     }
     
     models = {}
     for name, path in model_paths.items():
         if not path.exists():
-            print(f"❌ ERROR: Model file not found for '{name}' at {path}. Please run the advanced trainer first.")
+            print(f"❌ ERROR: Model file not found for '{name}' at {path}.")
             return
         models[name] = joblib.load(path)
     
-    if not config.PREPROCESSOR_STATE.exists():
-        print(f"❌ ERROR: Preprocessor State not found at {config.PREPROCESSOR_STATE}.")
+    # Use config.UNIFIED_PREPROCESSOR_STATE
+    state_path = config.UNIFIED_PREPROCESSOR_STATE
+    if not state_path.exists():
+        print(f"❌ ERROR: Unified Preprocessor State not found at {state_path}.")
         return
         
-    state = joblib.load(config.PREPROCESSOR_STATE)
+    state = joblib.load(state_path)
     print(f"✅ Loaded {len(models)} models and preprocessor state.")
     
+    # --- 2. Load and Combine Data ---
     try:
-        df = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
-        print(f"   Loaded {len(df)} movies from enriched data.")
-    except FileNotFoundError:
-        print(f"❌ ERROR: Enriched data not found at {config.MOVIES_ENRICHED_DATA_PATH}.")
+        df_movies = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
+        df_shows = pd.read_csv(config.TV_SHOWS_ENRICHED_DATA_PATH)
+        
+        df_movies['is_tv_show'] = 0
+        df_shows['is_tv_show'] = 1
+        
+        # Align schemas
+        df_shows = df_shows.rename(columns={
+            'name': 'title',
+            'created_by': 'director',
+            'production_companies': 'production',
+            'genres': 'genre',
+            'age_rating': 'rated'
+        })
+        
+        df = pd.concat([df_movies, df_shows], ignore_index=True)
+        print(f"   Loaded {len(df_movies)} movies and {len(df_shows)} shows. Combined: {len(df)} records.")
+    except Exception as e:
+        print(f"❌ ERROR loading enriched data: {e}")
         return
 
-    print("   Processing features...")
+    print("   Processing unified features...")
     
-    # --- 2. Feature Engineering ---
-    if df['rotten_tomatoes_rating'].dtype == 'object':
-        df['rotten_tomatoes_rating'] = df['rotten_tomatoes_rating'].str.replace('%', '', regex=False).astype(float)
+    # --- 3. Feature Engineering ---
+    df['rotten_tomatoes_rating'] = df['rotten_tomatoes_rating'].astype(str).str.replace('%', '', regex=False)
+    df['rotten_tomatoes_rating'] = pd.to_numeric(df['rotten_tomatoes_rating'], errors='coerce')
+    
     df['box_office_clean'] = df['box_office'].apply(clean_money)
     df['box_office_log'] = np.log1p(df['box_office_clean'])
-    df['total_wins'] = df['awards'].str.extract(r'(\d+)\s+win', flags=re.IGNORECASE)[0].astype(float).fillna(0)
-    df['total_nominations'] = df['awards'].str.extract(r'(\d+)\s+nomination', flags=re.IGNORECASE)[0].astype(float).fillna(0)
-    df['imdb_rating_100'] = df['imdb_rating'] * 10
-    df['vote_average_100'] = df['vote_average'] * 10
+    
+    df['total_wins'] = df['awards'].astype(str).str.extract(r'(\d+)\s+win', flags=re.IGNORECASE)[0].astype(float).fillna(0)
+    df['total_nominations'] = df['awards'].astype(str).str.extract(r'(\d+)\s+nomination', flags=re.IGNORECASE)[0].astype(float).fillna(0)
+    
+    df['number_of_seasons'] = pd.to_numeric(df.get('number_of_seasons', 1), errors='coerce').fillna(1)
+    df['number_of_episodes'] = pd.to_numeric(df.get('number_of_episodes', 1), errors='coerce').fillna(1)
+
+    df['imdb_rating_100'] = pd.to_numeric(df['imdb_rating'], errors='coerce') * 10
+    df['vote_average_100'] = pd.to_numeric(df['vote_average'], errors='coerce') * 10
+    df['metascore'] = pd.to_numeric(df['metascore'], errors='coerce')
+    
     critic_scores = df[['imdb_rating_100', 'metascore', 'rotten_tomatoes_rating', 'vote_average_100']]
     df['critic_avg_100'] = critic_scores.mean(axis=1)
     df['critic_avg_5'] = (df['critic_avg_100'] / 100) * 5
-    if 'imdb_votes' in df.columns:
-        df.rename(columns={'imdb_votes': 'vote_count'}, inplace=True)
+    
+    if 'imdb_votes' in df.columns and 'vote_count' in df.columns:
+        df['imdb_votes'] = df['imdb_votes'].fillna(df['vote_count'])
+    elif 'vote_count' in df.columns:
+        df.rename(columns={'vote_count': 'imdb_votes'}, inplace=True)
+        
     for col, med_val in state['median_values'].items():
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(med_val)
@@ -96,21 +125,32 @@ def batch_predict_ratings():
     
     def map_language(lang_str):
         if pd.isna(lang_str): return 'Other'
-        langs = [l.strip() for l in lang_str.split(',')]
+        langs = [l.strip() for l in str(lang_str).split(',')]
         for lang in langs:
             if lang in state['top_languages']: return lang
         return 'Other'
+        
     df['language_cleaned'] = df['language'].apply(map_language)
     X_lang = pd.get_dummies(df['language_cleaned'], prefix='lang')
     
     print("   Generating text embeddings...")
-    df['text_content'] = "Title: " + df['title'].fillna('Unknown') + ". Directed by: " + df['director'].fillna('Unknown') + ". " + df['plot'].fillna('')
+    df['text_content'] = "Title: " + df['title'].fillna('Unknown') + \
+                         ". Lead Creative: " + df['director'].fillna('Unknown') + \
+                         ". " + df['overview'].fillna(df.get('plot', '')).fillna('')
+                         
     transformer_model = SentenceTransformer(state.get('sentence_transformer', 'all-MiniLM-L6-v2'))
     text_embeddings = transformer_model.encode(df['text_content'].tolist(), show_progress_bar=True)
     pca_vec = state['pca'].transform(text_embeddings)
     X_text = pd.DataFrame(pca_vec, columns=[f'pca_{i}' for i in range(pca_vec.shape[1])], index=df.index)
 
     df['genre_list'] = df['genre'].apply(parse_list)
+    genre_mapping = {'Sci-Fi & Fantasy': ['Science Fiction', 'Fantasy'], 'Action & Adventure': ['Action', 'Adventure']}
+    def unify_genres(g_list):
+        mapped = []
+        for g in g_list: mapped.extend(genre_mapping.get(g, [g]))
+        return list(set(mapped))
+    df['genre_list'] = df['genre_list'].apply(unify_genres)
+    
     genre_encoded = state['mlb_genre'].transform(df['genre_list'])
     X_genre = pd.DataFrame(genre_encoded, columns=[f"gen_{c}" for c in state['mlb_genre'].classes_], index=df.index)
 
@@ -125,29 +165,21 @@ def batch_predict_ratings():
     common_cols = list(set(X_temp.columns) & set(state['training_columns']))
     X_final[common_cols] = X_temp[common_cols]
 
-    # --- 3. Predict with all models ---
-    print("   Predicting ratings with all models...")
-    df['name'] = df['title'].fillna(df.get('letterboxd_name', 'Unknown'))
-    
-    bucket_vals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])
+    # --- 4. Predict with all models ---
+    print("   Predicting ratings with unified models...")
+    df['display_name'] = df['title'].fillna(df.get('letterboxd_name', 'Unknown'))
     
     for name, model in models.items():
-        if name == "Ordinal_EV":
-            probs = model.predict_proba(X_final)
-            # REVERTED: Using Expected Value instead of argmax
-            raw_preds = np.sum(probs * bucket_vals, axis=1)
-            df[f'pred_{name}'] = np.round(np.clip(raw_preds, 0, 5) * 2) / 2
-        else:
-            preds = model.predict(X_final)
-            df[f'pred_{name}'] = np.round(np.clip(preds, 0, 5) * 2) / 2
+        preds = model.predict(X_final)
+        df[f'pred_{name}'] = np.round(np.clip(preds, 0, 5) * 2) / 2
 
-    # --- 4. Performance Report ---
+    # --- 5. Performance Report ---
     if 'user_rating' in df.columns and not df['user_rating'].isna().all():
         eval_df = df.dropna(subset=['user_rating']).copy()
         y_true = eval_df['user_rating']
         
         print("\n" + "="*55)
-        print("📊 ML ENSEMBLE PERFORMANCE REPORT")
+        print("📊 UNIFIED ML ENSEMBLE PERFORMANCE REPORT")
         print("="*55)
         print(f"Total Evaluated: {len(eval_df)}")
         
@@ -170,29 +202,29 @@ def batch_predict_ratings():
         
         df['abs_diff_stacking'] = np.abs(df['user_rating'] - df['pred_Stacking'])
 
-        # --- 5a. Visualization (KDE Plot) ---
+        # --- 6. Visualizations ---
+        pred_dir = config.UNIFIED_PREDICTIONS_DIR
+        pred_dir.mkdir(parents=True, exist_ok=True)
+
+        # 6a. KDE Plot
         plt.style.use('seaborn-v0_8-whitegrid')
         fig, ax = plt.subplots(figsize=(16, 8))
-        
         sns.kdeplot(data=eval_df, x='user_rating', ax=ax, label='Actual Ratings', color='black', linewidth=3, fill=True, alpha=0.1)
-        
         for name in models.keys():
             sns.kdeplot(data=eval_df, x=f'pred_{name}', ax=ax, label=f'{name} Preds', linestyle='--', linewidth=2)
             
-        ax.set_title('Comparison of Predicted Rating Distributions (Full Dataset - KDE)', fontsize=18, pad=20)
+        ax.set_title('Comparison of Predicted Rating Distributions (Unified Dataset - KDE)', fontsize=18, pad=20)
         ax.set_xlabel('Rating (0.5 - 5.0)', fontsize=12)
         ax.set_ylabel('Density', fontsize=12)
         ax.set_xticks(np.arange(0.5, 5.5, 0.5))
         ax.legend(title='Model', fontsize='medium')
         plt.tight_layout()
-        
-        config.PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
-        plot_path_kde = config.PREDICTIONS_DIR / "ratings_distribution_kde.png"
-        plt.savefig(plot_path_kde, dpi=150)
-        print(f"📈 KDE distribution plot saved to {plot_path_kde}")
+        kde_path = pred_dir / "unified_ratings_kde.png"
+        plt.savefig(kde_path, dpi=150)
+        print(f"📈 KDE distribution plot saved to {kde_path}")
         plt.close(fig) 
 
-        # --- 5b. Visualization (Histogram Grid) ---
+        # 6b. Histogram Grid
         data_cols = ['user_rating'] + [f'pred_{name}' for name in models.keys()]
         titles = ['Actual Ratings'] + [f'{name} Predictions' for name in models.keys()]
         
@@ -200,29 +232,28 @@ def batch_predict_ratings():
         axes = axes.flatten()
         
         for i, col in enumerate(data_cols):
-            sns.histplot(eval_df[col], bins=np.arange(0.25, 5.75, 0.5), 
-                         ax=axes[i], kde=False, edgecolor='black')
+            sns.histplot(eval_df[col], bins=np.arange(0.25, 5.75, 0.5), ax=axes[i], kde=False)
             axes[i].set_title(titles[i])
             axes[i].set_xlabel('Rating (0.5 - 5.0)')
             axes[i].set_xticks(np.arange(0.5, 5.5, 0.5))
             axes[i].grid(axis='y', linestyle='--', alpha=0.7)
         
-        fig.suptitle('Histogram of Rating Distributions (Full Dataset)', fontsize=20)
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        
-        plot_path_hist = config.PREDICTIONS_DIR / "ratings_distribution_histograms.png"
-        plt.savefig(plot_path_hist, dpi=150)
-        print(f"📈 Histogram grid plot saved to {plot_path_hist}")
-        plt.close(fig)
+        for i in range(len(data_cols), len(axes)):
+            axes[i].set_visible(False)
 
-    # --- 6. Save Results ---
-    out_cols = ['name', 'year', 'user_rating'] + [f'pred_{name}' for name in models.keys()] + ['abs_diff_stacking', 'director', 'production']
-    final_df = df[[c for c in out_cols if c in df.columns]].sort_values(by='pred_Stacking', ascending=False)
-    
-    config.MOVIES_PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = config.MOVIES_PREDICTIONS_DIR / "predicted_ratings_ensemble.csv"
-    final_df.to_csv(out_path, index=False)
-    print(f"✅ Saved all model predictions to {out_path}")
+        fig.suptitle('Histogram of Rating Distributions (Unified Dataset)', fontsize=20)
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        hist_path = pred_dir / "unified_ratings_histograms.png"
+        plt.savefig(hist_path, dpi=150)
+        print(f"📈 Histogram grid plot saved to {hist_path}")
+        plt.close(fig)
+        
+        # Save CSV Results
+        out_cols = ['display_name', 'year', 'is_tv_show', 'user_rating'] + [f'pred_{name}' for name in models.keys()] + ['abs_diff_stacking']
+        final_df = df[[c for c in out_cols if c in df.columns]].sort_values(by='pred_Stacking', ascending=False)
+        out_path = pred_dir / "unified_predictions_ensemble.csv"
+        final_df.to_csv(out_path, index=False)
+        print(f"✅ Saved unified model predictions to {out_path}")
 
 if __name__ == "__main__":
-    batch_predict_ratings()
+    batch_predict_unified_ratings()

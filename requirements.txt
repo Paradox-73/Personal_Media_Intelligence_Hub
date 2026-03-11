@@ -17,3 +17,12 @@ seaborn
 vaderSentiment
 sentence-transformers
 catboost
+spotipy
+lyricsgenius
+yt-dlp
+transformers
+librosa
+soundfile
+
+#pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+pip install  

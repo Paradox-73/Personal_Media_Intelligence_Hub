@@ -59,7 +59,8 @@ def run_test_on_new_movies(csv_path):
         "XGB": ensemble_dir / "xgb_base_regressor.joblib",
         "SVR": ensemble_dir / "svr_base_regressor.joblib",
         "CatBoost": ensemble_dir / "catboost_base_regressor.joblib",
-        "Stacking": ensemble_dir / "stacking_ensemble_regressor.joblib"
+        "Stacking": ensemble_dir / "stacking_ensemble_regressor.joblib",
+        "Ordinal_EV": ensemble_dir / "ordinal_classifier.joblib"
     }
     
     models = {}
@@ -82,12 +83,12 @@ def run_test_on_new_movies(csv_path):
     cached_metadata_df = pd.read_csv(METADATA_CACHE_FILE) if METADATA_CACHE_FILE.exists() else pd.DataFrame()
 
     print(f"🔍 Enriching and predicting for {len(df_new)} movies...")
+    bucket_vals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])
     
     for idx, row in df_new.iterrows():
         name, year, actual = str(row['Name']).strip(), int(row['Year']), float(row['Rating'])
         
         try:
-            # Manual cache handling logic
             cached_entry_mask = (cached_metadata_df.get('title', pd.Series(dtype=str)).str.lower() == name.lower()) & \
                                 (cached_metadata_df.get('year', pd.Series(dtype=int)) == year)
             cached_entry = cached_metadata_df[cached_entry_mask]
@@ -98,7 +99,7 @@ def run_test_on_new_movies(csv_path):
                 for key, value in metadata.items():
                     if isinstance(value, str) and (value.startswith('[') or value.startswith('{')):
                         try: metadata[key] = json.loads(value)
-                        except (json.JSONDecodeError, TypeError): pass
+                        except: pass
             else:
                 print(f"   [CACHE MISS] Fetching data for '{name} ({year})'")
                 metadata = get_movie_metadata(name, year)
@@ -116,7 +117,13 @@ def run_test_on_new_movies(csv_path):
             
             result_row = {'Name': name, 'Year': year, 'Actual': actual}
             for model_name, model in models.items():
-                raw_pred = model.predict(features)[0]
+                if model_name == "Ordinal_EV":
+                    probs = model.predict_proba(features)[0]
+                    # REVERTED: Expected Value
+                    raw_pred = np.sum(probs * bucket_vals)
+                else:
+                    raw_pred = model.predict(features)[0]
+                
                 result_row[f'Pred_{model_name}'] = round_to_nearest_half(raw_pred)
             
             results.append(result_row)
@@ -182,7 +189,7 @@ def run_test_on_new_movies(csv_path):
     
     for i, col in enumerate(data_cols):
         sns.histplot(df_results[col], bins=np.arange(0.25, 5.75, 0.5), 
-                     ax=axes[i], kde=False)
+                     ax=axes[i], kde=False, edgecolor='black')
         axes[i].set_title(titles[i])
         axes[i].set_xlabel('Rating (0.5 - 5.0)')
         axes[i].set_xticks(np.arange(0.5, 5.5, 0.5))
