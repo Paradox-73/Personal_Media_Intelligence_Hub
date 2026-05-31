@@ -15,10 +15,10 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 st.set_page_config(page_title="YouTube Intelligence", page_icon="🟥", layout="wide")
 # --- PATHS ---
-RAW_HISTORY = Path("data/raw/yt/watch-history.json")
-SUBSCRIPTIONS_PATH = Path("data/raw/yt/subscriptions.csv") # From Takeout
-VIDEO_STATS_PATH = Path("data/processed/youtube_video_details.csv")
-CHANNEL_STATS_PATH = Path("data/processed/youtube_channel_details.csv")
+RAW_HISTORY = Path("data/raw/youtube/watch-history.json")
+SUBSCRIPTIONS_PATH = Path("data/raw/youtube/subscriptions.csv") # From Takeout
+VIDEO_STATS_PATH = Path("data/processed/youtube/youtube_video_details.csv")
+CHANNEL_STATS_PATH = Path("data/processed/youtube/youtube_channel_details.csv")
 
 # Standard YouTube Category Map
 CATEGORY_MAP = {

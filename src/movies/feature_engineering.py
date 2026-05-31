@@ -198,12 +198,18 @@ def transform_single_movie(movie_data, state):
     row['total_nominations'] = float(noms_match.group(1)) if noms_match else 0
     
     # Engineer Critic vs. User Rating Feature (Matches predict_ratings.py)
-    imdb_100 = safe_num(movie_data.get('imdb_rating'), 0) * 10
-    meta = safe_num(movie_data.get('metascore'), 0)
-    rt = safe_num(movie_data.get('rotten_tomatoes_rating'), 0)
-    va = safe_num(movie_data.get('vote_average'), 0) * 10
+    imdb_val = safe_num(movie_data.get('imdb_rating'), np.nan)
+    imdb_100 = imdb_val * 10 if not pd.isna(imdb_val) else np.nan
+    
+    meta = safe_num(movie_data.get('metascore'), np.nan)
+    rt = safe_num(movie_data.get('rotten_tomatoes_rating'), np.nan)
+    
+    va_val = safe_num(movie_data.get('vote_average'), np.nan)
+    va = va_val * 10 if not pd.isna(va_val) else np.nan
+    
     critic_scores = pd.Series([imdb_100, meta, rt, va])
-    row['critic_avg_5'] = (critic_scores.mean() / 100) * 5
+    avg_100 = critic_scores.mean() # mean() ignores NaN by default
+    row['critic_avg_5'] = (avg_100 / 100) * 5 if not pd.isna(avg_100) else 0.0
     
     # Initialize DF with all training columns
     final_df = pd.DataFrame(0.0, index=[0], columns=state['training_columns'])
@@ -231,7 +237,7 @@ def transform_single_movie(movie_data, state):
 
     mpaa = categorize_rating(movie_data.get('rated', ''))
     mpaa_col = sanitize_col(f"rated_{mpaa}")
-    if mpa_col in final_df.columns: final_df[mpaa_col] = 1.0
+    if mpaa_col in final_df.columns: final_df[mpaa_col] = 1.0
 
     # Match predict_ratings.py text_content construction exactly
     text_content = "Title: " + str(movie_data.get('title', 'Unknown')) + \

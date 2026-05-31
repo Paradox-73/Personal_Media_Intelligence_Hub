@@ -38,16 +38,29 @@ def categorize_rating(r):
 def sanitize_col(col_name):
     return re.sub(r"[\[\]<']", "", str(col_name))
 
+def clean_year(val):
+    try:
+        if pd.isna(val) or val == '': return None
+        s = str(val).strip()
+        if '-' in s:
+            parts = s.split('-')
+            if len(parts[0]) == 4: return int(parts[0])
+            if len(parts[-1]) == 4: return int(parts[-1])
+        return int(float(s[:4]))
+    except:
+        return None
+
 def batch_predict_unified_ratings():
     print("🚀 Starting Batch Prediction (Unified Ensemble Mode)...")
 
     # --- 1. Load Models & State ---
     ensemble_dir = config.UNIFIED_ENSEMBLE_DIR
     model_paths = {
-        "XGB": ensemble_dir / "xgb_base.joblib",
-        "SVR": ensemble_dir / "svr_base.joblib",
-        "CatBoost": ensemble_dir / "catboost_base.joblib",
-        "Stacking": ensemble_dir / "stacking_ensemble.joblib"
+        "XGB": ensemble_dir / "xgb_base_regressor.joblib",
+        "SVR": ensemble_dir / "svr_base_regressor.joblib",
+        "CatBoost": ensemble_dir / "catboost_base_regressor.joblib",
+        "Stacking": ensemble_dir / "stacking_ensemble_regressor.joblib",
+        "Ordinal_EV": ensemble_dir / "ordinal_classifier.joblib"
     }
     
     models = {}
@@ -71,10 +84,17 @@ def batch_predict_unified_ratings():
         df_movies = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
         df_shows = pd.read_csv(config.TV_SHOWS_ENRICHED_DATA_PATH)
         
-        df_movies['is_tv_show'] = 0
-        df_shows['is_tv_show'] = 1
+        try:
+            df_games = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH)
+        except:
+            df_games = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH, encoding='latin1')
         
-        # Align schemas
+        df_movies['is_tv_show'] = 0
+        df_movies['is_game'] = 0
+        
+        df_shows['is_tv_show'] = 1
+        df_shows['is_game'] = 0
+        # Align shows schema
         df_shows = df_shows.rename(columns={
             'name': 'title',
             'created_by': 'director',
@@ -82,9 +102,26 @@ def batch_predict_unified_ratings():
             'genres': 'genre',
             'age_rating': 'rated'
         })
+
+        # Align games schema
+        df_games = df_games.rename(columns={
+            'name': 'title',
+            'my_rating': 'user_rating',
+            'genres': 'genre',
+            'developers': 'director',
+            'metacritic': 'metascore',
+            'rating': 'imdb_rating',
+            'ratings_count': 'imdb_votes',
+            'description_raw': 'overview',
+            'age_rating': 'rated',
+            'cover': 'poster'
+        })
+        df_games['is_tv_show'] = 0
+        df_games['is_game'] = 1
+        df_games['year'] = df_games['released'].apply(clean_year)
         
-        df = pd.concat([df_movies, df_shows], ignore_index=True)
-        print(f"   Loaded {len(df_movies)} movies and {len(df_shows)} shows. Combined: {len(df)} records.")
+        df = pd.concat([df_movies, df_shows, df_games], ignore_index=True)
+        print(f"   Loaded {len(df_movies)} movies, {len(df_shows)} shows, and {len(df_games)} games. Total: {len(df)} records.")
     except Exception as e:
         print(f"❌ ERROR loading enriched data: {e}")
         return
@@ -119,6 +156,9 @@ def batch_predict_unified_ratings():
         
     for col, med_val in state['median_values'].items():
         if col in df.columns:
+            # Pre-clean strings by removing commas
+            if df[col].dtype == 'object':
+                df[col] = df[col].astype(str).str.replace(',', '', regex=False)
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(med_val)
         else:
             df[col] = med_val

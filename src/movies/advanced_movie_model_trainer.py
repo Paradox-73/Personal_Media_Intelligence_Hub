@@ -4,6 +4,8 @@ import catboost as ctb
 import joblib
 import sys
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 from pathlib import Path
 
 from sklearn.model_selection import train_test_split
@@ -33,10 +35,10 @@ def print_performance_report(model_name: str, y_true: pd.Series, y_pred: np.ndar
     print("" + "="*50)
     print(f"📊 PERFORMANCE REPORT: {model_name}")
     print("="*50)
-    
+
     # Clip and round predictions to valid rating values (0.5 increments)
     y_pred_rounded = np.round(np.clip(y_pred, 0, 5) * 2) / 2
-    
+
     mse = mean_squared_error(y_true, y_pred_rounded)
     rmse = np.sqrt(mse)
     mae = mean_absolute_error(y_true, y_pred_rounded)
@@ -65,18 +67,18 @@ def tune_and_train_xgboost(X_train, y_train, X_test, y_test):
     using Mean Absolute Error (MAE).
     """
     from src.movies.custom_objectives import CustomEdgePenaltyObjective
-    
+
     print("\n🔍 Sweeping Alpha range for Custom Edge Penalty...")
-    
+
     # Generate a range from 0.0 to 1.5 in steps of 0.1
     alpha_range = np.arange(0.0, 1.6, 0.1) 
-    
+
     best_alpha = 0.0
     best_mae = float('inf')
 
     for a in alpha_range:
         current_objective = CustomEdgePenaltyObjective(alpha=a)
-        
+
         # We use fewer estimators/depth just for the quick tuning sweep
         temp_xgb = xgb.XGBRegressor(
             n_estimators=100, 
@@ -86,25 +88,25 @@ def tune_and_train_xgboost(X_train, y_train, X_test, y_test):
             random_state=42, 
             n_jobs=-1
         )
-        
+
         temp_xgb.fit(X_train, y_train)
         preds = temp_xgb.predict(X_test)
-        
+
         # Round predictions to valid 0.5 increments to evaluate true performance
         preds_rounded = np.round(np.clip(preds, 0, 5) * 2) / 2
-        
+
         # CHANGED: Now optimizing for MAE instead of RMSE
         mae = mean_absolute_error(y_test, preds_rounded)
         severe_misses = (np.abs(y_test - preds_rounded) > 1.0).sum()
-        
+
         print(f"   Alpha {a:.1f} -> MAE: {mae:.4f} | Severe Misses (>1.0): {severe_misses}")
-        
+
         if mae < best_mae:
             best_mae = mae
             best_alpha = a
 
     print(f"✅ Optimal Alpha found: {best_alpha:.1f} (MAE: {best_mae:.4f})")
-    
+
     # Train the final, full-powered model using the optimal alpha
     print(f"   Training final XGBoost model with Alpha {best_alpha:.1f}...")
     final_objective = CustomEdgePenaltyObjective(alpha=best_alpha)
@@ -119,7 +121,7 @@ def tune_and_train_xgboost(X_train, y_train, X_test, y_test):
         n_jobs=-1
     )
     final_xgb.fit(X_train, y_train)
-    
+
     return final_xgb
 
 def train_advanced_models():
@@ -131,10 +133,10 @@ def train_advanced_models():
 
     # 1. Load and Prepare Data
     df = pd.read_csv(config.TRAINING_DATA_PATH)
-    
+
     y_reg = df['target_reg']
     y_ord = df['target_ordinal']
-    X = df.drop(columns=['target_reg', 'target_class', 'target_ordinal'])
+    X = df.drop(columns=['target_reg', 'target_class', 'target_ordinal'], errors='ignore')
 
     X_train, X_test, y_reg_train, y_reg_test, y_ord_train, y_ord_test = train_test_split(
         X, y_reg, y_ord, test_size=0.2, random_state=42
@@ -144,10 +146,10 @@ def train_advanced_models():
     # Calculate standard sample weights for SVR and Ordinal
     weight_classes = (y_reg_train * 2).round() / 2
     sample_weights = compute_sample_weight(class_weight='balanced', y=weight_classes)
-    
+
     # 2. Define Base Models
     print("   Defining base models...")
-    
+
     if USE_CUSTOM_EDGE_LOSS:
         print("   ✅ Using Custom Exponential Edge-Penalty Loss for XGBoost.")
         xgb_reg = tune_and_train_xgboost(X_train, y_reg_train, X_test, y_reg_test)
@@ -174,7 +176,7 @@ def train_advanced_models():
 
     # 3. Train and Evaluate Base Regressors
     print("\n--- Training Regressors ---")
-    
+
     print("   Evaluating XGBoost...")
     xgb_preds = xgb_reg.predict(X_test)
     print_performance_report("XGBoost Regressor", y_reg_test, xgb_preds)
@@ -207,38 +209,96 @@ def train_advanced_models():
 
     # 5. Train Ordinal Confidence Classifier
     print("\n--- Training 10-Bucket Ordinal Classifier ---")
+
+    # Identify unique classes present in training data
+    unique_classes = np.sort(np.unique(y_ord_train))
+    num_classes_present = len(unique_classes)
+
+    # Map classes to 0...N-1 for XGBoost
+    class_map = {old: new for new, old in enumerate(unique_classes)}
+    y_ord_train_mapped = pd.Series(y_ord_train).map(class_map)
+
     ordinal_clf = xgb.XGBClassifier(
         n_estimators=200,
         learning_rate=0.03,
         max_depth=5,
         objective='multi:softprob',
-        num_class=10,
+        num_class=num_classes_present,
         subsample=0.8,
         random_state=42,
         n_jobs=-1
     )
-    ordinal_clf.fit(X_train, y_ord_train, sample_weight=sample_weights)
-    
+    ordinal_clf.fit(X_train, y_ord_train_mapped, sample_weight=sample_weights)
+
     ord_probs = ordinal_clf.predict_proba(X_test)
-    bucket_vals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])
-    
+
+    # Map back to actual bucket values
+    bucket_map = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0, 4: 2.5, 5: 3.0, 6: 3.5, 7: 4.0, 8: 4.5, 9: 5.0}
+    present_bucket_vals = np.array([bucket_map[c] for c in unique_classes])
+
     # Expected Value rather than Argmax for stability
-    ord_ev_preds = np.sum(ord_probs * bucket_vals, axis=1)
+    ord_ev_preds = np.sum(ord_probs * present_bucket_vals, axis=1)
     print_performance_report("10-Bucket Ordinal Classifier (Expected Value)", y_reg_test, ord_ev_preds)
 
+    # --- 6. Visualizations (Advanced Ensemble) ---
+    print("\n--- Generating Ensemble Visualizations ---")
+    results_dir = config.BASE_DIR / "results" / "movies" / "advanced"
+    results_dir.mkdir(parents=True, exist_ok=True)
 
-    # 6. Save All Trained Models
+    def round_h(x): return np.round(np.clip(x, 0, 5) * 2) / 2
+
+    # Prep data for plotting
+    plot_df = pd.DataFrame({
+        'Actual': y_reg_test,
+        'Stacking': round_h(stack_preds),
+        'XGB': round_h(xgb_preds),
+        'CatBoost': round_h(cat_preds),
+        'SVR': round_h(svr_preds),
+        'Ordinal_EV': round_h(ord_ev_preds)
+    })
+
+    # KDE Plot
+    plt.figure(figsize=(14, 7))
+    sns.kdeplot(plot_df['Actual'], label='Actual', color='black', fill=True, alpha=0.1, linewidth=3)
+    sns.kdeplot(plot_df['Stacking'], label='Stacking Ensemble', color='red', linewidth=2)
+    sns.kdeplot(plot_df['Ordinal_EV'], label='Ordinal EV', color='blue', linestyle='--')
+    plt.title("Advanced Ensemble: Rating Distribution (KDE)")
+    plt.xticks(np.arange(0.5, 5.5, 0.5))
+    plt.legend()
+    plt.savefig(results_dir / "advanced_kde.png")
+    plt.close()
+
+    # Histogram Grid
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharey=True)
+    axes = axes.flatten()
+    cols = ['Actual', 'Stacking', 'Ordinal_EV', 'XGB', 'CatBoost', 'SVR']
+    colors = ['gray', 'red', 'blue', 'orange', 'green', 'purple']
+
+    for i, col in enumerate(cols):
+        sns.histplot(plot_df[col], bins=np.arange(0.25, 5.75, 0.5), ax=axes[i], color=colors[i])
+        axes[i].set_title(f"{col} Distribution")
+        axes[i].set_xticks(np.arange(0.5, 5.5, 0.5))
+
+    plt.suptitle("Advanced Ensemble: Component Histograms")
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(results_dir / "advanced_histograms.png")
+    plt.close()
+
+    # 7. Save All Trained Models
     print("\n--- Saving All Trained Models ---")
     ensemble_dir = config.MODEL_DIR / "movies" / "ensemble"
     ensemble_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    # Save the class mapping alongside the model
+    joblib.dump(unique_classes, ensemble_dir / "ordinal_classes.joblib")
+
     joblib.dump(xgb_reg, ensemble_dir / "xgb_base_regressor.joblib")
     joblib.dump(svr_pipe, ensemble_dir / "svr_base_regressor.joblib")
     joblib.dump(cat_reg, ensemble_dir / "catboost_base_regressor.joblib")
     joblib.dump(stacking_regressor, ensemble_dir / "stacking_ensemble_regressor.joblib")
     joblib.dump(ordinal_clf, ensemble_dir / "ordinal_classifier.joblib")
-    
-    print(f"✅ All 5 models saved successfully to: {ensemble_dir}")
+
+    print(f"✅ All 5 models and ensemble graphs saved to {results_dir}")
 
 if __name__ == "__main__":
     train_advanced_models()

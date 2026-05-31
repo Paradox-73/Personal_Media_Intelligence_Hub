@@ -1,0 +1,222 @@
+unified model
+
+
+
+movies and shows 
+
+(content_rec) E:\Personal_Media_Intelligence_Hub>python src/unified_model/advanced_unified_model_trainer.py
+🤖 Starting Advanced Unified Media Model Training Pipeline...
+   Training Set: 745 | Test Set: 187
+   ✅ Training Unified XGBoost with Custom Edge-Penalty Loss...
+
+🔍 Sweeping Alpha range for Custom Edge Penalty (Unified Model)...
+✅ Optimal Alpha found: 0.1 (MAE: 0.5241)
+
+--- Evaluating Base Models ---
+==================================================
+📊 PERFORMANCE REPORT: Unified XGBoost
+==================================================
+   📉 [TEST SET] Regressor MSE:  0.5080
+   📉 [TEST SET] Regressor RMSE: 0.7128
+   📉 [TEST SET] Regressor MAE:  0.5241
+   📈 [TEST SET] Regressor R²:   0.5081
+   ----------------------------------------
+   Exact (0.0):  56  (29.9%)
+   Off by 0.5:   86  (46.0%)
+   Off by 1.0:   29  (15.5%)
+   Off by >1.0:  16  (8.6%)
+   ----------------------------------------
+   Fitting SVR...
+==================================================
+📊 PERFORMANCE REPORT: Unified SVR
+==================================================
+   📉 [TEST SET] Regressor MSE:  0.6029
+   📉 [TEST SET] Regressor RMSE: 0.7765
+   📉 [TEST SET] Regressor MAE:  0.6016
+   📈 [TEST SET] Regressor R²:   0.4162
+   ----------------------------------------
+   Exact (0.0):  43  (23.0%)
+   Off by 0.5:   87  (46.5%)
+   Off by 1.0:   40  (21.4%)
+   Off by >1.0:  17  (9.1%)
+   ----------------------------------------
+   Fitting CatBoost...
+==================================================
+📊 PERFORMANCE REPORT: Unified CatBoost
+==================================================
+   📉 [TEST SET] Regressor MSE:  0.5294
+   📉 [TEST SET] Regressor RMSE: 0.7276
+   📉 [TEST SET] Regressor MAE:  0.5294
+   📈 [TEST SET] Regressor R²:   0.4874
+   ----------------------------------------
+   Exact (0.0):  58  (31.0%)
+   Off by 0.5:   82  (43.9%)
+   Off by 1.0:   30  (16.0%)
+   Off by >1.0:  17  (9.1%)
+   ----------------------------------------
+
+--- Training Unified Stacking Ensemble ---
+==================================================
+📊 PERFORMANCE REPORT: 🚀 UNIFIED STACKING ENSEMBLE 🚀
+==================================================
+   📉 [TEST SET] Regressor MSE:  0.5160
+   📉 [TEST SET] Regressor RMSE: 0.7184
+   📉 [TEST SET] Regressor MAE:  0.5187
+   📈 [TEST SET] Regressor R²:   0.5003
+   ----------------------------------------
+   Exact (0.0):  59  (31.6%)
+   Off by 0.5:   84  (44.9%)
+   Off by 1.0:   27  (14.4%)
+   Off by >1.0:  17  (9.1%)
+   ----------------------------------------
+
+--- Training Unified 10-Bucket Ordinal Classifier ---
+==================================================
+📊 PERFORMANCE REPORT: Unified Ordinal Classifier (Expected Value)
+==================================================
+   📉 [TEST SET] Regressor MSE:  0.5294
+   📉 [TEST SET] Regressor RMSE: 0.7276
+   📉 [TEST SET] Regressor MAE:  0.5508
+   📈 [TEST SET] Regressor R²:   0.4874
+   ----------------------------------------
+   Exact (0.0):  50  (26.7%)
+   Off by 0.5:   88  (47.1%)
+   Off by 1.0:   34  (18.2%)
+   Off by >1.0:  15  (8.0%)
+   ----------------------------------------
+✅ All 5 Advanced Unified models saved to: E:\Personal_Media_Intelligence_Hub\models\unified\ensemble
+
+
+
+movies shows and games
+
+
+
+(content_rec) E:\Personal_Media_Intelligence_Hub>python src/unified_model/predict_unified_ratings.py
+🚀 Starting Batch Prediction (Unified Ensemble Mode)...
+✅ Loaded 5 models and preprocessor state.
+   Loaded 779 movies, 153 shows, and 55 games. Total: 987 records.
+   Processing unified features...
+   Generating text embeddings...
+Loading weights: 100%|█████████████████████████████████████| 103/103 [00:00<00:00, 4105.11it/s, Materializing param=pooler.dense.weight]
+BertModel LOAD REPORT from: sentence-transformers/all-MiniLM-L6-v2
+Key                     | Status     |  |
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  |
+
+Notes:
+- UNEXPECTED    :can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+Batches: 100%|██████████████████████████████████████████████████████████████████████████████████████████| 31/31 [00:01<00:00, 21.22it/s]
+   Predicting ratings with unified models...
+
+=======================================================
+📊 UNIFIED ML ENSEMBLE PERFORMANCE REPORT
+=======================================================
+Total Evaluated: 987
+-------------------------------------------------------
+   Model: XGB
+   📉 MSE: 0.1973 | 📉 RMSE: 0.4442 | 📉 MAE: 0.2264 | 📈 R²: 0.8025
+   Distribution -> Exact: 67.1% | ±0.5: 91.5% | >1.0: 3.2%
+-------------------------------------------------------
+   Model: SVR
+   📉 MSE: 0.3913 | 📉 RMSE: 0.6256 | 📉 MAE: 0.4230 | 📈 R²: 0.6083
+   Distribution -> Exact: 43.6% | ±0.5: 78.3% | >1.0: 5.4%
+-------------------------------------------------------
+   Model: CatBoost
+   📉 MSE: 0.3371 | 📉 RMSE: 0.5806 | 📉 MAE: 0.3663 | 📈 R²: 0.6626
+   Distribution -> Exact: 48.8% | ±0.5: 85.0% | >1.0: 5.6%
+-------------------------------------------------------
+   Model: Stacking
+   📉 MSE: 0.2158 | 📉 RMSE: 0.4645 | 📉 MAE: 0.2624 | 📈 R²: 0.7840
+   Distribution -> Exact: 60.6% | ±0.5: 90.4% | >1.0: 3.0%
+-------------------------------------------------------
+   Model: Ordinal_EV
+   📉 MSE: 1.9493 | 📉 RMSE: 1.3962 | 📉 MAE: 1.2361 | 📈 R²: -0.9509
+   Distribution -> Exact: 9.4% | ±0.5: 20.5% | >1.0: 47.9%
+=======================================================
+
+📈 KDE distribution plot saved to E:\Personal_Media_Intelligence_Hub\data\predictions\unified\unified_ratings_kde.png
+📈 Histogram grid plot saved to E:\Personal_Media_Intelligence_Hub\data\predictions\unified\unified_ratings_histograms.png
+✅ Saved unified model predictions to E:\Personal_Media_Intelligence_Hub\data\predictions\unified\unified_predictions_ensemble.csv
+
+(content_rec) E:\Personal_Media_Intelligence_Hub>python src/unified_model/advanced_unified_model_trainer.py
+🤖 Starting Advanced Unified Media Model Training Pipeline...
+   Training Set: 789 | Test Set: 198
+   ✅ Training Unified XGBoost with Custom Edge-Penalty Loss...
+
+🔍 Sweeping Alpha range for Custom Edge Penalty (Unified Model)...
+✅ Optimal Alpha found: 0.4 (MAE: 0.4823)
+
+--- Evaluating Base Models ---
+==================================================
+📊 PERFORMANCE REPORT: Unified XGBoost
+==================================================
+   📉 [TEST SET] Regressor MSE:  0.4293
+   📉 [TEST SET] Regressor RMSE: 0.6552
+   📉 [TEST SET] Regressor MAE:  0.4949
+   📈 [TEST SET] Regressor R²:   0.5460
+   ----------------------------------------
+   Exact (0.0):  62  (31.3%)
+   Off by 0.5:   87  (43.9%)
+   Off by 1.0:   39  (19.7%)
+   Off by >1.0:  10  (5.1%)
+   ----------------------------------------
+   Fitting SVR...
+==================================================
+📊 PERFORMANCE REPORT: Unified SVR
+==================================================
+   📉 [TEST SET] Regressor MSE:  0.5732
+   📉 [TEST SET] Regressor RMSE: 0.7571
+   📉 [TEST SET] Regressor MAE:  0.5909
+   📈 [TEST SET] Regressor R²:   0.3937
+   ----------------------------------------
+   Exact (0.0):  51  (25.8%)
+   Off by 0.5:   81  (40.9%)
+   Off by 1.0:   47  (23.7%)
+   Off by >1.0:  19  (9.6%)
+   ----------------------------------------
+   Fitting CatBoost...
+==================================================
+📊 PERFORMANCE REPORT: Unified CatBoost
+==================================================
+   📉 [TEST SET] Regressor MSE:  0.4646
+   📉 [TEST SET] Regressor RMSE: 0.6816
+   📉 [TEST SET] Regressor MAE:  0.5202
+   📈 [TEST SET] Regressor R²:   0.5086
+   ----------------------------------------
+   Exact (0.0):  55  (27.8%)
+   Off by 0.5:   95  (48.0%)
+   Off by 1.0:   35  (17.7%)
+   Off by >1.0:  13  (6.6%)
+   ----------------------------------------
+
+--- Training Unified Stacking Ensemble ---
+==================================================
+📊 PERFORMANCE REPORT: 🚀 UNIFIED STACKING ENSEMBLE 🚀
+==================================================
+   📉 [TEST SET] Regressor MSE:  0.4432
+   📉 [TEST SET] Regressor RMSE: 0.6657
+   📉 [TEST SET] Regressor MAE:  0.5076
+   📈 [TEST SET] Regressor R²:   0.5313
+   ----------------------------------------
+   Exact (0.0):  58  (29.3%)
+   Off by 0.5:   92  (46.5%)
+   Off by 1.0:   36  (18.2%)
+   Off by >1.0:  12  (6.1%)
+   ----------------------------------------
+
+--- Training Unified 10-Bucket Ordinal Classifier ---
+==================================================
+📊 PERFORMANCE REPORT: Unified Ordinal Classifier (Expected Value)
+==================================================
+   📉 [TEST SET] Regressor MSE:  0.5088
+   📉 [TEST SET] Regressor RMSE: 0.7133
+   📉 [TEST SET] Regressor MAE:  0.5177
+   📈 [TEST SET] Regressor R²:   0.4618
+   ----------------------------------------
+   Exact (0.0):  67  (33.8%)
+   Off by 0.5:   76  (38.4%)
+   Off by 1.0:   41  (20.7%)
+   Off by >1.0:  14  (7.1%)
+   ----------------------------------------
+✅ All 5 Advanced Unified models saved to: E:\Personal_Media_Intelligence_Hub\models\unified\ensemble

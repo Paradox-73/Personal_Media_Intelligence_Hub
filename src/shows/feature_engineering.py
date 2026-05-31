@@ -108,9 +108,14 @@ def run_feature_engineering():
     if y_class.value_counts().min() < 5: 
         y_class = (df['user_rating'] >= user_median).astype(int)
 
+    # NEW: Ordinal target mapping (10 buckets: 0 to 9)
+    mapping = {0.5: 0, 1.0: 1, 1.5: 2, 2.0: 3, 2.5: 4, 3.0: 5, 3.5: 6, 4.0: 7, 4.5: 8, 5.0: 9}
+    y_ord = df['user_rating'].map(mapping).fillna(5).astype(int)
+
     output = X.copy()
     output['target_reg'] = y_reg
     output['target_class'] = y_class
+    output['target_ordinal'] = y_ord
     
     output.to_csv(config.TV_SHOWS_TRAINING_DATA_PATH, index=False)
     

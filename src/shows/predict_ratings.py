@@ -3,8 +3,11 @@ import numpy as np
 import joblib
 import sys
 import ast
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import re
 from pathlib import Path
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
@@ -14,9 +17,9 @@ def safe_eval(val):
     if pd.isna(val) or val == "": return []
     try:
         if isinstance(val, list): return val
-        return ast.literal_eval(str(val))
-    except (ValueError, SyntaxError):
-        return [x.strip() for x in str(val).split(',') if x.strip()]
+        if "[" in str(val): return ast.literal_eval(str(val))
+        return [str(val)]
+    except: return []
 
 def get_primary_network(val):
     if pd.isna(val) or val == "": return "Other"
@@ -28,133 +31,143 @@ def get_primary_network(val):
     except:
         return "Other"
 
-def run_predictions():
-    print("🚀 STARTING PREDICTION (NLP + NETWORK AWARE)...")
+def run_consolidated_predictions():
+    print("🚀 STARTING CONSOLIDATED TV SHOW PREDICTIONS & EVALUATION...")
 
     # 1. Load Artifacts
+    ensemble_dir = config.TV_SHOWS_MODEL_DIR / "ensemble"
     try:
-        if not config.TV_SHOWS_MODEL_REGRESSOR.exists():
-            print(f"❌ Error: Model not found at {config.TV_SHOWS_MODEL_REGRESSOR}")
-            return
-            
-        model = joblib.load(config.TV_SHOWS_MODEL_REGRESSOR)
+        models = {
+            "Baseline": joblib.load(config.TV_SHOWS_MODEL_REGRESSOR),
+            "XGB": joblib.load(ensemble_dir / "xgb_base_regressor.joblib"),
+            "SVR": joblib.load(ensemble_dir / "svr_base_regressor.joblib"),
+            "CatBoost": joblib.load(ensemble_dir / "catboost_base_regressor.joblib"),
+            "Stacking": joblib.load(ensemble_dir / "stacking_ensemble_regressor.joblib"),
+            "Ordinal": joblib.load(ensemble_dir / "ordinal_classifier.joblib")
+        }
+        unique_classes = joblib.load(ensemble_dir / "ordinal_classes.joblib")
         state = joblib.load(config.TV_SHOWS_PREPROCESSOR_STATE)
+        print("   ✅ Loaded all models and preprocessor state.")
     except Exception as e:
         print(f"❌ Error loading artifacts: {e}")
+        print("   Have you run src/shows/model_trainer.py?")
         return
 
-    # 2. Load Data
+    # 2. Load and Prepare Data
     df = pd.read_csv(config.TV_SHOWS_ENRICHED_DATA_PATH)
     print(f"   Loaded {len(df)} shows for prediction.")
     
-    # --- 3. Feature Engineering (Must Match Training EXACTLY) ---
-    
-    # A. Numericals
+    # Feature Engineering
     df['vote_count_log'] = np.log1p(pd.to_numeric(df['vote_count'], errors='coerce').fillna(0))
     df['vote_average'] = pd.to_numeric(df['vote_average'], errors='coerce').fillna(state['median_vote_avg'])
     df['year'] = pd.to_numeric(df['year'], errors='coerce').fillna(state['median_year'])
     df['season_count'] = pd.to_numeric(df['number_of_seasons'], errors='coerce').fillna(1)
-    
-    # B. Vibe Features (Network & Adult)
     df['is_adult'] = df['age_rating'].apply(lambda x: 1 if str(x) in ['TV-MA', 'R', '18+'] else 0)
     
     df['primary_network'] = df['network'].apply(get_primary_network)
-    # Use the 'top_networks' list saved during training to encode
     df['network_clean'] = df['primary_network'].apply(lambda x: x if x in state['top_networks'] else "Other")
     
-    # Manual One-Hot Encoding for Networks
-    for net in state['top_networks']:
-        df[f"net_{net}"] = (df['network_clean'] == net).astype(int)
-    # Ensure net_Other exists if it was in training
-    if "net_Other" not in df.columns:
-        df["net_Other"] = (df['network_clean'] == "Other").astype(int)
-
-    # C. Genres
     df['genres_list'] = df['genres'].apply(safe_eval)
     for col_name in state['kept_genres']:
         raw_genre = col_name.replace('g_', '')
         df[col_name] = df['genres_list'].apply(lambda x: 1 if raw_genre in x else 0)
 
-    # D. NLP (Text Features)
+    for net in state['top_networks']:
+        df[f"net_{net}"] = (df['network_clean'] == net).astype(int)
+    if "net_Other" not in df.columns:
+        df["net_Other"] = (df['network_clean'] == "Other").astype(int)
+
     if 'tfidf_model' in state:
-        print("   📚 Processing text features...")
         df['overview'] = df['overview'].fillna('')
-        tfidf = state['tfidf_model']
-        tfidf_matrix = tfidf.transform(df['overview'])
-        
-        # Create temporary DF for text features
+        tfidf_matrix = state['tfidf_model'].transform(df['overview'])
         tfidf_df = pd.DataFrame(tfidf_matrix.toarray(), columns=state['tfidf_cols'], index=df.index)
-        # Attach to main DF temporarily
         df = pd.concat([df, tfidf_df], axis=1)
 
-    # E. Final Assembly
-    # Create the X dataframe with ONLY the columns the model expects, in correct order
-    train_cols = state['features_columns']
-    X = pd.DataFrame(index=df.index)
+    X = df[state['features_columns']].fillna(0)
+
+    # 3. Predict using all models
+    print(f"📊 Predicting for {len(df)} shows...")
     
-    for col in train_cols:
-        if col in df.columns:
-            X[col] = df[col]
+    bucket_map = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0, 4: 2.5, 5: 3.0, 6: 3.5, 7: 4.0, 8: 4.5, 9: 5.0}
+    present_bucket_vals = np.array([bucket_map[c] for c in unique_classes])
+
+    for name, model in models.items():
+        if name == "Ordinal":
+            probs = model.predict_proba(X)
+            preds = np.sum(probs * present_bucket_vals, axis=1)
         else:
-            X[col] = 0 # Safety fill for missing columns
+            preds = model.predict(X)
+        df[f'pred_{name.lower()}'] = np.round(np.clip(preds, 0, 5) * 2) / 2
+
+    # Main prediction column (Using Stacking for best accuracy)
+    df['predicted_rating'] = df['pred_stacking']
+
+    # 4. Evaluation and Visuals
+    results_dir = config.BASE_DIR / "results" / "shows"
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    if 'user_rating' in df.columns and not df['user_rating'].isna().all():
+        eval_df = df.dropna(subset=['user_rating']).copy()
+        y_true = eval_df['user_rating']
+        
+        print("\n" + "="*60)
+        print("📊 SHOW ENSEMBLE PERFORMANCE REPORT (FULL DATASET)")
+        print("="*60)
+        
+        for name in models.keys():
+            y_pred = eval_df[f'pred_{name.lower()}']
+            mae = mean_absolute_error(y_true, y_pred)
+            rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+            r2 = r2_score(y_true, y_pred)
+            diffs = np.abs(y_true - y_pred)
             
-    print(f"📊 Features prepared. Shape: {X.shape}")
+            print(f"Model: {name:<10} | MAE: {mae:.4f} | RMSE: {rmse:.4f} | R²: {r2:.4f}")
+            print(f"   Accuracy -> Exact: {((diffs == 0.0).sum()/len(y_true))*100:.1f}% | ±0.5: {((diffs <= 0.5).sum()/len(y_true))*100:.1f}%")
+        print("="*60 + "\n")
 
-    # 4. Predict
-    predictions = model.predict(X)
-    df['predicted_rating'] = np.clip(predictions, 1, 10).round(1)
+        # Visualizations
+        plt.style.use('seaborn-v0_8-whitegrid')
+        
+        # KDE Plot
+        fig, ax = plt.subplots(figsize=(14, 7))
+        sns.kdeplot(data=eval_df, x='user_rating', label='Actual', color='black', linewidth=3, fill=True, alpha=0.1)
+        for name in ["Baseline", "Stacking", "Ordinal"]:
+            sns.kdeplot(data=eval_df, x=f'pred_{name.lower()}', label=f'{name} Preds', linestyle='--')
+        ax.set_title('TV Show Rating Distributions (KDE)', fontsize=16)
+        ax.set_xticks(np.arange(0, 5.5, 0.5))
+        plt.legend()
+        plt.savefig(results_dir / "shows_distribution_kde.png", dpi=150)
+        plt.close()
 
-    # 5. Statistical Report (RESTORED)
-    analysis_df = df[df['user_rating'].notna()].copy()
+        # Histogram Grid
+        fig, axes = plt.subplots(2, 3, figsize=(18, 10), sharey=True)
+        axes = axes.flatten()
+        plot_models = ["Baseline", "XGB", "SVR", "CatBoost", "Stacking", "Ordinal"]
+        for i, name in enumerate(plot_models):
+            sns.histplot(eval_df[f'pred_{name.lower()}'], bins=np.arange(0.25, 5.75, 0.5), ax=axes[i], kde=False, color='skyblue', edgecolor='black')
+            axes[i].set_title(f'{name} Predictions')
+            axes[i].set_xticks(np.arange(0.5, 5.5, 0.5))
+        fig.suptitle('Histogram of TV Show Rating Predictions', fontsize=20)
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.savefig(results_dir / "shows_distribution_histograms.png", dpi=150)
+        plt.close()
+
+    # 5. Save Results
+    # Dashboard view (Cleaned up)
+    output_cols = ['name', 'year', 'user_rating', 'predicted_rating', 'primary_network']
+    if 'user_rating' in df.columns:
+        df['abs_diff'] = np.abs(df['user_rating'] - df['predicted_rating'])
+        output_cols.append('abs_diff')
     
-    if not analysis_df.empty:
-        y_true = analysis_df['user_rating']
-        y_pred = analysis_df['predicted_rating']
-        
-        # Calculate diffs
-        analysis_df['abs_diff'] = abs(y_true - y_pred)
-        
-        mae = mean_absolute_error(y_true, y_pred)
-        rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-        r2 = r2_score(y_true, y_pred)
-        
-        # Bins
-        exact = len(analysis_df[analysis_df['abs_diff'] == 0])
-        tiny = len(analysis_df[(analysis_df['abs_diff'] > 0) & (analysis_df['abs_diff'] <= 0.5)])
-        small = len(analysis_df[(analysis_df['abs_diff'] > 0.5) & (analysis_df['abs_diff'] <= 1.0)])
-        large = len(analysis_df[analysis_df['abs_diff'] > 1.0])
-        total = len(analysis_df)
-
-        print("\n========================================")
-        print("📊  ML ENGINEER PERFORMANCE REPORT")
-        print("========================================")
-        print(f"Total Evaluated Samples: {total}")
-        print("----------------------------------------")
-        print(f"📉 MAE (Mean Abs Error):  {mae:.4f}")
-        print(f"📉 RMSE (Root Mean Sq):   {rmse:.4f}")
-        print(f"📈 R² Score:              {r2:.4f}")
-        print("----------------------------------------")
-        print("🎯 Error Distribution (Absolute Diff):")
-        print(f"   Exact Match (0.0):      {exact:<3} ({(exact/total)*100:.1f}%)")
-        print(f"   Tiny Diff   (0.1-0.5):  {tiny:<3} ({(tiny/total)*100:.1f}%)")
-        print(f"   Small Diff  (0.6-1.0):  {small:<3} ({(small/total)*100:.1f}%)")
-        print(f"   Large Diff  (> 1.0):    {large:<3} ({(large/total)*100:.1f}%)")
-        print("========================================\n")
-        
-        # Map diffs back to main dataframe
-        df.loc[analysis_df.index, 'abs_diff'] = analysis_df['abs_diff']
-    else:
-        df['abs_diff'] = np.nan
-
-    # 6. Save Dashboard View
-    output_cols = ['name', 'year', 'user_rating', 'predicted_rating', 'abs_diff', 'primary_network']
-    
-    # Save sorted by biggest errors (so you can see what to fix next) or prediction
-    # Let's save sorted by prediction for general use
     final_df = df[output_cols].sort_values(by='predicted_rating', ascending=False)
-    
     final_df.to_csv(config.TV_SHOWS_FULL_VIEW_PATH, index=False)
+    
+    # Full results
+    full_results_path = results_dir / "show_predictions_full.csv"
+    df.to_csv(full_results_path, index=False)
+    
     print(f"✅ Dashboard view saved to: {config.TV_SHOWS_FULL_VIEW_PATH}")
+    print(f"✅ Full results and graphs saved to: {results_dir}")
 
 if __name__ == "__main__":
-    run_predictions()
+    run_consolidated_predictions()

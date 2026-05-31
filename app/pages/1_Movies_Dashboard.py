@@ -68,7 +68,6 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
-
 # Define palette for plotly
 HUB_PALETTE = ["#ff8000", "#00e054", "#40bcf4", "#556678", "#2C343F"]
 
@@ -81,9 +80,15 @@ pio.templates["hub_theme"] = go.layout.Template(
         colorway=HUB_PALETTE,
         xaxis=dict(gridcolor="#2C343F", zerolinecolor="#2C343F", tickfont=dict(color="#556678")),
         yaxis=dict(gridcolor="#2C343F", zerolinecolor="#2C343F", tickfont=dict(color="#556678")),
+        bargap=0.05, # Join the bars
     )
 )
 pio.templates.default = "hub_theme"
+
+# Update all bar traces globally to have an outline
+def update_bar_trace(fig):
+    fig.update_traces(marker_line_width=1, marker_line_color="#14171C")
+    return fig
 
 # --- HELPER FUNCTIONS ---
 
@@ -169,11 +174,50 @@ def calculate_entropy(series):
     return entropy
 
 # --- LOAD DATA ---
+MAX_ACTORS_PER_MOVIE = 10  # Threshold to prevent minor/uncredited actors from skewing stats
+
+@st.cache_data
+def load_theatre_watch():
+    try:
+        path = config.DATA_DIR / "raw" / "movies" / "lists" / "theatre-watch.csv"
+        if not path.exists(): return None
+        # Letterboxd list exports have 3 metadata lines before the header
+        df_theatre = pd.read_csv(path, skiprows=3)
+        return df_theatre
+    except Exception as e:
+        print(f"Error loading theatre watch list: {e}")
+        return None
+
 @st.cache_data
 def load_data():
     try:
+        # 1. Load Main Enriched Data
         df = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
         
+        # 2. Load New Ratings & Metadata Cache (if they exist)
+        new_ratings_path = config.DATA_DIR / "raw" / "movies" / "new_ratings.csv"
+        metadata_cache_path = config.CACHE_DIR / "movies_test_metadata_cache.csv"
+        
+        if new_ratings_path.exists() and metadata_cache_path.exists():
+            df_new_ratings = pd.read_csv(new_ratings_path)
+            df_metadata = pd.read_csv(metadata_cache_path)
+            
+            # Standardize column names for new_ratings (Name, Year, Rating, Letterboxd URI)
+            df_new_ratings.rename(columns={
+                'Name': 'title', 
+                'Year': 'year', 
+                'Rating': 'user_rating',
+                'Letterboxd URI': 'letterboxd_uri'
+            }, inplace=True)
+            
+            # Standardize metadata cache (it uses 'title' and 'year')
+            # Merge metadata with ratings
+            df_new_full = pd.merge(df_new_ratings, df_metadata, on=['title', 'year'], how='inner', suffixes=('', '_cache'))
+            
+            # Append to main dataframe
+            df = pd.concat([df, df_new_full], ignore_index=True).drop_duplicates(subset=['letterboxd_uri'], keep='first')
+
+        # 3. Clean and process for display
         df['rotten_tomatoes_rating'] = df['rotten_tomatoes_rating'].apply(clean_percentage)
         df['box_office'] = df['box_office'].apply(clean_currency)
         for c in ['runtime', 'year', 'vote_average', 'imdb_rating', 'metascore']:
@@ -181,17 +225,37 @@ def load_data():
         df['popularity'] = pd.to_numeric(df['popularity'], errors='coerce').fillna(0)
         
         for c in ['genre', 'actors', 'writer', 'director', 'production', 'country', 'language']:
-            if c in df.columns: df[f'{c}_list'] = df[c].apply(parse_list_col)
+            if c in df.columns: 
+                df[f'{c}_list'] = df[c].apply(parse_list_col)
+                # Apply actor threshold
+                if c == 'actors':
+                    df[f'{c}_list'] = df[f'{c}_list'].apply(lambda x: x[:MAX_ACTORS_PER_MOVIE] if isinstance(x, list) else x)
             
         df['decade'] = (df['year'] // 10) * 10
         return df
-    except FileNotFoundError: return None
+    except Exception as e:
+        print(f"Error loading dashboard data: {e}")
+        return None
 
 df = load_data()
+df_theatre_raw = load_theatre_watch()
 
 if df is None:
     st.error("❌ Data not found. Run ingestion first.")
     st.stop()
+
+# Prepare Theatre Watch DF by joining with main df to get ratings and genres
+df_theatre = None
+if df_theatre_raw is not None:
+    # Use URL as the primary key for joining
+    df_theatre = pd.merge(df_theatre_raw, df[['letterboxd_uri', 'user_rating', 'genre_list', 'poster', 
+                                              'director_list', 'actors_list', 'writer_list', 'production_list', 
+                                              'runtime', 'overview', 'tagline', 'plot']], 
+                          left_on='URL', right_on='letterboxd_uri', how='left')
+    # Filter to only include those that have a rating (meaning they've been watched/enriched)
+    df_theatre_watched = df_theatre[df_theatre['user_rating'].notna()].copy()
+    if not df_theatre_watched.empty:
+        df_theatre_watched['vibe_text'] = df_theatre_watched['overview'].fillna('') + " " + df_theatre_watched['tagline'].fillna('') + " " + df_theatre_watched['plot'].fillna('')
 
 st.title("📊 Personal Movie Intelligence")
 
@@ -234,7 +298,8 @@ rating_counts.columns = ['Rating', 'Count']
 # Letterboxd signature rating chart is green
 fig_ratings = px.bar(rating_counts.sort_values('Rating'), x='Rating', y='Count', 
                      text='Count', color_discrete_sequence=['#00e054'])
-fig_ratings.update_traces(textposition='outside', marker_line_width=1, marker_line_color="#14171C")
+update_bar_trace(fig_ratings)
+fig_ratings.update_traces(textposition='outside')
 fig_ratings.update_layout(xaxis=dict(tickmode='linear', tick0=0.5, dtick=0.5))
 st.plotly_chart(fig_ratings, use_container_width=True)
 
@@ -251,7 +316,7 @@ with t_dec:
     df_decade = df.groupby('decade').agg(Count=('user_rating', 'size'), avg_rating=('user_rating', 'mean')).reset_index()
     df_decade['avg_rating'] = df_decade['avg_rating'].round(3)
     fig = px.bar(df_decade, x='decade', y='Count', hover_data={'avg_rating': ':.3f'}, title="Movies per Decade", color_discrete_sequence=[HUB_PALETTE[0]])
-    fig.update_traces(marker_line_width=1, marker_line_color="#2C343F")
+    update_bar_trace(fig)
     st.plotly_chart(fig, use_container_width=True)
 
 with t_run:
@@ -263,7 +328,7 @@ with t_run:
     
     fig = px.bar(rt_agg, x='runtime_bin', y='Count', hover_data={'avg_rating': ':.3f'}, 
                  title="Runtime Distribution", color_discrete_sequence=[HUB_PALETTE[1]])
-    fig.update_traces(marker_line_width=1, marker_line_color="#2C343F")
+    update_bar_trace(fig)
     st.plotly_chart(fig, use_container_width=True)
 
 with t_sea:
@@ -276,6 +341,7 @@ with t_sea:
         season_agg['user_rating'] = season_agg['user_rating'].round(3)
         fig = px.bar(season_agg, x='month', y='user_rating',
                       title="Average Rating by Release Month", range_y=[0, 5], color_discrete_sequence=[HUB_PALETTE[2]])
+        update_bar_trace(fig)
         st.plotly_chart(fig, use_container_width=True)
 
 st.divider()
@@ -294,7 +360,7 @@ def render_people_tab(col_list, label, min_count_threshold):
         freq = get_frequent_items_with_avg(df, col_list)
         fig = px.bar(freq, x='Count', y=col_list, orientation='h', color='Count', hover_data={'avg_rating': ':.3f'}, color_continuous_scale=[[0, HUB_PALETTE[3]], [1, HUB_PALETTE[0]]])
         fig.update_layout(yaxis={'categoryorder':'total ascending'})
-        fig.update_traces(marker_line_width=1, marker_line_color="#2C343F")
+        update_bar_trace(fig)
         st.plotly_chart(fig, use_container_width=True)
     with c_high:
         st.caption(f"**Highest Rated {label}** (Min {min_count_threshold} Movies)")
@@ -319,7 +385,7 @@ def render_people_tab(col_list, label, min_count_threshold):
         else:
             st.info(f"Not enough data")
 
-with tab_dir: render_people_tab('director_list', "Directors", 3)
+with tab_dir: render_people_tab('director_list', "Directors", 4)
 with tab_act: render_people_tab('actors_list', "Actors", 7) 
 with tab_wri: render_people_tab('writer_list', "Writers", 3)
 with tab_stu: render_people_tab('production_list', "Studios", 8)
@@ -538,13 +604,13 @@ with t_genre:
             st.plotly_chart(fig_count, use_container_width=True)
 
             # 2. Avg Rating Chart (Quality)
-            top_rated_genres = genre_stats[genre_stats['Count'] >= 20].sort_values('Avg_Rating', ascending=False).head(15)
+            top_rated_genres = genre_stats[genre_stats['Count'] >= 25].sort_values('Avg_Rating', ascending=False).head(15)
             fig_avg = px.bar(
                 top_rated_genres, 
                 x='Avg_Rating', 
                 y='genre_list', 
                 orientation='h', 
-                title="Highest Rated Genres (Min 20 Movies)",
+                title="Highest Rated Genres (Min 25 Movies)",
                 color='Avg_Rating', 
                 color_continuous_scale=[[0, HUB_PALETTE[4]], [1, HUB_PALETTE[0]]],
                 range_x=[0, 5],
@@ -640,3 +706,190 @@ try:
 
 except ImportError:
     st.warning("⚠️ vaderSentiment library not found. Run `pip install vaderSentiment` to see Sentiment Analysis.")
+
+st.divider()
+
+# 13. THEATRE WATCH ANALYSIS
+if df_theatre is not None:
+    st.subheader("🍿 Theatre Watch Analysis")
+    
+    if not df_theatre_watched.empty:
+        tc1, tc2, tc3, tc4 = st.columns(4)
+        with tc1: lb_metric("Theatre Visits", len(df_theatre))
+        with tc2: lb_metric("Avg Theatre Rating", f"{df_theatre_watched['user_rating'].mean():.2f}")
+        with tc3: 
+            most_common_year = df_theatre['Year'].mode().iloc[0] if not df_theatre['Year'].mode().empty else "N/A"
+            lb_metric("Peak Theatre Year", most_common_year)
+        with tc4:
+            # Extract most common genre from watched theatre movies
+            all_theatre_genres = [g for sublist in df_theatre_watched['genre_list'].dropna() for g in sublist]
+            top_theatre_genre = Counter(all_theatre_genres).most_common(1)[0][0] if all_theatre_genres else "N/A"
+            lb_metric("Top Theatre Genre", top_theatre_genre)
+
+        st.markdown("#### Theatre Rating Distribution")
+        t_rating_counts = df_theatre_watched['user_rating'].value_counts().reset_index()
+        t_rating_counts.columns = ['Rating', 'Count']
+        fig_t_ratings = px.bar(t_rating_counts.sort_values('Rating'), x='Rating', y='Count', 
+                             text='Count', color_discrete_sequence=['#ff8000'])
+        fig_t_ratings.update_traces(textposition='outside')
+        fig_t_ratings.update_layout(xaxis=dict(tickmode='linear', tick0=0.5, dtick=0.5))
+        st.plotly_chart(fig_t_ratings, use_container_width=True)
+
+        t_tab1, t_tab2, t_tab3, t_tab4, t_tab5, t_tab6, t_tab7 = st.tabs(["Year-wise", "Genres", "Tags", "Cast & Crew", "Studios & Runtime", "Themes", "All Watches"])
+        
+        with t_tab1:
+            df_t_year = df_theatre.groupby('Year').size().reset_index(name='Count')
+            fig_t_year = px.bar(df_t_year, x='Year', y='Count', title="Theatre Watches per Year", color_discrete_sequence=[HUB_PALETTE[2]])
+            update_bar_trace(fig_t_year)
+            # Fix year axis to show every year
+            fig_t_year.update_layout(xaxis=dict(tickmode='linear', dtick=1))
+            st.plotly_chart(fig_t_year, use_container_width=True)
+            
+        with t_tab2:
+            if all_theatre_genres:
+                t_gen_stats = Counter(all_theatre_genres).most_common(15)
+                df_t_gen = pd.DataFrame(t_gen_stats, columns=['Genre', 'Count'])
+                fig_t_gen = px.bar(df_t_gen, x='Count', y='Genre', orientation='h', title="Theatre Watch Genres", color='Count', color_continuous_scale='Oranges')
+                fig_t_gen.update_layout(yaxis={'categoryorder':'total ascending'})
+                update_bar_trace(fig_t_gen)
+                st.plotly_chart(fig_t_gen, use_container_width=True)
+            else:
+                st.info("No genre data available for theatre watches.")
+
+        with t_tab3:
+            st.markdown("**Theatre Tag Analysis**")
+            st.caption("Extracted from the list description (separated by spaces or commas).")
+            
+            # Parse tags from description and associate with ratings
+            tag_data = []
+            for _, row in df_theatre.dropna(subset=['Description']).iterrows():
+                # Split by comma or space
+                tags = re.split(r'[,\s]+', str(row['Description']))
+                for t in tags:
+                    t = t.strip().title()
+                    if t and len(t) > 1:
+                        tag_data.append({'Tag': t, 'Rating': row['user_rating']})
+            
+            if tag_data:
+                df_tag_full = pd.DataFrame(tag_data)
+                # Group by Tag to get Count and Average Rating
+                df_tags_stats = df_tag_full.groupby('Tag').agg(
+                    Count=('Tag', 'count'),
+                    Avg_Rating=('Rating', 'mean')
+                ).reset_index()
+                
+                ct1, ct2 = st.columns(2)
+                
+                with ct1:
+                    # Sort by count and take top 15
+                    df_freq_tags = df_tags_stats.sort_values('Count', ascending=False).head(15)
+                    fig_freq = px.bar(df_freq_tags, x='Count', y='Tag', orientation='h', 
+                                     title="Most Frequent Theatre Tags", 
+                                     color='Count', color_continuous_scale='Bluered',
+                                     hover_data={'Count': True, 'Avg_Rating': ':.2f'})
+                    fig_freq.update_layout(yaxis={'categoryorder':'total ascending'})
+                    update_bar_trace(fig_freq)
+                    st.plotly_chart(fig_freq, use_container_width=True)
+                
+                with ct2:
+                    # Sort by Avg_Rating, require at least 2 watches for "Highly Rated"
+                    df_rated_tags = df_tags_stats[df_tags_stats['Count'] >= 2].sort_values('Avg_Rating', ascending=False).head(15)
+                    if not df_rated_tags.empty:
+                        fig_rated = px.bar(df_rated_tags, x='Avg_Rating', y='Tag', orientation='h', 
+                                         title="Highest Rated Theatre Tags (Min 2 Watches)", 
+                                         color='Avg_Rating', color_continuous_scale='Viridis',
+                                         range_x=[0, 5],
+                                         hover_data={'Count': True, 'Avg_Rating': ':.2f'})
+                        fig_rated.update_layout(yaxis={'categoryorder':'total ascending'})
+                        update_bar_trace(fig_rated)
+                        st.plotly_chart(fig_rated, use_container_width=True)
+                    else:
+                        st.info("Not enough tag data for 'Highest Rated' analysis (needs tags with 2+ watches).")
+            else:
+                st.info("No tags found in theatre descriptions.")
+
+        with t_tab4:
+            st.markdown("**Top Cast & Crew in Theatres**")
+            tc_c1, tc_c2 = st.columns(2)
+            with tc_c1:
+                st.caption("**Most Watched Directors (Theatre)**")
+                t_dir = get_frequent_items_with_avg(df_theatre_watched, 'director_list', 10)
+                fig_t_dir = px.bar(t_dir, x='Count', y='director_list', orientation='h', color='Count', hover_data={'avg_rating': ':.2f'})
+                fig_t_dir.update_layout(yaxis={'categoryorder':'total ascending'})
+                update_bar_trace(fig_t_dir)
+                st.plotly_chart(fig_t_dir, use_container_width=True)
+            with tc_c2:
+                st.caption("**Most Watched Actors (Theatre)**")
+                t_act = get_frequent_items_with_avg(df_theatre_watched, 'actors_list', 10)
+                fig_t_act = px.bar(t_act, x='Count', y='actors_list', orientation='h', color='Count', hover_data={'avg_rating': ':.2f'})
+                fig_t_act.update_layout(yaxis={'categoryorder':'total ascending'})
+                update_bar_trace(fig_t_act)
+                st.plotly_chart(fig_t_act, use_container_width=True)
+
+        with t_tab5:
+            st.markdown("**Studios & Runtime in Theatres**")
+            ts_c1, ts_c2 = st.columns(2)
+            with ts_c1:
+                st.caption("**Top Production Studios (Theatre)**")
+                t_stu = get_frequent_items_with_avg(df_theatre_watched, 'production_list', 10)
+                fig_t_stu = px.bar(t_stu, x='Count', y='production_list', orientation='h', color='Count', hover_data={'avg_rating': ':.2f'})
+                fig_t_stu.update_layout(yaxis={'categoryorder':'total ascending'})
+                update_bar_trace(fig_t_stu)
+                st.plotly_chart(fig_t_stu, use_container_width=True)
+            with ts_c2:
+                st.caption("**Runtime Distribution (Theatre)**")
+                t_bins = [0, 60, 90, 120, 150, 180, 999]
+                t_labels = ['<60m', '60-89m', '90-119m', '120-149m', '150-179m', '180m+']
+                df_theatre_watched['rt_bin'] = pd.cut(df_theatre_watched['runtime'], bins=t_bins, labels=t_labels)
+                t_rt_agg = df_theatre_watched.groupby('rt_bin', observed=True).agg(Count=('user_rating', 'size'), avg_rating=('user_rating', 'mean')).reset_index()
+                fig_t_rt = px.bar(t_rt_agg, x='rt_bin', y='Count', hover_data={'avg_rating': ':.2f'}, color_discrete_sequence=[HUB_PALETTE[1]])
+                update_bar_trace(fig_t_rt)
+                st.plotly_chart(fig_t_rt, use_container_width=True)
+
+        with t_tab6:
+            st.markdown("**Dominant Theatre Themes**")
+            st.caption("Common keywords from the plots of movies you watched in theatres.")
+            if not df_theatre_watched.empty:
+                t_word_ratings = {}
+                for _, row in df_theatre_watched.dropna(subset=['vibe_text', 'user_rating']).iterrows():
+                    text = str(row['vibe_text'])
+                    words = set([w.lower() for w in re.findall(r'\w+', text) if len(w) > 3 and w.lower() not in stops])
+                    for w in words:
+                        if w not in t_word_ratings: t_word_ratings[w] = []
+                        t_word_ratings[w].append(row['user_rating'])
+                
+                t_word_stats = []
+                for w, ratings in t_word_ratings.items():
+                    t_word_stats.append({'Word': w, 'Count': len(ratings), 'Avg_Rating': np.mean(ratings)})
+                
+                if t_word_stats:
+                    twdf = pd.DataFrame(t_word_stats).sort_values('Count', ascending=False).head(40)
+                    fig_t_themes = px.treemap(twdf, path=['Word'], values='Count', color='Avg_Rating', 
+                                             color_continuous_scale='RdYlGn', range_color=[1, 5],
+                                             title="Theatre Watch Themes (Color = Your Avg Rating)")
+                    st.plotly_chart(fig_t_themes, use_container_width=True)
+                else:
+                    st.info("Not enough plot data for theatre movies.")
+
+        with t_tab7:
+            st.markdown("Detailed list of movies watched in theatres:")
+            display_cols = ['Name', 'Year', 'user_rating', 'Description']
+            df_display = df_theatre[display_cols].copy()
+            df_display.columns = ['Movie', 'Year', 'Your Rating', 'Theatre Note']
+            # Format rating as stars for display in dataframe
+            df_display['Your Rating'] = df_display['Your Rating'].apply(lambda x: "★" * int(x) + ("½" if (x % 1) >= 0.5 else "") if pd.notna(x) else "Not Rated")
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            
+            # Show posters for top rated theatre movies
+            st.markdown("#### Top Rated Theatre Experiences")
+            top_t = df_theatre_watched.sort_values('user_rating', ascending=False).head(6)
+            p_cols = st.columns(6)
+            for i, (_, row) in enumerate(top_t.iterrows()):
+                with p_cols[i]:
+                    if pd.notna(row['poster']):
+                        st.image(f"https://image.tmdb.org/t/p/w500{row['poster']}", use_container_width=True)
+                    st.caption(f"**{row['Name']}**  \n{render_stars(row['user_rating'])}", unsafe_allow_html=True)
+    else:
+        st.info("No theatre watch data found in your Letterboxd activity. Make sure the movies in your theatre-watch list are also in your ratings.csv.")
+else:
+    st.info("Theatre watch list not found at `data/raw/movies/lists/theatre-watch.csv`.")

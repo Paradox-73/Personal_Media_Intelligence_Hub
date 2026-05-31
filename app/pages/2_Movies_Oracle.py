@@ -12,9 +12,103 @@ from src import config
 
 # Import ingestion & engineering tools
 from src.movies.ingestion import search_movies_by_query, get_movie_metadata
-from src.movies.feature_engineering import transform_single_movie, find_similar_movies, explain_similarity
+from src.movies.feature_engineering import find_similar_movies, explain_similarity
+from sentence_transformers import SentenceTransformer
+import re
 
 st.set_page_config(page_title="The Oracle", page_icon="🔮", layout="wide")
+
+# --- PARITY TRANSFORMATION ---
+def transform_for_parity(movie_data, state):
+    """
+    Replicates the EXACT logic in src/movies/predict_ratings.py 
+    to ensure parity between batch and real-time predictions.
+    """
+    df = pd.DataFrame([movie_data])
+    
+    # 1. Numerical Cleaning
+    if 'rotten_tomatoes_rating' in df.columns:
+        df['rotten_tomatoes_rating'] = df['rotten_tomatoes_rating'].astype(str).str.replace('%', '', regex=False)
+        df['rotten_tomatoes_rating'] = pd.to_numeric(df['rotten_tomatoes_rating'], errors='coerce')
+        
+    def clean_money_local(x):
+        if pd.isna(x): return 0
+        if isinstance(x, (int, float)): return x
+        x = str(x).replace('$', '').replace(',', '').strip()
+        try: return float(x)
+        except: return 0
+
+    df['box_office_clean'] = df['box_office'].apply(clean_money_local)
+    df['box_office_log'] = np.log1p(df['box_office_clean'])
+    
+    df['total_wins'] = df['awards'].astype(str).str.extract(r'(\d+)\s+win', flags=re.IGNORECASE)[0].astype(float).fillna(0)
+    df['total_nominations'] = df['awards'].astype(str).str.extract(r'(\d+)\s+nomination', flags=re.IGNORECASE)[0].astype(float).fillna(0)
+    
+    df['imdb_rating_100'] = pd.to_numeric(df['imdb_rating'], errors='coerce') * 10
+    df['vote_average_100'] = pd.to_numeric(df['vote_average'], errors='coerce') * 10
+    
+    # Critic scores mean ignores NaNs (matches batch script)
+    critic_scores = df[['imdb_rating_100', 'metascore', 'rotten_tomatoes_rating', 'vote_average_100']]
+    df['critic_avg_100'] = critic_scores.mean(axis=1)
+    df['critic_avg_5'] = (df['critic_avg_100'] / 100) * 5
+    
+    # FIXED: Ensure imdb_votes is present (matching training and batch fix)
+    if 'imdb_votes' not in df.columns and 'vote_count' in df.columns:
+        df.rename(columns={'vote_count': 'imdb_votes'}, inplace=True)
+    
+    # 2. Fill Medians (Numerical alignment)
+    for col, med_val in state['median_values'].items():
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(med_val)
+        else:
+            df[col] = med_val
+            
+    # 3. Text Embeddings (String construction must be exact)
+    df['text_content'] = "Title: " + df['title'].fillna('Unknown').astype(str) + \
+                         ". Directed by: " + df['director'].fillna('Unknown').astype(str) + \
+                         ". " + df['plot'].fillna('').astype(str)
+    
+    transformer_model = SentenceTransformer(state.get('sentence_transformer', 'all-MiniLM-L6-v2'))
+    text_embeddings = transformer_model.encode(df['text_content'].tolist())
+    pca_vec = state['pca'].transform(text_embeddings)
+    X_text = pd.DataFrame(pca_vec, columns=[f'pca_{i}' for i in range(pca_vec.shape[1])], index=df.index)
+
+    # 4. One-Hot Features
+    def map_language_local(lang_str):
+        if pd.isna(lang_str): return 'Other'
+        langs = [l.strip() for l in str(lang_str).split(',')]
+        for lang in langs:
+            if lang in state['top_languages']: return lang
+        return 'Other'
+    df['language_cleaned'] = df['language'].apply(map_language_local)
+    X_lang = pd.get_dummies(df['language_cleaned'], prefix='lang')
+    
+    def parse_list_local(x):
+        if isinstance(x, list): return x
+        try: return ast.literal_eval(str(x))
+        except: return []
+    df['genre_list'] = df['genre'].apply(parse_list_local)
+    genre_encoded = state['mlb_genre'].transform(df['genre_list'])
+    X_genre = pd.DataFrame(genre_encoded, columns=[f"gen_{c}" for c in state['mlb_genre'].classes_], index=df.index)
+
+    def categorize_rating_local(r):
+        r = str(r).upper()
+        if 'R' in r or 'NC-17' in r or 'TV-MA' in r: return 'Adult'
+        if 'PG' in r or 'TV-14' in r: return 'Teen'
+        return 'General'
+    df['mpaa_cat'] = df['rated'].apply(categorize_rating_local)
+    X_mpaa = pd.get_dummies(df['mpaa_cat'], prefix='rated')
+
+    # 5. Final Alignment
+    X_temp = pd.concat([df[list(state['median_values'].keys())], X_lang, X_genre, X_mpaa, X_text], axis=1)
+    X_temp.columns = [re.sub(r"[\[\]<']", "", str(col)) for col in X_temp.columns]
+    X_temp = X_temp.loc[:, ~X_temp.columns.duplicated()]
+
+    X_final = pd.DataFrame(0.0, index=df.index, columns=state['training_columns'])
+    common_cols = list(set(X_temp.columns) & set(state['training_columns']))
+    X_final[common_cols] = X_temp[common_cols]
+
+    return X_final
 
 st.header("🔮 The Oracle")
 st.markdown("Predict your rating for any movie using a Stacking Ensemble, Ordinal Probability Engine, and Semantic Text Embeddings.")
@@ -136,7 +230,8 @@ if st.session_state['selected_movie_raw_data']:
     with c_pred:
         if consult_btn:
             with st.spinner("Analyzing Embeddings & Ensembles..."):
-                input_df = transform_single_movie(raw_data, state)
+                # Use parity transformation to match batch script exactly
+                input_df = transform_for_parity(raw_data, state)
                 
                 # 1. Base Models & Stacking Predictions
                 def round_half(x): return np.round(np.clip(x, 0, 5) * 2) / 2

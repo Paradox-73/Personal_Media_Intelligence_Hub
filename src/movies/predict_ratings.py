@@ -44,6 +44,7 @@ def batch_predict_ratings():
     # --- 1. Load Models ---
     ensemble_dir = config.MODEL_DIR / "movies" / "ensemble"
     model_paths = {
+        "Baseline_XGB": config.MODEL_REGRESSOR,
         "XGB": ensemble_dir / "xgb_base_regressor.joblib",
         "SVR": ensemble_dir / "svr_base_regressor.joblib",
         "CatBoost": ensemble_dir / "catboost_base_regressor.joblib",
@@ -86,8 +87,8 @@ def batch_predict_ratings():
     critic_scores = df[['imdb_rating_100', 'metascore', 'rotten_tomatoes_rating', 'vote_average_100']]
     df['critic_avg_100'] = critic_scores.mean(axis=1)
     df['critic_avg_5'] = (df['critic_avg_100'] / 100) * 5
-    if 'imdb_votes' in df.columns:
-        df.rename(columns={'imdb_votes': 'vote_count'}, inplace=True)
+    if 'imdb_votes' not in df.columns and 'vote_count' in df.columns:
+        df.rename(columns={'vote_count': 'imdb_votes'}, inplace=True)
     for col, med_val in state['median_values'].items():
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(med_val)
@@ -142,6 +143,9 @@ def batch_predict_ratings():
             df[f'pred_{name}'] = np.round(np.clip(preds, 0, 5) * 2) / 2
 
     # --- 4. Performance Report ---
+    results_dir = BASE_DIR / "results" / "movies"
+    results_dir.mkdir(parents=True, exist_ok=True)
+
     if 'user_rating' in df.columns and not df['user_rating'].isna().all():
         eval_df = df.dropna(subset=['user_rating']).copy()
         y_true = eval_df['user_rating']
@@ -165,7 +169,10 @@ def batch_predict_ratings():
             print("-" * 55)
             print(f"   Model: {name}")
             print(f"   📉 MSE: {mse:.4f} | 📉 RMSE: {rmse:.4f} | 📉 MAE: {mae:.4f} | 📈 R²: {r2:.4f}")
-            print(f"   Distribution -> Exact: {((diffs == 0.0).sum()/total)*100:.1f}% | ±0.5: {((diffs <= 0.5).sum()/total)*100:.1f}% | >1.0: {((diffs > 1.0).sum()/total)*100:.1f}%")
+            print(f"   Exact (0.0):  {(diffs == 0.0).sum():<3} ({((diffs == 0.0).sum()/total)*100:.1f}%)")
+            print(f"   Off by 0.5:   {(diffs == 0.5).sum():<3} ({((diffs == 0.5).sum()/total)*100:.1f}%)")
+            print(f"   Off by 1.0:   {(diffs == 1.0).sum():<3} ({((diffs == 1.0).sum()/total)*100:.1f}%)")
+            print(f"   Off by >1.0:  {(diffs > 1.0).sum():<3} ({((diffs > 1.0).sum()/total)*100:.1f}%)")
         print("="*55 + "\n")
         
         df['abs_diff_stacking'] = np.abs(df['user_rating'] - df['pred_Stacking'])
@@ -186,8 +193,7 @@ def batch_predict_ratings():
         ax.legend(title='Model', fontsize='medium')
         plt.tight_layout()
         
-        config.PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
-        plot_path_kde = config.PREDICTIONS_DIR / "ratings_distribution_kde.png"
+        plot_path_kde = results_dir / "ratings_distribution_kde.png"
         plt.savefig(plot_path_kde, dpi=150)
         print(f"📈 KDE distribution plot saved to {plot_path_kde}")
         plt.close(fig) 
@@ -196,7 +202,7 @@ def batch_predict_ratings():
         data_cols = ['user_rating'] + [f'pred_{name}' for name in models.keys()]
         titles = ['Actual Ratings'] + [f'{name} Predictions' for name in models.keys()]
         
-        fig, axes = plt.subplots(2, 3, figsize=(20, 10), sharey=True)
+        fig, axes = plt.subplots(3, 3, figsize=(20, 15), sharey=True)
         axes = axes.flatten()
         
         for i, col in enumerate(data_cols):
@@ -207,10 +213,14 @@ def batch_predict_ratings():
             axes[i].set_xticks(np.arange(0.5, 5.5, 0.5))
             axes[i].grid(axis='y', linestyle='--', alpha=0.7)
         
+        # Hide unused axes
+        for i in range(len(data_cols), len(axes)):
+            axes[i].set_visible(False)
+        
         fig.suptitle('Histogram of Rating Distributions (Full Dataset)', fontsize=20)
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         
-        plot_path_hist = config.PREDICTIONS_DIR / "ratings_distribution_histograms.png"
+        plot_path_hist = results_dir / "ratings_distribution_histograms.png"
         plt.savefig(plot_path_hist, dpi=150)
         print(f"📈 Histogram grid plot saved to {plot_path_hist}")
         plt.close(fig)
@@ -219,10 +229,10 @@ def batch_predict_ratings():
     out_cols = ['name', 'year', 'user_rating'] + [f'pred_{name}' for name in models.keys()] + ['abs_diff_stacking', 'director', 'production']
     final_df = df[[c for c in out_cols if c in df.columns]].sort_values(by='pred_Stacking', ascending=False)
     
-    config.MOVIES_PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = config.MOVIES_PREDICTIONS_DIR / "predicted_ratings_ensemble.csv"
+    out_path = results_dir / "predicted_ratings_ensemble.csv"
     final_df.to_csv(out_path, index=False)
     print(f"✅ Saved all model predictions to {out_path}")
 
 if __name__ == "__main__":
+    BASE_DIR = Path(__file__).resolve().parent.parent.parent
     batch_predict_ratings()

@@ -276,7 +276,8 @@ def evaluate_movie_model_on_shows():
         "XGB": ensemble_dir / "xgb_base_regressor.joblib",
         "SVR": ensemble_dir / "svr_base_regressor.joblib",
         "CatBoost": ensemble_dir / "catboost_base_regressor.joblib",
-        "Stacking": ensemble_dir / "stacking_ensemble_regressor.joblib"
+        "Stacking": ensemble_dir / "stacking_ensemble_regressor.joblib",
+        "Ordinal": ensemble_dir / "ordinal_classifier.joblib"
     }
     
     movie_models = {}
@@ -320,8 +321,23 @@ def evaluate_movie_model_on_shows():
     print("   Predicting ratings for TV shows using movie models...")
     df_shows_rated['name'] = df_shows_rated['name'].fillna('Unknown Show') # Ensure a name for reports
     
+    # Load the ordinal class mapping if it exists
+    ordinal_classes_path = ensemble_dir / "ordinal_classes.joblib"
+    if ordinal_classes_path.exists():
+        unique_classes = joblib.load(ordinal_classes_path)
+        bucket_map = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0, 4: 2.5, 5: 3.0, 6: 3.5, 7: 4.0, 8: 4.5, 9: 5.0}
+        present_bucket_vals = np.array([bucket_map[c] for c in unique_classes])
+    else:
+        # Fallback to standard 10 buckets
+        present_bucket_vals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])
+
     for name, model in movie_models.items():
-        preds = model.predict(X_shows_transformed)
+        if name == "Ordinal":
+            ord_probs = model.predict_proba(X_shows_transformed)
+            preds = np.sum(ord_probs * present_bucket_vals, axis=1)
+        else:
+            preds = model.predict(X_shows_transformed)
+        
         df_shows_rated[f'pred_movie_{name}'] = np.round(np.clip(preds, 0, 5) * 2) / 2 # Movie ratings are 0.5-5.0
         
     # --- 5. Performance Report ---

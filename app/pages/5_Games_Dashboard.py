@@ -2,9 +2,9 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import ast
-import re
+import plotly.io as pio
 import sys
+import numpy as np
 from pathlib import Path
 from collections import Counter
 
@@ -14,125 +14,130 @@ from src import config
 
 st.set_page_config(page_title="Games Dashboard", page_icon="🎮", layout="wide")
 
-# --- HELPER FUNCTIONS ---
+# --- CUSTOM STYLING ---
+st.markdown("""
+<style>
+    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
+        background-color: #14171C;
+        color: #E0E0E0;
+        font-family: 'Helvetica', sans-serif;
+    }
+    h1, h2, h3, h4 { color: #40bcf4 !important; }
+    .stMetric { background-color: #2C343F; padding: 15px; border-radius: 8px; border: 1px solid #556678; }
+</style>
+""", unsafe_allow_html=True)
 
-def parse_list_col(x):
-    if pd.isna(x): return []
-    try:
-        if '[' not in str(x) and ',' in str(x):
-            return [i.strip() for i in str(x).split(',')]
-        return ast.literal_eval(str(x))
-    except: return [str(x)]
+HUB_PALETTE = ["#ff8000", "#00e054", "#40bcf4", "#556678", "#2C343F"]
 
-def get_frequent_items(df, col_name, top_n=10):
-    """Counts unique items."""
-    all_items = []
-    for row in df[col_name]: all_items.extend(row)
-    all_items = [i for i in all_items if i and i.lower() not in ['unknown', 'nan']]
-    return pd.DataFrame(Counter(all_items).most_common(top_n), columns=[col_name, 'Count'])
-
-def get_highly_rated_items(df, col_name, top_n=10, min_count=3):
-    """Calculates average rating per item (e.g. Developer)."""
-    df_exploded = df.explode(col_name)
-    df_exploded = df_exploded[~df_exploded[col_name].isin(['Unknown', 'nan', np.nan])]
-    
-    stats = df_exploded.groupby(col_name).agg(
-        avg_rating=('user_rating', 'mean'),
-        count=('user_rating', 'count')
-    ).reset_index()
-    
-    stats = stats[stats['count'] >= min_count]
-    return stats.sort_values('avg_rating', ascending=False).head(top_n)
-
-# --- LOAD DATA ---
 @st.cache_data
 def load_data():
     try:
+        # Load enriched data
         df = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH)
+        # Load predictions if available
+        pred_path = config.BASE_DIR / "results" / "games" / "game_predictions_detailed.csv"
+        if pred_path.exists():
+            df_pred = pd.read_csv(pred_path)
+            # Merge or use predicted column if it exists in enriched? 
+            # In my current setup, predict_ratings.py saves a new CSV.
+            # I'll join them on name and platform.
+            df = pd.merge(df, df_pred[['name', 'platform_from_text', 'predicted_rating']], 
+                          on=['name', 'platform_from_text'], how='left')
         
-        # Clean Numerics
-        for c in ['year']:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
-        
-        # Parse Lists
-        for c in ['platform', 'developer', 'genre']: # Adjusted for Games
-            if c in df.columns: df[f'{c}_list'] = df[c].apply(parse_list_col)
-            
-        df['decade'] = (df['year'] // 10) * 10
+        # Cleanup
+        df['my_rating'] = pd.to_numeric(df['my_rating'], errors='coerce')
+        df['metacritic'] = pd.to_numeric(df['metacritic'], errors='coerce')
         return df
-    except FileNotFoundError: return None
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        return None
 
-import numpy as np
 df = load_data()
 
 if df is None:
-    st.error("❌ Games Data not found. Run ingestion for Games first.")
     st.stop()
 
-st.title("🎮 Personal Games Intelligence")
+st.title("🎮 Game Intelligence Dashboard")
 
-# 1. METRICS
+# Metrics
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Total Games", len(df))
-c2.metric("Avg User Rating", f"{df['user_rating'].mean():.2f}")
-c3.metric("Avg Year", f"{int(df['year'].mean())}")
-c4.metric("Liked Games", f"{df['is_liked'].sum()}")
+with c1: st.metric("Total Games", len(df))
+with c2: st.metric("Avg My Rating", f"{df['my_rating'].mean():.2f}")
+with c3: st.metric("Avg Metacritic", f"{df['metacritic'].dropna().mean():.1f}")
+with c4: 
+    if 'predicted_rating' in df.columns:
+        mae = (df['my_rating'] - df['predicted_rating']).abs().mean()
+        st.metric("Model MAE", f"{mae:.3f}")
 
-st.divider()
+# Layout
+col_left, col_right = st.columns([1, 1])
 
-# 2. TIME
-st.subheader("⏳ Time Analysis")
-c1, c2 = st.columns(2)
-with c1:
-    df_decade = df.groupby('decade')['user_rating'].count().reset_index()
-    fig = px.bar(df_decade, x='decade', y='user_rating', title="Games per Decade")
+with col_left:
+    st.subheader("⭐ My Rating Distribution")
+    rating_counts = df['my_rating'].value_counts().reset_index()
+    rating_counts.columns = ['Rating', 'Count']
+    fig = px.bar(rating_counts.sort_values('Rating'), x='Rating', y='Count', 
+                 color_discrete_sequence=[HUB_PALETTE[1]])
     st.plotly_chart(fig, use_container_width=True)
-with c2:
-    fig = px.histogram(df, x="year", nbins=20, title="Year Distribution", color_discrete_sequence=['red'])
+
+with col_right:
+    st.subheader("🖥️ Platform Breakdown")
+    plat_counts = df['platform_from_text'].value_counts().reset_index()
+    plat_counts.columns = ['Platform', 'Count']
+    fig = px.pie(plat_counts, values='Count', names='Platform', color_discrete_sequence=px.colors.qualitative.Pastel)
     st.plotly_chart(fig, use_container_width=True)
 
 st.divider()
 
-# 3. PEOPLE/COMPANIES (Developer View)
-st.subheader("👨‍💻 Developer Analysis")
+# Detailed Analysis Tabs
+tab1, tab2, tab3, tab4 = st.tabs(["Genres", "Developers", "Predictions", "Full List"])
 
-if 'developer_list' in df.columns:
-    c_freq, c_rate = st.columns(2)
-    
-    with c_freq:
-        st.caption(f"**Most Played Developers**")
-        freq = get_frequent_items(df, 'developer_list')
-        fig = px.bar(freq, x='Count', y='developer_list', orientation='h', color='Count')
-        fig.update_layout(yaxis={'categoryorder':'total ascending'})
+with tab1:
+    st.subheader("🏷️ Top Genres")
+    # Explode genres
+    df['genre_list'] = df['genres'].fillna('').str.split(', ')
+    df_genres = df.explode('genre_list')
+    genre_counts = df_genres['genre_list'].value_counts().reset_index().head(15)
+    genre_counts.columns = ['Genre', 'Count']
+    fig = px.bar(genre_counts, x='Count', y='Genre', orientation='h', color='Count', color_continuous_scale='Viridis')
+    st.plotly_chart(fig, use_container_width=True)
+
+with tab2:
+    st.subheader("👨‍💻 Top Developers")
+    df['dev_list'] = df['developers'].fillna('').str.split(', ')
+    df_devs = df.explode('dev_list')
+    dev_counts = df_devs['dev_list'].value_counts().reset_index().head(15)
+    dev_counts.columns = ['Developer', 'Count']
+    fig = px.bar(dev_counts, x='Count', y='Developer', orientation='h', color='Count', color_continuous_scale='Magma')
+    st.plotly_chart(fig, use_container_width=True)
+
+with tab3:
+    st.subheader("🔮 Model Accuracy: Actual vs Predicted")
+    if 'predicted_rating' in df.columns:
+        fig = px.scatter(df, x='my_rating', y='predicted_rating', hover_data=['name'], 
+                         trendline="ols", color='my_rating', color_continuous_scale='RdYlGn')
         st.plotly_chart(fig, use_container_width=True)
-        
-    with c_rate:
-        st.caption(f"**Highest Rated Developers** (Min 3 Games)")
-        rated = get_highly_rated_items(df, 'developer_list', min_count=3)
-        if not rated.empty:
-            fig = px.bar(rated, x='avg_rating', y='developer_list', orientation='h', 
-                         color='avg_rating', color_continuous_scale='Viridis',
-                         range_x=[0, 5])
-            fig.update_layout(yaxis={'categoryorder':'total ascending'})
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Not enough data (need >3 games per developer)")
+    else:
+        st.info("Run `python src/games/predict_ratings.py` to see model performance.")
+
+with tab4:
+    st.subheader("📋 All Games")
+    display_cols = ['name', 'platform_from_text', 'released', 'my_rating', 'metacritic', 'genres']
+    if 'predicted_rating' in df.columns:
+        display_cols.append('predicted_rating')
+    st.dataframe(df[display_cols].sort_values('my_rating', ascending=False), use_container_width=True)
 
 st.divider()
-
-# 4. Platforms & Genres
-st.subheader("🕹️ Platforms & Genres")
-
-c_plat, c_genre = st.columns(2)
-
-with c_plat:
-    if 'platform_list' in df.columns:
-        plat = get_frequent_items(df, 'platform_list', 8)
-        fig = px.pie(plat, values='Count', names='platform_list', title="Top Platforms", hole=0.4)
-        st.plotly_chart(fig, use_container_width=True)
-
-with c_genre:
-    if 'genre_list' in df.columns:
-        gen = get_frequent_items(df, 'genre_list', 8)
-        fig = px.pie(gen, values='Count', names='genre_list', title="Top Genres", hole=0.4)
-        st.plotly_chart(fig, use_container_width=True)
+st.subheader("🏆 Top Rated Games")
+top_games = df.sort_values('my_rating', ascending=False).head(10)
+for _, game in top_games.iterrows():
+    c1, c2 = st.columns([1, 5])
+    with c1:
+        if pd.notna(game['cover']):
+            st.image(game['cover'], width=150)
+    with c2:
+        st.markdown(f"### {game['name']} ({game['released']})")
+        st.markdown(f"**Platform:** {game['platform_from_text']} | **My Rating:** {game['my_rating']} | **Metacritic:** {game['metacritic']}")
+        st.markdown(f"**Genres:** {game['genres']}")
+        st.write(f"{str(game['description_raw'])[:300]}...")
+    st.divider()
