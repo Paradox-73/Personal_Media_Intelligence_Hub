@@ -89,7 +89,7 @@ def train_advanced_unified_models():
     df = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
     
     # Drop target and metadata columns
-    X = df.drop(columns=['target_reg', 'target_class', 'target_ordinal', 'source_id', 'is_tv_flag', 'is_game_flag'], errors='ignore')
+    X = df.drop(columns=['target_reg', 'target_class', 'target_ordinal', 'source_id', 'is_tv_flag', 'is_game_flag', 'media_type'], errors='ignore')
     y_reg = df['target_reg']
     y_ord = df['target_ordinal']
 

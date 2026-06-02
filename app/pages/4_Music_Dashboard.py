@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import ast
 import re
 import sys
+import numpy as np
 from pathlib import Path
 from collections import Counter
 
@@ -12,120 +13,210 @@ from collections import Counter
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 
-st.set_page_config(page_title="Music Dashboard", page_icon="🎵", layout="wide")
+st.set_page_config(page_title="Music Intelligence", page_icon="🎵", layout="wide")
+
+# Spotify Brand Colors
+SPOTIFY_GREEN = "#1DB954"
+SPOTIFY_BLACK = "#191414"
+SPOTIFY_WHITE = "#FFFFFF"
+
+# Custom CSS for Spotify vibe
+st.markdown(f"""
+    <style>
+    .main {{
+        background-color: {SPOTIFY_BLACK};
+        color: {SPOTIFY_WHITE};
+    }}
+    .stMetric {{
+        background-color: #282828;
+        padding: 15px;
+        border-radius: 10px;
+    }}
+    div[data-testid="stExpander"] {{
+        background-color: #282828;
+        border: none;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- HELPER FUNCTIONS ---
 
-def parse_list_col(x):
+def parse_genres(x):
     if pd.isna(x): return []
-    try:
-        if '[' not in str(x) and ',' in str(x):
-            return [i.strip() for i in str(x).split(',')]
-        return ast.literal_eval(str(x))
-    except: return [str(x)]
+    s = str(x).strip()
+    if not s: return []
+    if s.startswith('[') and s.endswith(']'):
+        try: return ast.literal_eval(s)
+        except: pass
+    # Genres are usually comma separated
+    return [g.strip() for g in s.replace(';', ',').split(',') if g.strip()]
 
 def get_frequent_items(df, col_name, top_n=10):
-    """Counts unique items."""
-    all_items = []
-    for row in df[col_name]: all_items.extend(row)
-    all_items = [i for i in all_items if i and i.lower() not in ['unknown', 'nan']]
+    all_items = [i for i in df[col_name] if i and str(i).lower() not in ['unknown', 'nan', 'none']]
     return pd.DataFrame(Counter(all_items).most_common(top_n), columns=[col_name, 'Count'])
 
-def get_highly_rated_items(df, col_name, top_n=10, min_count=3):
-    """Calculates average rating per item (e.g. Artist)."""
-    df_exploded = df.explode(col_name)
-    df_exploded = df_exploded[~df_exploded[col_name].isin(['Unknown', 'nan', np.nan])]
-    
-    stats = df_exploded.groupby(col_name).agg(
-        avg_rating=('user_rating', 'mean'),
-        count=('user_rating', 'count')
-    ).reset_index()
-    
-    stats = stats[stats['count'] >= min_count]
-    return stats.sort_values('avg_rating', ascending=False).head(top_n)
+def get_frequent_genres(df, col_name, top_n=10):
+    all_items = []
+    for row in df[col_name]:
+        if isinstance(row, list): all_items.extend(row)
+        else: all_items.append(row)
+    all_items = [i for i in all_items if i and str(i).lower() not in ['unknown', 'nan', 'none']]
+    return pd.DataFrame(Counter(all_items).most_common(top_n), columns=[col_name, 'Count'])
 
 # --- LOAD DATA ---
 @st.cache_data
 def load_data():
+    paths_to_try = [config.MUSIC_ENRICHED_DATA_PATH, config.MUSIC_FULL_VIEW_PATH]
+    df = None
+    for path in paths_to_try:
+        if path.exists():
+            try:
+                df = pd.read_csv(path)
+                break
+            except: continue
+    
+    if df is None: return None
+        
     try:
-        df = pd.read_csv(config.MUSIC_ENRICHED_DATA_PATH)
-        
         # Clean Numerics
-        for c in ['year']:
-            df[c] = pd.to_numeric(df[c], errors='coerce')
+        df['release_year'] = pd.to_numeric(df['release_year'], errors='coerce').fillna(0).astype(int)
+        df['rating'] = pd.to_numeric(df['rating'], errors='coerce')
+        df['duration_min'] = df['duration_ms'] / 60000
         
-        # Parse Lists
-        for c in ['artist', 'genre']: # Adjusted for Music
-            if c in df.columns: df[f'{c}_list'] = df[c].apply(parse_list_col)
+        # Filter out Year 0
+        df = df[df['release_year'] > 0]
             
-        df['decade'] = (df['year'] // 10) * 10
+        # Parse Genres
+        if 'artist_genres' in df.columns:
+            df['genre_list'] = df['artist_genres'].apply(parse_genres)
+        elif 'genre' in df.columns:
+            df['genre_list'] = df['genre'].apply(parse_genres)
+            
+        df['decade'] = (df['release_year'] // 10) * 10
         return df
-    except FileNotFoundError: return None
+    except Exception as e:
+        return None
 
-import numpy as np
 df = load_data()
 
 if df is None:
-    st.error("❌ Music Data not found. Run ingestion for Music first.")
+    st.error("❌ Music Data not found. Run the music pipeline first.")
     st.stop()
 
-st.title("🎵 Personal Music Intelligence")
+# --- HEADER ---
+st.title("🎵 Music Intelligence")
+st.markdown(f"**Sonic Profile Analysis** | {len(df)} tracks in library")
 
-# 1. METRICS
+# 1. TOP METRICS
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Total Tracks", len(df))
-c2.metric("Avg User Rating", f"{df['user_rating'].mean():.2f}")
-c3.metric("Avg Year", f"{int(df['year'].mean())}")
-c4.metric("Liked Tracks", f"{df['is_liked'].sum()}")
-
-st.divider()
-
-# 2. TIME
-st.subheader("⏳ Time Analysis")
-c1, c2 = st.columns(2)
 with c1:
-    df_decade = df.groupby('decade')['user_rating'].count().reset_index()
-    fig = px.bar(df_decade, x='decade', y='user_rating', title="Tracks per Decade")
-    st.plotly_chart(fig, use_container_width=True)
+    st.metric("Avg Rating", f"{df['rating'].mean():.2f} ★")
 with c2:
-    fig = px.histogram(df, x="year", nbins=20, title="Year Distribution", color_discrete_sequence=['green'])
-    st.plotly_chart(fig, use_container_width=True)
+    st.metric("Mean Energy", f"{df['energy'].mean():.2f}" if 'energy' in df.columns else "N/A")
+with c3:
+    st.metric("Explicit Ratio", f"{(df['explicit'].mean()*100):.1f}%" if 'explicit' in df.columns else "N/A")
+with c4:
+    st.metric("Library Duration", f"{int(df['duration_min'].sum() / 60)} hrs")
 
 st.divider()
 
-# 3. PEOPLE (Artist View)
-st.subheader("🎤 Artists Analysis")
+# 2. THE SONIC LANDSCAPE (Audio Features)
+st.subheader("🔊 The Sonic Landscape")
 
-if 'artist_list' in df.columns:
-    c_freq, c_rate = st.columns(2)
+with st.expander("ℹ️ What do these audio features mean?"):
+    st.markdown("""
+    *   **Acousticness**: Confidence measure of whether the track is acoustic (no electrical amplification).
+    *   **Danceability**: Suitability for dancing based on tempo, rhythm stability, and beat strength.
+    *   **Energy**: Intensity and activity; fast, loud, and noisy tracks score higher.
+    *   **Instrumentalness**: Likelihood the track contains no vocals (Ooh/Aah are treated as instrumental).
+    *   **Liveness**: Probability the track was recorded with a live audience.
+    *   **Speechiness**: Detection of spoken words; values > 0.66 are likely entirely spoken (podcasts/poetry).
+    *   **Valence**: Musical positiveness; high scores feel Happy/Cheerful, low scores feel Sad/Depressed/Angry.
+    """)
+
+feat_cols = ['acousticness', 'danceability', 'energy', 'instrumentalness', 'liveness', 'speechiness', 'valence']
+available_feats = [c for c in feat_cols if c in df.columns]
+
+if available_feats:
+    col_radar, col_dist = st.columns([1, 1.5])
     
-    with c_freq:
-        st.caption(f"**Most Listened Artists**")
-        freq = get_frequent_items(df, 'artist_list')
-        fig = px.bar(freq, x='Count', y='artist_list', orientation='h', color='Count')
-        fig.update_layout(yaxis={'categoryorder':'total ascending'})
-        st.plotly_chart(fig, use_container_width=True)
+    with col_radar:
+        # Average Features Radar
+        avg_feats = df[available_feats].mean()
+        fig_radar = go.Figure()
+        fig_radar.add_trace(go.Scatterpolar(
+            r=avg_feats.values,
+            theta=[c.capitalize() for c in available_feats],
+            fill='toself',
+            line_color=SPOTIFY_GREEN,
+            name='Library Average'
+        ))
+        fig_radar.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+            showlegend=False,
+            title="Average Audio Fingerprint",
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            font=dict(color=SPOTIFY_WHITE)
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
         
-    with c_rate:
-        st.caption(f"**Highest Rated Artists** (Min 3 Tracks)")
-        rated = get_highly_rated_items(df, 'artist_list', min_count=3)
-        if not rated.empty:
-            fig = px.bar(rated, x='avg_rating', y='artist_list', orientation='h', 
-                         color='avg_rating', color_continuous_scale='Viridis',
-                         range_x=[0, 5])
-            fig.update_layout(yaxis={'categoryorder':'total ascending'})
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Not enough data (need >3 tracks per artist)")
+    with col_dist:
+        # Mood Map (Valence vs Energy Density)
+        if 'valence' in df.columns and 'energy' in df.columns:
+            # Removed marginals to fix Plotly ValueError incompatibility
+            fig_density = px.density_heatmap(df, x='valence', y='energy', 
+                                            nbinsx=30, nbinsy=30,
+                                            color_continuous_scale='Viridis',
+                                            title="Mood Density (Positivity vs Intensity)",
+                                            labels={'valence': 'Positivity (Valence)', 'energy': 'Intensity (Energy)'})
+            fig_density.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color=SPOTIFY_WHITE))
+            st.plotly_chart(fig_density, use_container_width=True)
 
 st.divider()
 
-# 4. Genres
-st.subheader("🎼 Genres")
+# 3. ARTISTS & GENRES
+col_art, col_gen = st.columns(2)
 
-if 'genre_list' in df.columns:
-    c_genre = st.columns(1)[0]
-    with c_genre:
-        gen = get_frequent_items(df, 'genre_list', 10)
-        fig = px.pie(gen, values='Count', names='genre_list', title="Top Genres", hole=0.4)
-        st.plotly_chart(fig, use_container_width=True)
+with col_art:
+    st.subheader("🎤 Top Artists")
+    # Using primary_artist to avoid splitting names like "Tyler, The Creator"
+    freq_art = get_frequent_items(df, 'primary_artist', 12)
+    fig_art = px.bar(freq_art, x='Count', y='primary_artist', orientation='h',
+                     title="Most Frequent Artists (Primary)",
+                     color='Count', color_continuous_scale=['#1DB954', '#1ED760'])
+    fig_art.update_layout(yaxis={'categoryorder':'total ascending'}, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color=SPOTIFY_WHITE))
+    st.plotly_chart(fig_art, use_container_width=True)
+
+with col_gen:
+    st.subheader("🎼 Genre Distribution")
+    freq_gen = get_frequent_genres(df, 'genre_list', 10)
+    fig_gen = px.pie(freq_gen, values='Count', names='genre_list', hole=0.5,
+                     title="Top Genres",
+                     color_discrete_sequence=px.colors.sequential.Greens_r)
+    fig_gen.update_layout(paper_bgcolor='rgba(0,0,0,0)', font=dict(color=SPOTIFY_WHITE))
+    st.plotly_chart(fig_gen, use_container_width=True)
+
+st.divider()
+
+# 4. TIME TRAVEL
+st.subheader("📅 Release Era")
+c_time1, c_time2 = st.columns(2)
+
+with c_time1:
+    df_year = df.groupby('release_year')['rating'].count().reset_index()
+    fig_year = px.area(df_year, x='release_year', y='rating', title="Tracks by Release Year",
+                       color_discrete_sequence=[SPOTIFY_GREEN])
+    fig_year.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color=SPOTIFY_WHITE))
+    st.plotly_chart(fig_year, use_container_width=True)
+
+with c_time2:
+    # Popularity distribution
+    fig_pop = px.histogram(df, x="popularity", nbins=20, title="Popularity Distribution (Spotify Score)",
+                          color_discrete_sequence=[SPOTIFY_GREEN])
+    fig_pop.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color=SPOTIFY_WHITE))
+    st.plotly_chart(fig_pop, use_container_width=True)
+
+# 5. DATA EXPLORER
+with st.expander("📂 View Library Data"):
+    st.dataframe(df[['name', 'artists', 'release_year', 'rating', 'popularity', 'energy', 'valence']].sort_values('rating', ascending=False), use_container_width=True)

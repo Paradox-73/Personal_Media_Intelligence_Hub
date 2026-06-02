@@ -1,38 +1,5 @@
-(content_rec) E:\Personal_Media_Intelligence_Hub>python src/unified_model/predict_unified_ratings.py
-🚀 Starting Batch Prediction (Unified Ensemble Mode)...
-✅ Loaded 4 models and preprocessor state.
-   Loaded 779 movies, 153 shows, and 55 games. Total: 987 records.
-   Processing unified features...
-   Generating text embeddings...
-Loading weights: 100%|█████████████████████████████████████| 103/103 [00:00<00:00, 2476.36it/s, Materializing param=pooler.dense.weight]
-BertModel LOAD REPORT from: sentence-transformers/all-MiniLM-L6-v2
-Key                     | Status     |  |
-------------------------+------------+--+-
-embeddings.position_ids | UNEXPECTED |  |
+(content_rec) E:\Personal_Media_Intelligence_Hub>python src/music/genius_lyrics.py
+Genius lyrics: 100%|██████████████████████████████████████████████████████████████████████████████| 3689/3689 [1:56:01<00:00,  1.89s/it]
 
-Notes:
-- UNEXPECTED    :can be ignored when loading from different task/architecture; not ok if you expect identical arch.
-Batches: 100%|██████████████████████████████████████████████████████████████████████████████████████████| 31/31 [00:01<00:00, 15.91it/s]
-   Predicting ratings with unified models...
-Traceback (most recent call last):
-  File "E:\Personal_Media_Intelligence_Hub\src\unified_model\predict_unified_ratings.py", line 298, in <module>
-    batch_predict_unified_ratings()
-  File "E:\Personal_Media_Intelligence_Hub\src\unified_model\predict_unified_ratings.py", line 212, in batch_predict_unified_ratings     
-    preds = model.predict(X_final)
-            ^^^^^^^^^^^^^^^^^^^^^^
-  File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\xgboost\core.py", line 751, in inner_f
-    return func(**kwargs)
-           ^^^^^^^^^^^^^^
-  File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\xgboost\sklearn.py", line 1446, in predict
-    predts = self.get_booster().inplace_predict(
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\xgboost\core.py", line 751, in inner_f
-    return func(**kwargs)
-           ^^^^^^^^^^^^^^
-  File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\xgboost\core.py", line 2854, in inplace_predict
-    self._validate_features(fns)
-  File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\xgboost\core.py", line 3429, in _validate_features
-    raise ValueError(msg.format(self.feature_names, feature_names))
-ValueError: feature_names mismatch: ['is_tv_show', 'year', 'runtime', 'imdb_rating', 'metascore', 'rotten_tomatoes_rating', 'vote_average', 'imdb_votes', 'box_office_log', 'popularity', 'total_wins', 'total_nominations', 'critic_avg_5', 'number_of_seasons', 'number_of_episodes', 'lang_Other', 'lang_en', 'lang_hi', 'lang_ja', 'gen_Action', 'gen_Adventure', 'gen_Animation', 'gen_Comedy', 'gen_Crime', 'gen_Documentary', 'gen_Drama', 'gen_Family', 'gen_Fantasy', 'gen_History', 'gen_Horror', 'gen_Kids', 'gen_Music', 'gen_Mystery', 'gen_Romance', 'gen_Science Fiction', 'gen_TV Movie', 'gen_Thriller', 'gen_War', 'gen_War & Politics', 'gen_Western', 'rated_Adult', 'rated_General', 'rated_Teen', 'pca_0', 'pca_1', 'pca_2', 'pca_3', 'pca_4', 'pca_5', 'pca_6', 'pca_7', 'pca_8', 'pca_9', 'pca_10', 'pca_11', 'pca_12', 'pca_13', 'pca_14', 'pca_15', 'pca_16', 'pca_17', 'pca_18', 'pca_19', 'pca_20', 'pca_21', 'pca_22', 'pca_23', 'pca_24'] ['is_tv_show', 'is_game', 'year', 'runtime', 'imdb_rating', 'metascore', 'rotten_tomatoes_rating', 'vote_average', 'imdb_votes', 'box_office_log', 'popularity', 'total_wins', 'total_nominations', 'critic_avg_5', 'number_of_seasons', 'number_of_episodes', 'lang_Other', 'lang_en', 'lang_hi', 'lang_nan', 'gen_Action', 'gen_Adventure', 'gen_Animation', 'gen_Arcade', 'gen_Casual', 'gen_Comedy', 'gen_Crime', 'gen_Documentary', 'gen_Drama', 'gen_Family', 'gen_Fantasy', 'gen_Fighting', 'gen_History', 'gen_Horror', 'gen_Indie', 'gen_Kids', 'gen_Massively Multiplayer', 'gen_Music', 'gen_Mystery', 'gen_Platformer', 'gen_Puzzle', 'gen_RPG', 'gen_Racing', 'gen_Romance', 'gen_Science Fiction', 'gen_Shooter', 'gen_Simulation', 'gen_Sports', 'gen_Strategy', 'gen_TV Movie', 'gen_Thriller', 'gen_War', 'gen_War & Politics', 'gen_Western', 'rated_Adult', 'rated_General', 'rated_Teen', 'pca_0', 'pca_1', 'pca_2', 'pca_3', 'pca_4', 'pca_5', 'pca_6', 'pca_7', 'pca_8', 'pca_9']
-expected pca_13, pca_11, pca_24, pca_12, lang_ja, pca_18, pca_20, pca_23, pca_15, pca_16, pca_14, pca_10, pca_21, pca_19, pca_22, pca_17 in input data
-training data did not have the following fields: gen_Shooter, gen_Strategy, gen_RPG, is_game, gen_Arcade, gen_Casual, gen_Racing, lang_nan, gen_Simulation, gen_Sports, gen_Fighting, gen_Indie, gen_Puzzle, gen_Massively Multiplayer, gen_Platformer
+Wrote 3689 rows -> E:\Personal_Media_Intelligence_Hub\data\processed\music\music_lyrics.csv
+Lyrics found for 1063/3689 tracks (29%).

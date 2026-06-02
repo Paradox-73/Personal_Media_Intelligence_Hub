@@ -42,10 +42,8 @@ def clean_year(val):
     try:
         if pd.isna(val) or val == '': return None
         s = str(val).strip()
-        if '-' in s:
-            parts = s.split('-')
-            if len(parts[0]) == 4: return int(parts[0])
-            if len(parts[-1]) == 4: return int(parts[-1])
+        match = re.search(r'(\d{4})', s)
+        if match: return int(match.group(1))
         return int(float(s[:4]))
     except:
         return None
@@ -88,22 +86,31 @@ def batch_predict_unified_ratings():
             df_games = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH)
         except:
             df_games = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH, encoding='latin1')
+            
+        try:
+            df_books = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH)
+        except:
+            df_books = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH, encoding='latin1')
         
+        df_movies['media_type'] = 'movie'
         df_movies['is_tv_show'] = 0
         df_movies['is_game'] = 0
+        df_movies['is_book'] = 0
         
+        df_shows['media_type'] = 'tv'
         df_shows['is_tv_show'] = 1
         df_shows['is_game'] = 0
+        df_shows['is_book'] = 0
         # Align shows schema
         df_shows = df_shows.rename(columns={
             'name': 'title',
             'created_by': 'director',
-            'production_companies': 'production',
             'genres': 'genre',
             'age_rating': 'rated'
         })
 
         # Align games schema
+        df_games['media_type'] = 'game'
         df_games = df_games.rename(columns={
             'name': 'title',
             'my_rating': 'user_rating',
@@ -113,15 +120,33 @@ def batch_predict_unified_ratings():
             'rating': 'imdb_rating',
             'ratings_count': 'imdb_votes',
             'description_raw': 'overview',
-            'age_rating': 'rated',
-            'cover': 'poster'
+            'age_rating': 'rated'
         })
         df_games['is_tv_show'] = 0
         df_games['is_game'] = 1
+        df_games['is_book'] = 0
         df_games['year'] = df_games['released'].apply(clean_year)
         
-        df = pd.concat([df_movies, df_shows, df_games], ignore_index=True)
-        print(f"   Loaded {len(df_movies)} movies, {len(df_shows)} shows, and {len(df_games)} games. Total: {len(df)} records.")
+        # Align books schema
+        df_books['media_type'] = 'book'
+        df_books = df_books.rename(columns={
+            'my_rating': 'user_rating',
+            'authors': 'director',
+            'categories': 'genre',
+            'averageRating': 'imdb_rating',
+            'ratingsCount': 'imdb_votes',
+            'description': 'overview',
+            'publishedDate': 'released',
+            'pageCount': 'runtime'
+        })
+        df_books['is_tv_show'] = 0
+        df_books['is_game'] = 0
+        df_books['is_book'] = 1
+        df_books['year'] = df_books['released'].apply(clean_year)
+        
+        df = pd.concat([df_movies, df_shows, df_games, df_books], ignore_index=True)
+        print(f"   Counts -> Movies: {len(df_movies)}, Shows: {len(df_shows)}, Games: {len(df_games)}, Books: {len(df_books)}")
+        print(f"   Total: {len(df)} records.")
     except Exception as e:
         print(f"❌ ERROR loading enriched data: {e}")
         return
@@ -138,25 +163,22 @@ def batch_predict_unified_ratings():
     df['total_wins'] = df['awards'].astype(str).str.extract(r'(\d+)\s+win', flags=re.IGNORECASE)[0].astype(float).fillna(0)
     df['total_nominations'] = df['awards'].astype(str).str.extract(r'(\d+)\s+nomination', flags=re.IGNORECASE)[0].astype(float).fillna(0)
     
-    df['number_of_seasons'] = pd.to_numeric(df.get('number_of_seasons', 1), errors='coerce').fillna(1)
-    df['number_of_episodes'] = pd.to_numeric(df.get('number_of_episodes', 1), errors='coerce').fillna(1)
-
-    df['imdb_rating_100'] = pd.to_numeric(df['imdb_rating'], errors='coerce') * 10
-    df['vote_average_100'] = pd.to_numeric(df['vote_average'], errors='coerce') * 10
+    # Pre-clean numeric cols
+    num_cols = ['is_tv_show', 'is_game', 'is_book', 'year', 'runtime', 'imdb_rating', 'metascore', 'rotten_tomatoes_rating', 'vote_average', 'imdb_votes', 'box_office_log', 'popularity', 'total_wins', 'total_nominations', 'critic_avg_5']
+    
+    # Normalize short scales
+    mask_short_scale = (df['is_game'] == 1) | (df['is_book'] == 1)
+    df['ir_100'] = pd.to_numeric(df['imdb_rating'], errors='coerce') * 10
+    df.loc[mask_short_scale, 'ir_100'] = pd.to_numeric(df.loc[mask_short_scale, 'imdb_rating'], errors='coerce') * 20
+    
+    df['va_100'] = pd.to_numeric(df['vote_average'], errors='coerce') * 10
     df['metascore'] = pd.to_numeric(df['metascore'], errors='coerce')
     
-    critic_scores = df[['imdb_rating_100', 'metascore', 'rotten_tomatoes_rating', 'vote_average_100']]
-    df['critic_avg_100'] = critic_scores.mean(axis=1)
-    df['critic_avg_5'] = (df['critic_avg_100'] / 100) * 5
+    critic_scores = df[['ir_100', 'metascore', 'rotten_tomatoes_rating', 'va_100']]
+    df['critic_avg_5'] = (critic_scores.mean(axis=1) / 100 * 5)
     
-    if 'imdb_votes' in df.columns and 'vote_count' in df.columns:
-        df['imdb_votes'] = df['imdb_votes'].fillna(df['vote_count'])
-    elif 'vote_count' in df.columns:
-        df.rename(columns={'vote_count': 'imdb_votes'}, inplace=True)
-        
     for col, med_val in state['median_values'].items():
         if col in df.columns:
-            # Pre-clean strings by removing commas
             if df[col].dtype == 'object':
                 df[col] = df[col].astype(str).str.replace(',', '', regex=False)
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(med_val)
@@ -192,7 +214,7 @@ def batch_predict_unified_ratings():
     df['genre_list'] = df['genre_list'].apply(unify_genres)
     
     genre_encoded = state['mlb_genre'].transform(df['genre_list'])
-    X_genre = pd.DataFrame(genre_encoded, columns=[f"gen_{c}" for c in state['mlb_genre'].classes_], index=df.index)
+    X_genre = pd.DataFrame(genre_encoded, columns=[f"gen_{sanitize_col(c)}" for c in state['mlb_genre'].classes_], index=df.index)
 
     df['mpaa_cat'] = df['rated'].apply(categorize_rating)
     X_mpaa = pd.get_dummies(df['mpaa_cat'], prefix='rated')
@@ -210,8 +232,19 @@ def batch_predict_unified_ratings():
     df['display_name'] = df['title'].fillna(df.get('letterboxd_name', 'Unknown'))
     
     for name, model in models.items():
-        preds = model.predict(X_final)
-        df[f'pred_{name}'] = np.round(np.clip(preds, 0, 5) * 2) / 2
+        if name == "Ordinal_EV":
+            try:
+                probs = model.predict_proba(X_final)
+                classes = joblib.load(config.UNIFIED_ENSEMBLE_DIR / "ordinal_classes.joblib")
+                bucket_map = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0, 4: 2.5, 5: 3.0, 6: 3.5, 7: 4.0, 8: 4.5, 9: 5.0}
+                present_vals = np.array([bucket_map[c] for c in classes])
+                raw_preds = np.sum(probs * present_vals, axis=1)
+                df[f'pred_{name}'] = np.round(np.clip(raw_preds, 0, 5) * 2) / 2
+            except:
+                print(f"⚠️ Warning: Could not run Ordinal_EV prediction.")
+        else:
+            preds = model.predict(X_final)
+            df[f'pred_{name}'] = np.round(np.clip(preds, 0, 5) * 2) / 2
 
     # --- 5. Performance Report ---
     if 'user_rating' in df.columns and not df['user_rating'].isna().all():
@@ -225,6 +258,7 @@ def batch_predict_unified_ratings():
         
         for name in models.keys():
             pred_col = f'pred_{name}'
+            if pred_col not in eval_df.columns: continue
             y_pred = eval_df[pred_col]
             
             mse = mean_squared_error(y_true, y_pred)
@@ -240,7 +274,8 @@ def batch_predict_unified_ratings():
             print(f"   Distribution -> Exact: {((diffs == 0.0).sum()/total)*100:.1f}% | ±0.5: {((diffs <= 0.5).sum()/total)*100:.1f}% | >1.0: {((diffs > 1.0).sum()/total)*100:.1f}%")
         print("="*55 + "\n")
         
-        df['abs_diff_stacking'] = np.abs(df['user_rating'] - df['pred_Stacking'])
+        if 'pred_Stacking' in df.columns:
+            df['abs_diff_stacking'] = np.abs(df['user_rating'] - df['pred_Stacking'])
 
         # --- 6. Visualizations ---
         pred_dir = config.UNIFIED_PREDICTIONS_DIR
@@ -251,7 +286,9 @@ def batch_predict_unified_ratings():
         fig, ax = plt.subplots(figsize=(16, 8))
         sns.kdeplot(data=eval_df, x='user_rating', ax=ax, label='Actual Ratings', color='black', linewidth=3, fill=True, alpha=0.1)
         for name in models.keys():
-            sns.kdeplot(data=eval_df, x=f'pred_{name}', ax=ax, label=f'{name} Preds', linestyle='--', linewidth=2)
+            pred_col = f'pred_{name}'
+            if pred_col in eval_df.columns:
+                sns.kdeplot(data=eval_df, x=pred_col, ax=ax, label=f'{name} Preds', linestyle='--', linewidth=2)
             
         ax.set_title('Comparison of Predicted Rating Distributions (Unified Dataset - KDE)', fontsize=18, pad=20)
         ax.set_xlabel('Rating (0.5 - 5.0)', fontsize=12)
@@ -265,8 +302,8 @@ def batch_predict_unified_ratings():
         plt.close(fig) 
 
         # 6b. Histogram Grid
-        data_cols = ['user_rating'] + [f'pred_{name}' for name in models.keys()]
-        titles = ['Actual Ratings'] + [f'{name} Predictions' for name in models.keys()]
+        data_cols = ['user_rating'] + [f'pred_{name}' for name in models.keys() if f'pred_{name}' in eval_df.columns]
+        titles = ['Actual Ratings'] + [f'{name} Predictions' for name in models.keys() if f'pred_{name}' in eval_df.columns]
         
         fig, axes = plt.subplots(2, 3, figsize=(20, 10), sharey=True)
         axes = axes.flatten()
@@ -289,8 +326,13 @@ def batch_predict_unified_ratings():
         plt.close(fig)
         
         # Save CSV Results
-        out_cols = ['display_name', 'year', 'is_tv_show', 'user_rating'] + [f'pred_{name}' for name in models.keys()] + ['abs_diff_stacking']
-        final_df = df[[c for c in out_cols if c in df.columns]].sort_values(by='pred_Stacking', ascending=False)
+        out_cols = ['display_name', 'year', 'media_type', 'user_rating'] + [f'pred_{name}' for name in models.keys() if f'pred_{name}' in df.columns]
+        if 'abs_diff_stacking' in df.columns: out_cols.append('abs_diff_stacking')
+        
+        final_df = df[[c for c in out_cols if c in df.columns]]
+        if 'pred_Stacking' in df.columns:
+            final_df = final_df.sort_values(by='pred_Stacking', ascending=False)
+            
         out_path = pred_dir / "unified_predictions_ensemble.csv"
         final_df.to_csv(out_path, index=False)
         print(f"✅ Saved unified model predictions to {out_path}")

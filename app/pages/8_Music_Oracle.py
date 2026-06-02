@@ -2,68 +2,108 @@ import streamlit as st
 import joblib
 import numpy as np
 import sys
+import pandas as pd
 from pathlib import Path
 
+# Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
-from src.config import MUSIC_TASTE_PROFILE
-from src.music.feature_engineering import get_audio_embedding # Reuse extraction logic
+from src.music.model_training import Oracle
+import src.music.config as music_config
 
-st.set_page_config(page_title="Music Oracle", page_icon="🎧")
+st.set_page_config(page_title="Music Oracle", page_icon="🎧", layout="wide")
 
 st.title("🎧 The Music Oracle")
-st.markdown("Discover how closely a new track aligns with your sonic profile.")
+st.markdown("Discover how closely a track aligns with your sonic profile and find similar gems in your library.")
 
 @st.cache_resource
-def load_taste_profile():
+def get_oracle():
     try:
-        return joblib.load(MUSIC_TASTE_PROFILE)
-    except FileNotFoundError:
+        return Oracle()
+    except Exception as e:
+        st.error(f"Failed to initialize Oracle: {e}")
         return None
 
-taste_centroid = load_taste_profile()
+oracle = get_oracle()
 
-if taste_centroid is None:
-    st.warning("Taste Profile not found. Please run the data pipeline and model_trainer.py first.")
+if oracle is None:
+    st.warning("Oracle not ready. Please run the music pipeline and model_training.py first.")
     st.stop()
 
-# --- Search Interface ---
-with st.form("oracle_form"):
-    col1, col2 = st.columns(2)
-    with col1:
-        track_input = st.text_input("Track Name", placeholder="e.g., Midnight City")
-    with col2:
-        artist_input = st.text_input("Artist Name", placeholder="e.g., M83")
-    
-    submit = st.form_submit_button("Consult the Oracle")
+tab1, tab2, tab3 = st.tabs(["🔮 Predict Rating", "🧬 Find Similar", "🌱 Discover New"])
 
-if submit and track_input and artist_input:
-    with st.spinner("The Oracle is listening to the track..."):
-        # Use a temporary ID for the oracle query
-        new_embedding = get_audio_embedding(track_input, artist_input, "oracle_temp")
-        
-        if new_embedding:
-            # Calculate Cosine Similarity
-            v = np.array(new_embedding)
-            c = taste_centroid
-            
-            cosine_sim = np.dot(v, c) / (np.linalg.norm(v) * np.linalg.norm(c))
-            
-            # Convert -1 to 1 range into a 0% to 100% match score
-            match_percentage = ((cosine_sim + 1) / 2) * 100
+with tab1:
+    st.subheader("Predict Your Affinity")
+    st.markdown("Select a track from your library to see what the Oracle thinks of it.")
+    
+    # Let user select a track from library
+    track_options = oracle.df[['track_id', 'name', 'artists']].copy()
+    track_options['display'] = track_options['name'] + " — " + track_options['artists']
+    
+    selected_track_id = st.selectbox("Select a Track", 
+                                     options=track_options['track_id'].tolist(),
+                                     format_func=lambda x: track_options[track_options['track_id'] == x]['display'].values[0])
+    
+    if st.button("Consult the Oracle for Prediction"):
+        with st.spinner("Analyzing..."):
+            pred = oracle.predict_rating(selected_track_id)
+            row = oracle.df[oracle.df['track_id'] == selected_track_id].iloc[0]
             
             st.divider()
-            st.subheader(f"Results for: {track_input} by {artist_input}")
+            c1, c2 = st.columns(2)
+            c1.metric("Predicted Rating", f"{pred:.2f} / 5.0")
+            c2.metric("Implicit Library Rating", f"{row['rating']:.2f} / 5.0")
             
-            st.metric(label="Sonic Alignment Score", value=f"{match_percentage:.1f}%")
-            
-            if match_percentage > 85:
-                st.success("Perfect Match: This hits right at the core of your musical taste.")
-            elif match_percentage > 65:
-                st.info("Strong Vibe: You'll likely enjoy this. It shares major elements with your library.")
-            elif match_percentage > 40:
-                st.warning("Fringe Territory: A good track to expand your horizons, but outside your usual rotation.")
+            if pred > 4.5:
+                st.success("A masterpiece in your ears.")
+            elif pred > 3.5:
+                st.info("Solid rotation material.")
             else:
-                st.error("Dissonance: Mathematically opposed to your standard library.")
-                
+                st.warning("Maybe just a phase?")
+
+with tab2:
+    st.subheader("Similar Tracks in Your Library")
+    
+    selected_track_id_sim = st.selectbox("Select a Seed Track", 
+                                         options=track_options['track_id'].tolist(),
+                                         format_func=lambda x: track_options[track_options['track_id'] == x]['display'].values[0],
+                                         key="sim_select")
+    
+    n_sim = st.slider("Number of similar tracks", 5, 20, 10)
+    
+    if st.button("Find Similar Gems"):
+        with st.spinner("Calculating sonic similarity..."):
+            similar_df = oracle.similar_to(selected_track_id_sim, n=n_sim)
+            
+            st.write("### Recommended from your library:")
+            for _, r in similar_df.iterrows():
+                # We can't easily get the 'explanation' string here without modifying Oracle
+                # But we can display the basic info
+                st.write(f"• **{r['name']}** — {r['artists']}  (Rating: {r['rating']:.2f})")
+
+with tab3:
+    st.subheader("Discover New Music")
+    st.markdown("Uses ReccoBeats to find tracks outside your library based on seeds.")
+    
+    seed_ids_input = st.text_input("Enter Spotify Track IDs (comma separated)", 
+                                   placeholder="e.g., 3n3Ppam7vgaVa1iaRUc9Lp, 7ouMYWpwJ422jRcDASZB7P")
+    
+    n_disco = st.slider("Number of tracks to discover", 5, 30, 15)
+    
+    if st.button("Discover New Sounds"):
+        if not seed_ids_input:
+            st.error("Please enter at least one Spotify Track ID.")
         else:
-            st.error("Failed to analyze the audio. The track might not be available or exceeds duration limits.")
+            with st.spinner("Scanning the musical multiverse..."):
+                seeds = [s.strip() for s in seed_ids_input.split(',')]
+                discovery = oracle.discover(seeds, n=n_disco)
+                
+                if discovery:
+                    st.write("### The Oracle recommends:")
+                    for obj in discovery:
+                        title = obj.get('trackTitle') or obj.get('name')
+                        artists = obj.get('artists')
+                        if isinstance(artists, list):
+                            artists = ", ".join(a.get('name', "") for a in artists)
+                        st.write(f"• **{title}** — {artists}")
+                else:
+                    st.info("No discoveries found or ReccoBeats unavailable.")
