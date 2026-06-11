@@ -1,5 +1,72 @@
-(content_rec) E:\Personal_Media_Intelligence_Hub>python src/music/genius_lyrics.py
-Genius lyrics: 100%|██████████████████████████████████████████████████████████████████████████████| 3689/3689 [1:56:01<00:00,  1.89s/it]
+The ablation finally landed and it's the most decisive artifact so far — it answers the stacking question conclusively. But this cycle also produced a new metric inconsistency, the active learning queue has regressed to fully degenerate, and the ablation numbers don't reconcile with your own headline table. Point by point:
 
-Wrote 3689 rows -> E:\Personal_Media_Intelligence_Hub\data\processed\music\music_lyrics.csv
-Lyrics found for 1063/3689 tracks (29%).
+## 1. Ablation: clear verdict, act on it fully
+
+The table is unambiguous: Mean Ensemble (0.4059) beats Ridge Stacking (0.3837) with p=0.0004, and the residual heads were actively destructive (0.2688, significantly *worse* than base). Your read is correct. Follow-through:
+
+- **Delete the residual-head and Ridge-stack code paths from the unified pipeline** (or quarantine behind a flag). Dead architecture that "sometimes runs" is how stale numbers re-enter reports.
+- The technical report says "Simplex-Weighted Ensemble" but the ablation's winner is the *equal-weight* mean. If the simplex learned ≈[0.5, 0.5], fine — but verify the deployed combiner is the one the ablation endorsed, on the same folds.
+- One residue worth saving: the residual-head failure is a great two-sentence addition to the README case study — "we built it, measured it with paired Wilcoxon, it destroyed 0.09 R², we removed it." That's the ablation discipline reviewers want to see demonstrated, not just claimed.
+
+**But the ablation doesn't reconcile with your headline.** Ablation: base XGB 0.3611, mean ensemble 0.4059, on 5-fold. Technical report headline: XGB base 0.452, ensemble 0.444. Two problems: the absolute levels differ by ~0.05–0.09, and the *ordering flips* — in the headline the ensemble is again below its base member, which is the exact pathology the ablation says the mean ensemble fixes. These were clearly different runs under different protocols (5-fold ad hoc vs. the registry?), which is precisely what `fold_registry.json` exists to prevent. Re-run the 4-row ablation **on the frozen registry folds** and let that single run populate both the ablation report and the headline table. Until then the unified row is two contradictory numbers wearing one trench coat.
+
+## 2. The 0.523 → 0.444 deflation is correct — but one number in that block is broken
+
+Good instinct reverting after the leak-free CORAL refit: the 0.523/0.610 pair was partially leak-inflated, and 0.444 under per-fold alignment is the honest figure. Two issues:
+
+- **MAE 0.533 with ±0.5★ accuracy 87.4% is mathematically implausible.** If 87.4% of predictions are within 0.5 stars (mean within-group error ~0.25, generously), the remaining 12.6% would need a mean absolute error of ~2.5 stars to produce an overall MAE of 0.533 — on a 4.5-star-wide scale, that means essentially every miss is a catastrophic miss, which contradicts everything else you've measured. Last cycle was MAE 0.489 / 78.0%; now MAE got *worse* while accuracy jumped 9 points. Almost certainly the 87.4% is computed on snapped/calibrated predictions (or a different prediction array) while MAE uses raw. Compute both from the same OOF vector.
+- **Doc sync:** README still shows the dead numbers (Unified 0.523, "Domain-Aligned Stack", residual heads listed as a highlight). After the leak fix, README and FINAL_ML_TECHNICAL_REPORT.md disagree on the flagship metric again — same failure mode as two cycles ago. Make "both files updated from one results JSON in one commit" the rule, ideally a small script that renders both tables from `reports/latest_metrics.json` so drift becomes impossible.
+
+## 3. λ = 0.000429: temporal decay is effectively dormant — that's a finding
+
+Half-life 1,615 days (~4.4 years) means a rating from three years ago still carries weight ~0.6, and the w_min=0.2 floor isn't reached until ~10 years out. Translation: **Optuna looked for taste drift and found almost none** — your preferences are stable over the horizon your library covers. Record it exactly that way: "temporal decay implemented, empirically tuned, found near-inactive (taste half-life ≈ 4.4 years); retained as monitoring." That's an honest null with a memorable headline stat, and it means the Taste Drift dashboard should expect a flat entropy line — if it *doesn't* show flat, the two measurements disagree and that's worth investigating.
+
+Also nice: α_hi=0.178 vs α_lo=0.057 — the tuner independently decided that protecting your favorites matters ~3× more than protecting your hard passes. Quotable in the loss-function section of the README.
+
+## 4. Active learning queue: fully degenerate again, and the cause is upstream
+
+All z-scores are exactly 0, the Predicted column vanished, and it's still games-only. Diagnosis: z-scoring within domain divides by the within-domain std of uncertainty — and your games uncertainties were already near-constant (the tie-heavy snapped-prediction issue from last cycle, possibly now worse with a *two*-member ensemble, where "std" is just |XGB−Cat|/√2 on half-star-snapped values). Constant in → std 0 → z-score 0/0 → zeros. The z-scoring patch treated the symptom; the disease is that the underlying uncertainty signal carries no information.
+
+Fix order: (1) compute disagreement on **raw continuous predictions**, never snapped; (2) add the kNN novelty term — mean distance to k=5 nearest training items in the (aligned) feature space — which is continuous by construction and can't tie out; (3) rank by z(disagreement)+z(novelty) with a guard: if within-domain std < ε, fall back to novelty alone; (4) restore the Predicted column and conformal interval to the table — a queue without predictions isn't actionable. And confirm whether the backlog file actually contains non-game items; if it does and they're being filtered, that's a separate bug.
+
+## 5. Still owed: the per-domain slice of unified OOF
+
+Third ask. One groupby on the OOF predictions: R²/MAE/skill score of the unified model *per media_type*. This is the single most thesis-relevant number you haven't produced — it tells you whether unified 0.444 means "genuine cross-domain generalization" or "a movie model with passengers." It also feeds directly into interpreting the transfer grid.
+
+## Green light on the grid
+
+With the registry, leak-free CORAL, the mean-ensemble verdict, and Wilcoxon plumbing all in place, there is nothing left blocking the Protocol A/B/C domain-combination study — and notably, every fix this cycle (frozen folds reconciliation, per-domain slicing, paired tests) is infrastructure the grid will reuse. Sequence for next cycle: reconcile ablation/headline on registry folds → fix the MAE/accuracy inconsistency → per-domain slice → **run the grid**. Park the active-learning polish if time is short; it's the only item on the list that doesn't gate the transfer study.
+
+
+
+Your instinct is right — and the plot itself is the proof. Those thin, snaking filaments of interleaved movie/TV points and the giant detached music continent are not "islands of taste"; they're two classic UMAP pathologies, both caused by what's being fed into the projection. The visualization isn't lying about the data — it's faithfully rendering a broken input space.
+
+## Diagnosis: three bugs in `get_umap_data`
+
+**Bug 1 — Unscaled, mixed-magnitude features under a euclidean metric.** The code takes *all* 402 columns raw: `year` (~1950–2026), runtime in minutes (~30–200), log vote counts, 0/1 multi-hots, and PCA vibe components (~±2). With euclidean distance, year and runtime dominate the metric by an order of magnitude. The string/filament structures are the signature: UMAP's neighbor graph degenerates into chains where each point's nearest neighbors are simply the items adjacent in *year*, so the manifold collapses to year-sorted threads. Hover along one of those arcs and I'd bet the release years increase monotonically. That's not taste topology, it's a timeline rendered as spaghetti.
+
+**Bug 2 — The space contains the features that *define* domain membership.** Your own expander says the vector includes "Media Type markers," and the unified schema has `has_{domain}_feats` masks plus large domain-specific blocks that are `nan_to_num`'d to zero for every other domain. Music rows differ from movie rows in *hundreds* of coordinates purely by missingness pattern. Domain separation is therefore guaranteed by construction — the music blob would appear even if your music and movie tastes were identical. This is the same domain-stratification problem we diagnosed in the earlier UMAPs, except now it's baked in twice: once by masks, once by explicit media-type one-hots. Note also CORAL alignment isn't applied anywhere in this script, so the page is visualizing the *unaligned* space you've already shown to be confounded.
+
+**Bug 3 — The title join is positional and almost certainly misaligned.** `pd.concat([df, titles_df[['title']].reset_index(drop=True)], axis=1)` assumes the enriched CSVs, loaded independently, have exactly the same row count and order as the unified training matrix. Any filtering during feature engineering (dropped NaN rows, the 'Incomplete' games handling, dedup) shifts every label after that point — so hover titles can be silently wrong, which is worse than missing. Joins must be on `source_id`, never position. Quick falsification test: hover a few points you know well and check the year in the tooltip matches the title.
+
+Smaller issues: the slider filters music by `target_reg`, which for music is a PU pseudo-label, not a rating — labeling it "Predicted/Actual Rating" is misleading; and with 3,688 of 4,952 points being music, the map is 74% pseudo-labeled items visually drowning the rated library.
+
+## What the explorer *should* project
+
+The page's stated purpose — "if a movie is next to a song, their vibes align" — is only true if the space contains *only comparable semantic coordinates*. So:
+
+1. **Default view = shared vibe space only:** the CORAL-aligned embedding/PCA components common to all domains, cosine metric. No metadata, no masks, no media-type indicators, no domain-specific blocks. In this view, cross-domain proximity is *earned*, and domain mixing vs. separation becomes a real measurement of your transfer thesis — arguably your single best thesis visual.
+2. **Optional diagnostic view = full feature space, standardized:** keep it, but label it honestly ("model input geometry — expect domain islands from feature coverage") and z-score everything first so it at least isn't a year-line.
+3. **Join titles on `source_id`.**
+
+I've rewritten the page with both views, scaling, mask/indicator exclusion, key-based joins, and an inline "is this view trustworthy" caption. The vibe-column detection uses common prefixes (`vibe_`, `pca_`, `emb_`) with a sidebar fallback — set `VIBE_PREFIXES` to your actual column names from `unified_feature_engineering.py`, and if your CORAL transform is saved as an artifact, point `ALIGNMENT_TRANSFORM_PATH` at it (the script applies it if found, warns if not).Three things to do when wiring it in:
+
+**Set the column names.** `VIBE_PREFIXES` is guessing at `vibe_`/`pca_`/`emb_` — check what `unified_feature_engineering.py` actually names the semantic components and adjust. Same for `EXCLUDE_PREFIXES`: list every mask and media-type indicator column exactly, because any one that leaks into the projection re-introduces forced domain separation.
+
+**Export the CORAL transform.** The training pipeline fits alignment per fold, but for the *visualization* you want one transform fit on all data (no leakage concern here — it's a display, not an evaluation) saved to `models/coral_alignment.joblib`. The script supports either a `{centroids, global_centroid}` dict or an object with `.apply(X, media_types)`; if absent it shows unaligned embeddings with a visible warning rather than pretending.
+
+**Run the falsification test on the old plot's hover labels** before trusting any past screenshot — if titles were positionally shifted, every visual conclusion drawn from hovering that map is suspect.
+
+The bonus at the bottom is the part I'd actually highlight: the **separability ratio** (between-domain centroid distance / within-domain spread). Toggle alignment on/off in the semantic view and watch that one number move — that's a quantitative before/after for CORAL, it's screenshot-able for the README, and it's a 2-D proxy of exactly the MMD analysis the transfer grid needs. If the ratio in the *aligned semantic view* is still large, that's an early warning that the grid's zero-shot cells will come back null, and you'll have learned it from a dashboard instead of a week of runs.
+
+One expectation to set: even fixed, music will probably remain somewhat distinct in the semantic view — track titles + artist names are just genuinely different text from plot synopses. Distinct-but-overlapping is fine; a detached continent like the current screenshot is not. The interesting question your thesis cares about is whether *some* music points (concept albums, soundtracks, lyric-heavy tracks now that you've embedded lyrics) bleed into the narrative clusters. That's exactly what hovering an aligned semantic map will show you — and it only works once the titles are joined on `source_id`.

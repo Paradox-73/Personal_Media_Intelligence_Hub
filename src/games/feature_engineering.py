@@ -58,8 +58,15 @@ def process_features():
         df = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH, encoding='latin1')
     
     # 1. Clean my_rating
-    # Map 'I' to 0 (Incomplete) or handle as missing
-    df['my_rating_clean'] = pd.to_numeric(df['my_rating'], errors='coerce').fillna(0)
+    # Map 'I' to NaN (Incomplete)
+    df['my_rating_clean'] = pd.to_numeric(df['my_rating'], errors='coerce')
+    
+    # Track status
+    df['status'] = 'Rated'
+    df.loc[df['my_rating'] == 'I', 'status'] = 'Incomplete'
+    df.loc[df['my_rating'].isna(), 'status'] = 'Unrated'
+    
+    print(f"   Ratings Breakdown -> Rated: {(df['status']=='Rated').sum()}, Incomplete: {(df['status']=='Incomplete').sum()}, Unrated: {(df['status']=='Unrated').sum()}")
     
     # 2. Extract Year
     df['year'] = df['released'].apply(clean_year)
@@ -81,10 +88,8 @@ def process_features():
     
     # 6. Developers Multi-Hot (Top ones to avoid explosion)
     df['dev_list'] = df['developers'].apply(parse_list)
-    # Since only 62 games, we might have too many devs. Let's limit or just use MultiLabelBinarizer and see.
     mlb_dev = MultiLabelBinarizer()
     dev_encoded = mlb_dev.fit_transform(df['dev_list'])
-    # Only keep devs that appear at least twice
     dev_counts = dev_encoded.sum(axis=0)
     valid_dev_indices = np.where(dev_counts >= 2)[0]
     X_dev = pd.DataFrame(dev_encoded[:, valid_dev_indices], 
@@ -114,7 +119,7 @@ def process_features():
     # Targets
     X_final['target_reg'] = df['my_rating_clean'].values
     # Also categorical for dashboard if needed (Low: 1-2, Med: 3-4, High: 5)
-    X_final['target_class'] = pd.cut(df['my_rating_clean'], bins=[-1, 2.5, 4.5, 5.1], labels=[0, 1, 2]).astype(int)
+    X_final['target_class'] = pd.cut(df['my_rating_clean'], bins=[-1, 2.5, 4.5, 5.1], labels=[0, 1, 2])
 
     # Save
     X_final.to_csv(config.GAMES_TRAINING_DATA_PATH, index=False)

@@ -13,6 +13,25 @@ from sklearn.preprocessing import MultiLabelBinarizer
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 
+from src.unified_model.unified_utils import get_music_affinity_features, get_music_gate_mask, DomainAligner
+
+# Define MusicProfile in __main__ to satisfy joblib
+from dataclasses import dataclass
+from typing import List, Dict, Any
+
+@dataclass
+class MusicProfile:
+    centroids: np.ndarray
+    cluster_labels: List[str]
+    cluster_meta: List[Dict[str, Any]]
+    X_lib: np.ndarray
+    pu_model: Any
+    pool_score_dist: np.ndarray
+    top_genres: List[tuple]
+    audio_fingerprint: Dict[str, float]
+    feature_names: List[str]
+    feature_groups: Dict[str, List[str]]
+
 # --- HELPERS ---
 def clean_money(x):
     if pd.isna(x): return 0
@@ -50,6 +69,96 @@ def clean_year(val):
     except:
         return None
 
+def transform_single_media(meta, state, media_type='movie'):
+    """
+    Transforms a single item's metadata into the unified feature space.
+    Used for live inference/evaluation.
+    """
+    # 1. Basic Metadata
+    is_tv = 1 if media_type == 'tv' else 0
+    is_game = 1 if media_type == 'game' else 0
+    is_book = 1 if media_type == 'book' else 0
+    is_music = 1 if media_type == 'music' else 0
+    
+    runtime = meta.get('runtime', 0)
+    if isinstance(runtime, str):
+        runtime_match = re.search(r'\d+', runtime)
+        runtime = float(runtime_match.group()) if runtime_match else 0
+    
+    year = clean_year(meta.get('year') or meta.get('released'))
+    
+    # Missingness Masks
+    masks = {f'has_{d}_feats': (1 if media_type == d else 0) for d in ['movie', 'tv', 'game', 'book', 'music']}
+    
+    # Scores
+    imdb = pd.to_numeric(meta.get('imdb_rating', 0), errors='coerce')
+    meta_score = pd.to_numeric(meta.get('metascore', 0), errors='coerce')
+    rt = pd.to_numeric(str(meta.get('rotten_tomatoes_rating', 0)).replace('%', ''), errors='coerce')
+    va = pd.to_numeric(meta.get('vote_average', 0), errors='coerce')
+    
+    # Normalize Critic Avg
+    ir_100 = imdb * 10 if media_type in ['movie', 'tv'] else imdb * 20
+    critic_avg = np.nanmean([ir_100, meta_score, rt, va * 10]) / 100 * 5 if any([imdb, meta_score, rt, va]) else 0
+    
+    box_office = np.log1p(clean_money(meta.get('box_office', 0)))
+    
+    data = {
+        'is_tv_show': is_tv, 'is_game': is_game, 'is_book': is_book, 'is_music': is_music,
+        'year': year, 'runtime': runtime, 'imdb_rating': imdb, 'metascore': meta_score,
+        'rotten_tomatoes_rating': rt, 'vote_average': va, 'imdb_votes': pd.to_numeric(meta.get('imdb_votes', 0), errors='coerce'),
+        'box_office_log': box_office, 'popularity': pd.to_numeric(meta.get('popularity', 0), errors='coerce'),
+        'total_wins': 0, 'total_nominations': 0, 'critic_avg_5': critic_avg,
+        **masks
+    }
+    
+    # NLP
+    txt = f"Title: {meta.get('title', '')}. Lead: {meta.get('director', '') or meta.get('authors', '')}. {meta.get('overview', '') or meta.get('description', '')}"
+    transformer = SentenceTransformer(state['sentence_transformer'])
+    emb = transformer.encode([txt], normalize_embeddings=True)
+    
+    # Centroid Alignment (if state has aligner)
+    if 'aligner' in state and state['aligner'] is not None:
+        emb = state['aligner'].transform(emb, [media_type])
+        
+    X_text = pd.DataFrame(state['pca'].transform(emb), columns=[f'pca_{i}' for i in range(10)])
+    
+    # Languages & Genres
+    lang = next((l.strip() for l in str(meta.get('language', 'English')).split(',') if l.strip() in state['top_languages']), 'Other')
+    X_lang = pd.DataFrame(0, index=[0], columns=[f'lang_{l}' for l in state['top_languages']] + ['lang_Other'])
+    X_lang[f'lang_{lang}'] = 1
+    
+    genres = parse_list(meta.get('genre') or meta.get('categories', []))
+    X_genre = pd.DataFrame(state['mlb_genre'].transform([genres]), columns=[f"gen_{sanitize_col(c)}" for c in state['mlb_genre'].classes_])
+    
+    mpaa = categorize_rating(meta.get('rated', 'NR'))
+    X_mpaa = pd.DataFrame(0, index=[0], columns=['rated_Adult', 'rated_Teen', 'rated_General'])
+    X_mpaa[f'rated_{mpaa}'] = 1
+    
+    # Music Affinity
+    profile_path = config.MUSIC_MODEL_DIR / "profile.joblib"
+    bundle_path = config.MUSIC_MODEL_DIR / "preprocessors.joblib"
+    if profile_path.exists() and bundle_path.exists():
+        profile = joblib.load(profile_path)
+        bundle = joblib.load(bundle_path)
+        X_music = get_music_affinity_features([txt], profile, bundle)
+        gate = get_music_gate_mask(media_type)
+        X_music = X_music * gate
+    else:
+        X_music = pd.DataFrame()
+
+    # Final concat
+    X_meta = pd.DataFrame([data])
+    X_final = pd.concat([X_meta.reset_index(drop=True), X_lang.reset_index(drop=True), 
+                         X_genre.reset_index(drop=True), X_mpaa.reset_index(drop=True), 
+                         X_text.reset_index(drop=True), X_music.reset_index(drop=True)], axis=1)
+    
+    # Fill missing columns from training
+    for col in state['training_columns']:
+        if col not in X_final.columns:
+            X_final[col] = 0
+            
+    return X_final[state['training_columns']]
+
 def build_universal_dataset():
     print("🌍 Building Universal Media Dataset (Movies + TV Shows + Games + Books + Music)...")
     
@@ -86,7 +195,8 @@ def build_universal_dataset():
     })
     df_g['media_type'] = 'game'
     df_g['year'] = df_g['released'].apply(clean_year)
-    df_g = df_g.dropna(subset=['user_rating'])
+    # Convert 'I' to NaN for numeric handling but keep for the universal dataset
+    df_g['user_rating'] = pd.to_numeric(df_g['user_rating'], errors='coerce')
 
     # 4. Load Books
     try:
@@ -102,28 +212,37 @@ def build_universal_dataset():
         'ratingsCount': 'imdb_votes',
         'description': 'overview',
         'publishedDate': 'released',
-        'pageCount': 'runtime' # Map pages to runtime as a volume proxy
+        'pageCount': 'runtime'
     })
+    
+    if 'released' not in df_b.columns:
+        df_b['released'] = None
+
     df_b['media_type'] = 'book'
     df_b['year'] = df_b['released'].apply(clean_year)
-    df_b = df_b.dropna(subset=['user_rating'])
+    df_b['user_rating'] = pd.to_numeric(df_b['user_rating'], errors='coerce')
 
     # 5. Load Music
     try:
         df_mu = pd.read_csv(config.MUSIC_ENRICHED_DATA_PATH)
+        
         df_mu = df_mu.rename(columns={
             'name': 'title',
-            'primary_artist': 'director',
+            'artists': 'director',
             'artist_genres': 'genre',
             'rating': 'user_rating',
             'release_year': 'year',
-            'popularity': 'imdb_rating', # Use popularity as a proxy for crowd score
+            'popularity': 'imdb_rating', 
+            'mb_length_ms': 'duration_ms'
         })
         df_mu['media_type'] = 'music'
-        df_mu['runtime'] = df_mu['duration_ms'].fillna(0) / 60000 # ms to min
-        # For overview, combine MB tags if available
-        df_mu['overview'] = df_mu['mb_tags'].fillna('') + " " + df_mu['artist_genres'].fillna('')
-        df_mu = df_mu.dropna(subset=['user_rating'])
+        df_mu['runtime'] = df_mu['duration_ms'].fillna(0) / 60000 
+        
+        # Build overview including lyrics if available
+        df_mu['overview'] = df_mu['mb_tags'].fillna('') + " " + \
+                            df_mu['genre'].fillna('') + " " + \
+                            df_mu.get('lyric_embed_text', pd.Series(['']*len(df_mu))).fillna('')
+        df_mu['user_rating'] = pd.to_numeric(df_mu['user_rating'], errors='coerce')
     except Exception as e:
         print(f"   ⚠️ Could not load Music data: {e}")
         df_mu = pd.DataFrame()
@@ -134,8 +253,17 @@ def build_universal_dataset():
         dfs.append(df_mu)
         
     df = pd.concat(dfs, ignore_index=True)
+    
+    # Missingness Masks (Multi-Modal Fusion)
+    for domain in ['movie', 'tv', 'game', 'book', 'music']:
+        df[f'has_{domain}_feats'] = (df['media_type'] == domain).astype(int)
+
     print(f"   Counts -> Movies: {len(df_m)}, Shows: {len(df_s)}, Games: {len(df_g)}, Books: {len(df_b)}, Music: {len(df_mu)}")
     print(f"   Total: {len(df)} records.")
+    
+    # Date Handling for Temporal Weighting
+    df['rating_date'] = pd.to_datetime(df.get('rating_date'), errors='coerce')
+    df['rating_date'] = df['rating_date'].fillna(pd.Timestamp('2000-01-01'))
     
     # Feature Engineering
     df['is_tv_show'] = (df['media_type'] == 'tv').astype(int)
@@ -176,8 +304,13 @@ def build_universal_dataset():
     print("   Generating text embeddings...")
     df['txt'] = "Title: " + df['title'].fillna('') + ". Lead: " + df['director'].fillna('') + ". " + df['overview'].fillna('')
     transformer = SentenceTransformer('all-MiniLM-L6-v2')
+    text_embeddings = transformer.encode(df['txt'].tolist())
+    
+    # --- DOMAIN CENTROID ALIGNMENT (REMOVED: Handle in trainer per-fold to avoid leakage) ---
+    # Centering here on full dataset leaks test info.
+    # We'll use the raw embeddings for PCA and let the trainer apply DomainAligner.
     pca = PCA(n_components=10)
-    X_text = pd.DataFrame(pca.fit_transform(transformer.encode(df['txt'].tolist())), columns=[f'pca_{i}' for i in range(10)])
+    X_text = pd.DataFrame(pca.fit_transform(text_embeddings), columns=[f'pca_{i}' for i in range(10)])
 
     # Genres
     df['gen_list'] = df['genre'].apply(parse_list).apply(lambda gl: list(set([item for g in gl for item in {'Sci-Fi & Fantasy': ['Science Fiction', 'Fantasy'], 'Action & Adventure': ['Action', 'Adventure']}.get(g, [g])])))
@@ -185,14 +318,35 @@ def build_universal_dataset():
     X_genre = pd.DataFrame(mlb.fit_transform(df['gen_list']), columns=[f"gen_{sanitize_col(c)}" for c in mlb.classes_], index=df.index)
     X_mpaa = pd.get_dummies(df['rated'].apply(categorize_rating), prefix='rated')
 
+    # Music Affinity Features (Cross-Domain Gating)
+    print("   Applying Gated Music Affinity features...")
+    profile_path = config.MUSIC_MODEL_DIR / "profile.joblib"
+    bundle_path = config.MUSIC_MODEL_DIR / "preprocessors.joblib"
+    
+    if profile_path.exists() and bundle_path.exists():
+        profile = joblib.load(profile_path)
+        bundle = joblib.load(bundle_path)
+        X_music_raw = get_music_affinity_features(df['txt'].tolist(), profile, bundle)
+        
+        # Apply gate based on transfer matrix
+        gate_mask = get_music_gate_mask(df['media_type'])
+        X_music = X_music_raw.multiply(gate_mask, axis=0)
+    else:
+        print("   ⚠️ Music profile not found. Skipping music affinity features.")
+        X_music = pd.DataFrame()
+
+    # Mask indicator columns
+    mask_cols = [f'has_{d}_feats' for d in ['movie', 'tv', 'game', 'book', 'music']]
+
     # Final
-    X_final = pd.concat([df[num_cols], X_lang, X_genre, X_mpaa, X_text], axis=1)
+    X_final = pd.concat([df[num_cols + mask_cols], X_lang, X_genre, X_mpaa, X_text, X_music], axis=1)
     X_final.columns = [sanitize_col(c) for c in X_final.columns]
     X_final = X_final.loc[:, ~X_final.columns.duplicated()]
-    
+
     df['user_rating'] = pd.to_numeric(df['user_rating'], errors='coerce').fillna(0)
     X_final['target_reg'] = df['user_rating']
     X_final['target_ordinal'] = df['user_rating'].map({0.5:0, 1.0:1, 1.5:2, 2.0:3, 2.5:4, 3.0:5, 3.5:6, 4.0:7, 4.5:8, 5.0:9}).fillna(5).astype(int)
+    X_final['rating_date'] = df['rating_date']
     X_final['source_id'] = df.index
     X_final['media_type'] = df['media_type']
 
@@ -203,7 +357,7 @@ def build_universal_dataset():
         'sentence_transformer': 'all-MiniLM-L6-v2', 
         'pca': pca, 
         'median_values': df[num_cols].median().to_dict(), 
-        'training_columns': [c for c in X_final.columns if c not in ['target_reg', 'target_ordinal', 'source_id', 'media_type']]
+        'training_columns': [c for c in X_final.columns if c not in ['target_reg', 'target_ordinal', 'source_id', 'media_type', 'rating_date']]
     }
     joblib.dump(state, config.UNIFIED_PREPROCESSOR_STATE)
     print(f"✅ Unified Feature Engineering Complete (Movies+Shows+Games+Books). Shape: {X_final.shape}")

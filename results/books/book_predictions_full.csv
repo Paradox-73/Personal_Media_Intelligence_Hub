@@ -1,62 +1,64 @@
 title,actual,predicted
-Diary of a Wimpy Kid 3 : The Last Stra,2.5,3.5
-The Ugly Truth,3.0,3.0
+The Last Straw,2.5,3.0
+The Ugly Truth,3.0,3.5
 Dog Days,3.0,3.0
 Hard Luck,2.5,3.0
 Rodrick Rules,3.0,3.0
-Diary of a Wimpy Kid,2.5,3.0
+Diary Of Wimpy Kid,2.5,3.5
 Night of the Living Dummy II,3.5,3.5
-Welcome to Dead House,3.5,3.5
+Welcome to Dead House,3.5,3.0
 The Haunted School,3.5,3.5
-Goosebumps,3.0,3.0
-The Curse of Camp Cold Lake,3.0,3.0
-Night of the Living Dummy III,3.0,3.0
-Harry Potter and the Chamber of Secrets,3.0,3.5
-Harry Potter and the Prisoner of Azkaban,4.0,3.5
-Harry Potter and the Order of the Phoenix,4.0,4.0
-Harry Potter and the Half-Blood Prince,1.0,2.5
-Harry Potter and the Deathly Hallows,3.5,3.5
-Harry Potter and the Philosopher's Stone,3.5,3.5
+One Day at Horrorland,3.0,3.0
+The Curse of Camp Cold Lake,3.0,3.5
+Night of the Living Dummy III,3.0,3.5
+Chamber of Secrets,3.0,3.0
+Prisoner of Azkaban,4.0,3.5
+Goblet of Fire,3.0,3.0
+Order of the Phoenix,4.0,3.5
+HalfBlood Prince,3.0,3.0
+Deathly Hallows,3.5,3.0
+Philosopher's Stone,3.5,3.0
 The Hidden Oracle,3.0,3.0
-Dark Prophecy,3.0,3.0
-The Burning Maze (the Trials of Apollo Book 3),3.0,3.0
-The Tyrant's Tomb (The Trials of Apollo Book 4),3.0,3.0
-The Tower of Nero (the Trials of Apollo Book 5),3.0,3.0
-Scott Pilgrim Vs. the World,4.5,4.5
+The Dark Prophecy,3.0,3.0
+The Burning Maze,3.0,3.0
+The Tyrant's Tomb,3.0,3.0
+The Tower of Nero,3.0,3.0
+Scott Pilgrim Vol 2,4.5,3.5
 Dark Matter,3.5,3.5
-"Chainsaw Man, Vol. 1",4.0,4.0
+Chainsaw Man Vol 1,4.0,3.0
 Recursion,3.0,3.0
 Dune,3.0,3.0
-The World's Favourite Agatha Christie,3.0,3.0
+Murder on the Orient Express,3.0,3.0
 Sita,3.0,3.0
 Scion of Ikshvaku,2.5,3.0
 Raavan,3.5,3.0
-Immortals of Meluha,3.5,3.5
-Secret of The Nagas,3.0,3.0
-The Oath of the Vayuputras,3.0,3.5
-The Perks of Being a Wallflower,5.0,5.0
-The Hitchhiker's Guide to the Galaxy,4.0,4.0
-The Complete Sherlock Holmes,3.5,3.5
-Mysterious Eye of the Dragon (Geronimo Stilton #78),2.0,2.5
-The Metamorphosis (Legend Classics),4.0,4.0
-The Stranger,4.0,4.0
-"Percy Jackson and the Olympians, Book One: Lightning Thief, The (Movie Tie-In Edition)",4.5,4.5
-Percy Jackson and the Sea of Monsters,4.0,4.0
+The Immortals of Meluha,3.5,3.0
+The Secret of the Nagas,3.0,3.0
+The Oath of the Vayuputras,3.0,3.0
+perks of being a wallflower,5.0,3.5
+hitchhiker guide to galaxy,4.0,3.5
+sherlock holmes complete,3.5,3.5
+Geronimo stilton,2.0,3.0
+jungle book,3.5,3.5
+metamorphosis,4.0,3.5
+the stranger,4.0,3.5
+Percy Jackson and The Lightning Thief,4.5,4.5
+Percy Jackson and The Sea of Monsters,4.0,4.5
 Percy Jackson and the Titan's Curse,4.5,4.5
-Percy Jackson and the Battle of the Labyrinth,4.0,4.0
-Percy Jackson and the Greek Gods,5.0,4.5
-Percy Jackson and the Greek Heroes,5.0,4.0
-"Kane Chronicles, The, Book One: The Red Pyramid",2.0,2.5
-The Throne of Fire,2.0,2.5
-The Serpent's Shadow,2.0,3.0
-The Lost Hero,4.0,4.0
-Heroes of Olympus,4.0,4.0
-The Mark of Athena,4.5,4.5
-The House of Hades,5.0,5.0
-The Blood of Olympus,3.5,3.5
-Magnus Chase and the Sword of Summer,3.5,3.5
-Magnus Chase and the Hammer of Thor,3.5,3.5
-Magnus Chase and the Ship of the Dead (Book 3),3.5,3.5
-Brooklyn House Magician's Manual,3.0,3.0
-Call Me By Your Name,4.0,4.5
-Project Hail Mary,5.0,5.0
+Percy Jackson and the Battle of the Labyrinth,4.0,4.5
+Percy Jackson and the Last Olympian,5.0,4.5
+Percy Jackson and the Greek gods,5.0,4.5
+Percy Jackson and the Greek heroes,5.0,4.5
+The red pyramid,2.0,3.0
+throne of fire,2.0,3.5
+the serpents shadow,2.0,3.0
+the lost hero,4.0,3.0
+son of Neptune,4.0,4.5
+mark of athena,4.5,3.5
+house of hades,5.0,3.5
+blood of Olympus,3.5,3.5
+the sword of summer,3.5,3.5
+hammer of thor,3.5,3.5
+ship of the dead,3.5,3.5
+call me by your name,4.0,3.0
+project hail mary,5.0,3.5

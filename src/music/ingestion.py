@@ -22,6 +22,11 @@ import argparse
 import json
 import re
 import time
+import sys
+from pathlib import Path
+
+# Add project root to path
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
 import pandas as pd
 import requests
@@ -29,7 +34,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 from tqdm import tqdm
 
-import config
+from src.music import config
 
 SPOTIFY_ID_RE = re.compile(r"[A-Za-z0-9]{22}")
 
@@ -381,8 +386,21 @@ def main():
     print("Fetching audio features (ReccoBeats)...")
     audio = fetch_audio_features(list(tracks.keys()))
 
-    rows = [build_row(t, artists, albums, audio, top_ranks, saved, playlist_meta)
-            for t in tracks.values()]
+    rows = []
+    from src.music.schema import validate_track_data
+    
+    for t in tracks.values():
+        row = build_row(t, artists, albums, audio, top_ranks, saved, playlist_meta)
+        try:
+            # Validate and coerce types (especially artist_genres)
+            validated = validate_track_data(row)
+            # Re-flatten the genres to a string for CSV storage, but ensured clean
+            validated["artist_genres"] = ", ".join(validated.get("artist_genres", []))
+            rows.append(validated)
+        except Exception as e:
+            print(f"  Warning: track {t.get('id')} failed schema validation ({e}); saving raw.")
+            rows.append(row)
+
     df = pd.DataFrame(rows).sort_values("rating", ascending=False).reset_index(drop=True)
 
     df.to_csv(config.LIBRARY_CSV, index=False)

@@ -13,6 +13,26 @@ from sentence_transformers import SentenceTransformer
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.unified_model.advanced_unified_model_trainer import DomainResidualCorrector
+
+from src.unified_model.unified_utils import get_music_affinity_features, get_music_gate_mask
+
+# Define MusicProfile in __main__ to satisfy joblib
+from dataclasses import dataclass
+from typing import List, Dict, Any
+
+@dataclass
+class MusicProfile:
+    centroids: np.ndarray
+    cluster_labels: List[str]
+    cluster_meta: List[Dict[str, Any]]
+    X_lib: np.ndarray
+    pu_model: Any
+    pool_score_dist: np.ndarray
+    top_genres: List[tuple]
+    audio_fingerprint: Dict[str, float]
+    feature_names: List[str]
+    feature_groups: Dict[str, List[str]]
 
 def clean_money(x):
     if pd.isna(x): return 0
@@ -54,19 +74,23 @@ def batch_predict_unified_ratings():
     # --- 1. Load Models & State ---
     ensemble_dir = config.UNIFIED_ENSEMBLE_DIR
     model_paths = {
-        "XGB": ensemble_dir / "xgb_base_regressor.joblib",
-        "SVR": ensemble_dir / "svr_base_regressor.joblib",
-        "CatBoost": ensemble_dir / "catboost_base_regressor.joblib",
         "Stacking": ensemble_dir / "stacking_ensemble_regressor.joblib",
+        "XGB_Base": ensemble_dir / "xgb_base_regressor.joblib",
+        "SVR_Base": ensemble_dir / "svr_base_regressor.joblib",
+        "CatBoost_Base": ensemble_dir / "catboost_base_regressor.joblib",
         "Ordinal_EV": ensemble_dir / "ordinal_classifier.joblib"
     }
     
     models = {}
     for name, path in model_paths.items():
-        if not path.exists():
-            print(f"❌ ERROR: Model file not found for '{name}' at {path}.")
-            return
-        models[name] = joblib.load(path)
+        if path.exists():
+            models[name] = joblib.load(path)
+        else:
+            print(f"⚠️ Warning: Model file not found for '{name}' at {path}.")
+            
+    if not models:
+        print("❌ ERROR: No models loaded.")
+        return
     
     # Use config.UNIFIED_PREPROCESSOR_STATE
     state_path = config.UNIFIED_PREPROCESSOR_STATE
@@ -139,6 +163,8 @@ def batch_predict_unified_ratings():
             'publishedDate': 'released',
             'pageCount': 'runtime'
         })
+        if 'released' not in df_books.columns:
+            df_books['released'] = None
         df_books['is_tv_show'] = 0
         df_books['is_game'] = 0
         df_books['is_book'] = 1
@@ -219,7 +245,22 @@ def batch_predict_unified_ratings():
     df['mpaa_cat'] = df['rated'].apply(categorize_rating)
     X_mpaa = pd.get_dummies(df['mpaa_cat'], prefix='rated')
 
-    X_temp = pd.concat([df[list(state['median_values'].keys())], X_lang, X_genre, X_mpaa, X_text], axis=1)
+    # Music Affinity Features (Gated)
+    print("   Applying Gated Music Affinity features...")
+    profile_path = config.MUSIC_MODEL_DIR / "profile.joblib"
+    bundle_path = config.MUSIC_MODEL_DIR / "preprocessors.joblib"
+    
+    if profile_path.exists() and bundle_path.exists():
+        profile = joblib.load(profile_path)
+        bundle = joblib.load(bundle_path)
+        X_music_raw = get_music_affinity_features(df['text_content'].tolist(), profile, bundle)
+        gate_mask = get_music_gate_mask(df['media_type'])
+        X_music = X_music_raw.multiply(gate_mask, axis=0)
+        X_music.index = df.index
+    else:
+        X_music = pd.DataFrame()
+
+    X_temp = pd.concat([df[list(state['median_values'].keys())], X_lang, X_genre, X_mpaa, X_text, X_music], axis=1)
     X_temp.columns = [sanitize_col(col) for col in X_temp.columns]
     X_temp = X_temp.loc[:, ~X_temp.columns.duplicated()]
 
@@ -232,29 +273,61 @@ def batch_predict_unified_ratings():
     df['display_name'] = df['title'].fillna(df.get('letterboxd_name', 'Unknown'))
     
     for name, model in models.items():
+        # Try to get expected features
+        expected_cols = None
+        if hasattr(model, 'feature_names_in_'):
+            expected_cols = list(model.feature_names_in_)
+        elif hasattr(model, 'feature_names_'):
+            expected_cols = list(model.feature_names_)
+        elif hasattr(model, 'get_booster'):
+            expected_cols = model.get_booster().feature_names
+        elif name == "Stacking" and hasattr(model, 'base_model') and hasattr(model.base_model, 'estimators_'):
+            expected_cols = model.base_model.estimators_[0].get_booster().feature_names
+            
+        if expected_cols is not None:
+            # Align features exactly in the order expected
+            X_model = pd.DataFrame(0, index=df.index, columns=expected_cols)
+            common = [c for c in expected_cols if c in X_final.columns]
+            X_model[common] = X_final[common]
+        else:
+            X_model = X_final
+
         if name == "Ordinal_EV":
             try:
-                probs = model.predict_proba(X_final)
+                probs = model.predict_proba(X_model)
                 classes = joblib.load(config.UNIFIED_ENSEMBLE_DIR / "ordinal_classes.joblib")
                 bucket_map = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0, 4: 2.5, 5: 3.0, 6: 3.5, 7: 4.0, 8: 4.5, 9: 5.0}
                 present_vals = np.array([bucket_map[c] for c in classes])
                 raw_preds = np.sum(probs * present_vals, axis=1)
-                df[f'pred_{name}'] = np.round(np.clip(raw_preds, 0, 5) * 2) / 2
+                df[f'raw_pred_{name}'] = raw_preds
+                df[f'pred_{name}'] = np.round(np.clip(raw_preds, 0.5, 5.0) * 2) / 2
             except:
                 print(f"⚠️ Warning: Could not run Ordinal_EV prediction.")
+        elif name == "Stacking":
+            try:
+                preds = model.predict(X_model, df['media_type'])
+                df[f'raw_pred_{name}'] = preds
+                df[f'pred_{name}'] = np.round(np.clip(preds, 0.5, 5.0) * 2) / 2
+            except TypeError:
+                preds = model.predict(X_model)
+                df[f'raw_pred_{name}'] = preds
+                df[f'pred_{name}'] = np.round(np.clip(preds, 0.5, 5.0) * 2) / 2
         else:
-            preds = model.predict(X_final)
-            df[f'pred_{name}'] = np.round(np.clip(preds, 0, 5) * 2) / 2
+            preds = model.predict(X_model)
+            df[f'raw_pred_{name}'] = preds
+            df[f'pred_{name}'] = np.round(np.clip(preds, 0.5, 5.0) * 2) / 2
 
     # --- 5. Performance Report ---
-    if 'user_rating' in df.columns and not df['user_rating'].isna().all():
-        eval_df = df.dropna(subset=['user_rating']).copy()
-        y_true = eval_df['user_rating']
-        
-        print("\n" + "="*55)
-        print("📊 UNIFIED ML ENSEMBLE PERFORMANCE REPORT")
-        print("="*55)
-        print(f"Total Evaluated: {len(eval_df)}")
+    if 'user_rating' in df.columns:
+        df['user_rating_numeric'] = pd.to_numeric(df['user_rating'], errors='coerce')
+        if not df['user_rating_numeric'].isna().all():
+            eval_df = df.dropna(subset=['user_rating_numeric']).copy()
+            y_true = eval_df['user_rating_numeric']
+            
+            print("\n" + "="*55)
+            print("📊 UNIFIED ML ENSEMBLE PERFORMANCE REPORT")
+            print("="*55)
+            print(f"Total Evaluated: {len(eval_df)}")
         
         for name in models.keys():
             pred_col = f'pred_{name}'
@@ -275,7 +348,7 @@ def batch_predict_unified_ratings():
         print("="*55 + "\n")
         
         if 'pred_Stacking' in df.columns:
-            df['abs_diff_stacking'] = np.abs(df['user_rating'] - df['pred_Stacking'])
+            df['abs_diff_stacking'] = np.abs(df['user_rating_numeric'] - df['pred_Stacking'])
 
         # --- 6. Visualizations ---
         pred_dir = config.UNIFIED_PREDICTIONS_DIR
@@ -284,7 +357,7 @@ def batch_predict_unified_ratings():
         # 6a. KDE Plot
         plt.style.use('seaborn-v0_8-whitegrid')
         fig, ax = plt.subplots(figsize=(16, 8))
-        sns.kdeplot(data=eval_df, x='user_rating', ax=ax, label='Actual Ratings', color='black', linewidth=3, fill=True, alpha=0.1)
+        sns.kdeplot(data=eval_df, x='user_rating_numeric', ax=ax, label='Actual Ratings', color='black', linewidth=3, fill=True, alpha=0.1)
         for name in models.keys():
             pred_col = f'pred_{name}'
             if pred_col in eval_df.columns:
@@ -302,7 +375,7 @@ def batch_predict_unified_ratings():
         plt.close(fig) 
 
         # 6b. Histogram Grid
-        data_cols = ['user_rating'] + [f'pred_{name}' for name in models.keys() if f'pred_{name}' in eval_df.columns]
+        data_cols = ['user_rating_numeric'] + [f'pred_{name}' for name in models.keys() if f'pred_{name}' in eval_df.columns]
         titles = ['Actual Ratings'] + [f'{name} Predictions' for name in models.keys() if f'pred_{name}' in eval_df.columns]
         
         fig, axes = plt.subplots(2, 3, figsize=(20, 10), sharey=True)

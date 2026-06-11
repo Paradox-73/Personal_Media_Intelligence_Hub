@@ -30,11 +30,15 @@ def load_artifacts():
         reg = joblib.load(config.GAMES_MODEL_REGRESSOR)
         clf = joblib.load(config.GAMES_MODEL_CLASSIFIER)
         state = joblib.load(config.GAMES_MODEL_PREPROCESSOR_STATE)
-        return reg, clf, state
+        
+        meta_path = Path(config.GAMES_MODEL_REGRESSOR).parent / "model_meta.joblib"
+        meta = joblib.load(meta_path) if meta_path.exists() else {}
+        
+        return reg, clf, state, meta
     except FileNotFoundError:
-        return None, None, None
+        return None, None, None, {}
 
-regressor, classifier, state = load_artifacts()
+regressor, classifier, state, meta = load_artifacts()
 
 if regressor is None:
     st.error("❌ Games models not found! Run ingestion and training for Games first.")
@@ -121,9 +125,34 @@ if st.session_state['selected_game_raw_data']:
 
             st.divider()
             c1, c2, c3 = st.columns(3)
-            c1.metric("Predicted Rating", f"⭐ {final_score}/5.0")
+            
+            # Display score with conformal interval if available
+            q80 = meta.get('conformal_width_80')
+            if q80:
+                c1.metric("Predicted Rating", f"⭐ {final_score}/5.0", f"±{q80:.2f} (80% CI)", delta_color="off")
+                st.caption(f"Note: This is a sparse domain. The Oracle is 80% confident the true rating is between {max(0.5, final_score-q80):.1f} and {min(5.0, final_score+q80):.1f}.")
+            else:
+                c1.metric("Predicted Rating", f"⭐ {final_score}/5.0")
+            
             c2.metric("Verdict", verdict)
             c3.metric("Confidence", f"{confidence:.1f}%")
+            
+            import shap
+            import matplotlib.pyplot as plt
+            st.markdown("#### Why this prediction?")
+            try:
+                # Use the classifier for explanation
+                explainer = shap.TreeExplainer(classifier)
+                shap_values = explainer(input_df)
+                fig, ax = plt.subplots(figsize=(10, 5))
+                # For multi-class, shap_values is a list. We take the class with max prob.
+                target_class = np.argmax(pred_probs)
+                shap.plots.waterfall(shap_values[:, :, target_class][0], max_display=10, show=False)
+                plt.tight_layout()
+                st.pyplot(fig)
+                plt.close(fig)
+            except Exception as e:
+                st.info(f"SHAP explanation unavailable. {e}")
             
             st.subheader(f"{raw_data.get('title')} ({raw_data.get('platform')}, {raw_data.get('year')})")
             col_info = st.columns([1])[0]

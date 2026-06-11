@@ -197,6 +197,9 @@ def get_movie_metadata(title, year, tmdb_id=None, imdb_id=None):
     if target:
         def get_names(obj_list): return [x['name'] for x in obj_list] if obj_list else []
         
+        # Safely get credits
+        credits = getattr(target, 'credits', None)
+        
         tmdb_data = {
             'tmdb_id': target.id,
             'imdb_id': getattr(target, 'imdb_id', None),
@@ -207,9 +210,9 @@ def get_movie_metadata(title, year, tmdb_id=None, imdb_id=None):
             'release_date': getattr(target, 'release_date', ''),
             'genres': get_names(getattr(target, 'genres', [])),
             'production': get_names(getattr(target, 'production_companies', [])),
-            'cast': get_names(getattr(target.credits, 'cast', [])),
-            'director': [c['name'] for c in getattr(target.credits, 'crew', []) if c['job'] == 'Director'],
-            'writer': [c['name'] for c in getattr(target.credits, 'crew', []) if c['department'] == 'Writing'],
+            'cast': get_names(getattr(credits, 'cast', [])),
+            'director': [c['name'] for c in getattr(credits, 'crew', []) if c['job'] == 'Director'] if credits else [],
+            'writer': [c['name'] for c in getattr(credits, 'crew', []) if c['department'] == 'Writing'] if credits else [],
             'vote_average': getattr(target, 'vote_average', 0),
             'vote_count': getattr(target, 'vote_count', 0),
             'original_language': getattr(target, 'original_language', ''),
@@ -297,17 +300,15 @@ def run_repair(limit=None):
 
 def sync_letterboxd_data():
     """
-    Syncs the raw ratings.csv and liked.csv with enriched_data.csv and new_ratings.csv.
+    Syncs the raw ratings.csv and liked.csv with enriched_data.csv.
     - Updates user_rating and is_liked for existing movies in enriched_data.csv.
-    - Updates Rating and is_liked for existing movies in new_ratings.csv.
-    - Adds truly new movies (not in either) to new_ratings.csv.
+    - Adds truly new movies to enriched_data.csv after fetching metadata.
     """
     print("🔄 Starting Letterboxd Sync...")
 
     raw_path = config.RATINGS_PATH
     liked_path = config.LIKED_PATH
     enriched_path = config.MOVIES_ENRICHED_DATA_PATH
-    new_ratings_path = config.DATA_DIR / "raw" / "movies" / "new_ratings.csv"
 
     if not raw_path.exists():
         print(f"❌ Error: Raw ratings file not found at {raw_path}")
@@ -330,26 +331,24 @@ def sync_letterboxd_data():
             print(f"⚠️ Warning: Could not read {liked_path}: {e}")
 
     # Standardize column names for Letterboxd export
-    rename_map = {'Name': 'Name', 'Year': 'Year', 'Rating': 'Rating', 'Letterboxd URI': 'Letterboxd URI'}
+    rename_map = {'Name': 'Name', 'Year': 'Year', 'Rating': 'Rating', 'Letterboxd URI': 'Letterboxd URI', 'Date': 'Date'}
     df_raw.rename(columns={c: rename_map.get(c, c) for c in df_raw.columns}, inplace=True)
 
     df_enriched = pd.read_csv(enriched_path) if enriched_path.exists() else pd.DataFrame()
-    df_new = pd.read_csv(new_ratings_path) if new_ratings_path.exists() else pd.DataFrame()
 
-    print(f"📊 Raw: {len(df_raw)} | Enriched: {len(df_enriched)} | New: {len(df_new)}")
+    print(f"📊 Raw: {len(df_raw)} | Enriched: {len(df_enriched)}")
 
     updates_enriched = 0
-    updates_new = 0
     new_entries = []
 
     # Identify existing movies
     # Use Letterboxd URI as primary key
     enriched_uris = set(df_enriched['letterboxd_uri'].dropna()) if not df_enriched.empty and 'letterboxd_uri' in df_enriched.columns else set()
-    new_uris = set(df_new['Letterboxd URI'].dropna()) if not df_new.empty and 'Letterboxd URI' in df_new.columns else set()
 
     for _, row in df_raw.iterrows():
         uri = row.get('Letterboxd URI')
         rating = row.get('Rating')
+        date = row.get('Date')
         is_liked = 1 if uri in liked_uris else 0
 
         # Check Enriched Data
@@ -358,6 +357,14 @@ def sync_letterboxd_data():
             changed = False
             if df_enriched.loc[mask, 'user_rating'].iloc[0] != rating:
                 df_enriched.loc[mask, 'user_rating'] = rating
+                changed = True
+            
+            if 'rating_date' in df_enriched.columns:
+                if df_enriched.loc[mask, 'rating_date'].iloc[0] != date:
+                    df_enriched.loc[mask, 'rating_date'] = date
+                    changed = True
+            else:
+                df_enriched.loc[mask, 'rating_date'] = date
                 changed = True
             
             if 'is_liked' in df_enriched.columns:
@@ -371,57 +378,34 @@ def sync_letterboxd_data():
             if changed:
                 updates_enriched += 1
 
-        # Check New Ratings
-        elif uri in new_uris:
-            mask = df_new['Letterboxd URI'] == uri
-            changed = False
-            if df_new.loc[mask, 'Rating'].iloc[0] != rating:
-                df_new.loc[mask, 'Rating'] = rating
-                changed = True
-            
-            if 'is_liked' in df_new.columns:
-                if df_new.loc[mask, 'is_liked'].iloc[0] != is_liked:
-                    df_new.loc[mask, 'is_liked'] = is_liked
-                    changed = True
-            else:
-                df_new.loc[mask, 'is_liked'] = is_liked
-                changed = True
-                
-            if changed:
-                updates_new += 1
-
         # Truly New
         else:
-            row_dict = row.to_dict()
-            row_dict['is_liked'] = is_liked
-            new_entries.append(row_dict)
+            lb_name = str(row['Name'])
+            lb_year = clean_year(row['Year'])
+            print(f"✨ New Movie Found: {lb_name} ({lb_year})")
+            
+            metadata = get_movie_metadata(lb_name, lb_year)
+            metadata['letterboxd_name'] = lb_name
+            metadata['letterboxd_uri'] = uri
+            metadata['user_rating'] = rating
+            metadata['rating_date'] = date
+            metadata['is_liked'] = is_liked
+            metadata['year'] = lb_year # Ensure year is preserved even if API fails
+            
+            new_entries.append(metadata)
 
     # 2. Save Updates
     if updates_enriched > 0:
         df_enriched.to_csv(enriched_path, index=False)
-        print(f"✅ Updated {updates_enriched} movies in enriched_data.csv")
-
-    if updates_new > 0:
-        df_new.to_csv(new_ratings_path, index=False)
-        print(f"✅ Updated {updates_new} movies in new_ratings.csv")
+        print(f"✅ Updated {updates_enriched} existing movies in enriched_data.csv")
 
     if new_entries:
         df_new_to_add = pd.DataFrame(new_entries)
-        if not df_new.empty:
-            # Avoid re-adding if Name/Year match but URI was missing for some reason
-            # (Safety check)
-            existing_names_years = set(zip(df_new['Name'], df_new['Year']))
-            df_new_to_add = df_new_to_add[~df_new_to_add.apply(lambda r: (r['Name'], r['Year']) in existing_names_years, axis=1)]
-
-            if not df_new_to_add.empty:
-                df_new_combined = pd.concat([df_new, df_new_to_add], ignore_index=True)
-                df_new_combined.to_csv(new_ratings_path, index=False)
-                print(f"✨ Added {len(df_new_to_add)} truly new movies to new_ratings.csv")
-        else:
-            df_new_to_add.to_csv(new_ratings_path, index=False)
-            print(f"✨ Created new_ratings.csv with {len(df_new_to_add)} movies")
+        df_enriched = pd.concat([df_enriched, df_new_to_add], ignore_index=True)
+        df_enriched.to_csv(enriched_path, index=False)
+        print(f"🚀 Added {len(new_entries)} new movies to enriched_data.csv")
     else:
-        print("🙌 No new movies found.")
+        print("🙌 No new movies to add.")
 
     print("🏁 Sync complete.")
 

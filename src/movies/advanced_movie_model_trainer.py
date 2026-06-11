@@ -10,6 +10,7 @@ from pathlib import Path
 
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from scipy.stats import spearmanr
 from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.svm import SVR
 from sklearn.ensemble import StackingRegressor
@@ -22,13 +23,36 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 
 # IMPORT THE NEW CALLABLE CLASS HERE
-from src.movies.custom_objectives import CustomEdgePenaltyObjective
+from src.movies.custom_objectives import AsymmetricEdgePenaltyObjective
 
 # ==========================================
 # ⚙️ ARCHITECTURE FLAGS
 # ==========================================
 USE_CUSTOM_EDGE_LOSS = True  
 # ==========================================
+
+from sklearn.base import BaseEstimator, RegressorMixin
+
+class OrdinalExpectedValueRegressor(BaseEstimator, RegressorMixin):
+    """Wraps the Ordinal Classifier to act as a regressor for stacking."""
+    _estimator_type = "regressor"
+    
+    def __init__(self, clf, unique_classes):
+        self.clf = clf
+        self.unique_classes = unique_classes
+        self.bucket_map = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0, 4: 2.5, 5: 3.0, 6: 3.5, 7: 4.0, 8: 4.5, 9: 5.0}
+        self.present_bucket_vals = np.array([self.bucket_map[c] for c in unique_classes])
+
+    def fit(self, X, y, sample_weight=None):
+        # Already fitted outside or fit here if needed
+        return self
+
+    def predict(self, X):
+        probs = self.clf.predict_proba(X)
+        return np.sum(probs * self.present_bucket_vals, axis=1)
+    
+    def get_params(self, deep=True):
+        return {"clf": self.clf, "unique_classes": self.unique_classes}
 
 def print_performance_report(model_name: str, y_true: pd.Series, y_pred: np.ndarray):
     """Calculates and prints a standardized performance report for a model."""
@@ -43,11 +67,13 @@ def print_performance_report(model_name: str, y_true: pd.Series, y_pred: np.ndar
     rmse = np.sqrt(mse)
     mae = mean_absolute_error(y_true, y_pred_rounded)
     r2 = r2_score(y_true, y_pred_rounded)
+    rho, _ = spearmanr(y_true, y_pred)
 
-    print(f"   📉 [TEST SET] Regressor MSE:  {mse:.4f}")
-    print(f"   📉 [TEST SET] Regressor RMSE: {rmse:.4f}")
-    print(f"   📉 [TEST SET] Regressor MAE:  {mae:.4f}")
-    print(f"   📈 [TEST SET] Regressor R²:   {r2:.4f}")
+    print(f"   📉 [TEST SET] Regressor MSE:      {mse:.4f}")
+    print(f"   📉 [TEST SET] Regressor RMSE:     {rmse:.4f}")
+    print(f"   📉 [TEST SET] Regressor MAE:      {mae:.4f}")
+    print(f"   📈 [TEST SET] Regressor R²:       {r2:.4f}")
+    print(f"   🔝 [TEST SET] Regressor Spearman: {rho:.4f}")
 
     # Detailed Difference Report
     diffs = np.abs(y_true - y_pred_rounded)
@@ -60,68 +86,66 @@ def print_performance_report(model_name: str, y_true: pd.Series, y_pred: np.ndar
     print("   " + "-"*40)
     print("="*50)
 
-def tune_and_train_xgboost(X_train, y_train, X_test, y_test):
+def tune_with_optuna(X_train, y_train):
     """
-    Sweeps a range of alpha values for the custom edge-penalty loss
-    to find the mathematically optimal steepness for the XGBoost model
-    using Mean Absolute Error (MAE).
+    Jointly tunes asymmetric alpha_hi/alpha_lo and tree params using Optuna.
+    Uses 5x2 RepeatedKFold for robust validation as recommended.
     """
-    from src.movies.custom_objectives import CustomEdgePenaltyObjective
+    import optuna
+    from sklearn.model_selection import RepeatedKFold
 
-    print("\n🔍 Sweeping Alpha range for Custom Edge Penalty...")
+    def objective(trial):
+        a_hi = trial.suggest_float("alpha_hi", 0.01, 0.5, log=True)
+        a_lo = trial.suggest_float("alpha_lo", 0.01, 0.5, log=True)
+        max_depth = trial.suggest_int("max_depth", 3, 8)
+        min_child_weight = trial.suggest_int("min_child_weight", 1, 10)
+        reg_lambda = trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True)
+        
+        rkf = RepeatedKFold(n_splits=5, n_repeats=2, random_state=42)
+        maes = []
+        
+        for t_idx, v_idx in rkf.split(X_train):
+            xt, xv = X_train.iloc[t_idx], X_train.iloc[v_idx]
+            yt, yv = y_train.iloc[t_idx], y_train.iloc[v_idx]
+            
+            model = xgb.XGBRegressor(
+                objective=AsymmetricEdgePenaltyObjective(alpha_hi=a_hi, alpha_lo=a_lo),
+                max_depth=max_depth,
+                min_child_weight=min_child_weight,
+                reg_lambda=reg_lambda,
+                n_estimators=150,
+                learning_rate=0.05,
+                random_state=42,
+                n_jobs=-1
+            )
+            model.fit(xt, yt)
+            preds = model.predict(xv)
+            preds_rounded = np.round(np.clip(preds, 0, 5) * 2) / 2
+            maes.append(mean_absolute_error(yv, preds_rounded))
+            
+        return np.mean(maes)
 
-    # Generate a range from 0.0 to 1.5 in steps of 0.1
-    alpha_range = np.arange(0.0, 1.6, 0.1) 
-
-    best_alpha = 0.0
-    best_mae = float('inf')
-
-    for a in alpha_range:
-        current_objective = CustomEdgePenaltyObjective(alpha=a)
-
-        # We use fewer estimators/depth just for the quick tuning sweep
-        temp_xgb = xgb.XGBRegressor(
-            n_estimators=100, 
-            learning_rate=0.05, 
-            max_depth=5,
-            objective=current_objective,
-            random_state=42, 
-            n_jobs=-1
-        )
-
-        temp_xgb.fit(X_train, y_train)
-        preds = temp_xgb.predict(X_test)
-
-        # Round predictions to valid 0.5 increments to evaluate true performance
-        preds_rounded = np.round(np.clip(preds, 0, 5) * 2) / 2
-
-        # CHANGED: Now optimizing for MAE instead of RMSE
-        mae = mean_absolute_error(y_test, preds_rounded)
-        severe_misses = (np.abs(y_test - preds_rounded) > 1.0).sum()
-
-        print(f"   Alpha {a:.1f} -> MAE: {mae:.4f} | Severe Misses (>1.0): {severe_misses}")
-
-        if mae < best_mae:
-            best_mae = mae
-            best_alpha = a
-
-    print(f"✅ Optimal Alpha found: {best_alpha:.1f} (MAE: {best_mae:.4f})")
-
-    # Train the final, full-powered model using the optimal alpha
-    print(f"   Training final XGBoost model with Alpha {best_alpha:.1f}...")
-    final_objective = CustomEdgePenaltyObjective(alpha=best_alpha)
+    print("\n🚀 Starting Optuna Hyperparameter Sweep...")
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=30)
+    
+    print(f"✅ Best Trial: {study.best_params}")
+    
+    best_obj = AsymmetricEdgePenaltyObjective(
+        alpha_hi=study.best_params['alpha_hi'],
+        alpha_lo=study.best_params['alpha_lo']
+    )
     final_xgb = xgb.XGBRegressor(
-        n_estimators=200, 
-        learning_rate=0.03, 
-        max_depth=6,
-        subsample=0.8, 
-        colsample_bytree=0.8,
-        objective=final_objective,
-        random_state=42, 
+        objective=best_obj,
+        max_depth=study.best_params['max_depth'],
+        min_child_weight=study.best_params['min_child_weight'],
+        reg_lambda=study.best_params['reg_lambda'],
+        n_estimators=300,
+        learning_rate=0.03,
+        random_state=42,
         n_jobs=-1
     )
     final_xgb.fit(X_train, y_train)
-
     return final_xgb
 
 def train_advanced_models():
@@ -147,22 +171,35 @@ def train_advanced_models():
     weight_classes = (y_reg_train * 2).round() / 2
     sample_weights = compute_sample_weight(class_weight='balanced', y=weight_classes)
 
-    # 2. Define Base Models
+    # 2. Define and Train Ordinal Classifier FIRST (to fuse it)
+    print("\n--- Training 10-Bucket Ordinal Classifier ---")
+    unique_classes = np.sort(np.unique(y_ord_train))
+    num_classes_present = len(unique_classes)
+    class_map = {old: new for new, old in enumerate(unique_classes)}
+    y_ord_train_mapped = pd.Series(y_ord_train).map(class_map)
+
+    ordinal_clf = xgb.XGBClassifier(
+        n_estimators=200, learning_rate=0.03, max_depth=5,
+        objective='multi:softprob', num_class=num_classes_present,
+        subsample=0.8, random_state=42, n_jobs=-1
+    )
+    ordinal_clf.fit(X_train, y_ord_train_mapped, sample_weight=sample_weights)
+    
+    ord_wrapper = OrdinalExpectedValueRegressor(ordinal_clf, unique_classes)
+
+    # 3. Define Base Regressors
     print("   Defining base models...")
 
     if USE_CUSTOM_EDGE_LOSS:
-        print("   ✅ Using Custom Exponential Edge-Penalty Loss for XGBoost.")
-        xgb_reg = tune_and_train_xgboost(X_train, y_reg_train, X_test, y_reg_test)
+        xgb_reg = tune_with_optuna(X_train, y_reg_train)
     else:
         xgb_reg = xgb.XGBRegressor(
             n_estimators=200, learning_rate=0.03, max_depth=6,
             subsample=0.8, colsample_bytree=0.8,
             objective='reg:absoluteerror', random_state=42, n_jobs=-1
         )
-        # Only fit here if we are not using the tuning function
         xgb_reg.fit(X_train, y_reg_train, sample_weight=sample_weights)
 
-    # Reverted CatBoost to standard MAE to prevent degenerate math and cloning errors
     cat_reg = ctb.CatBoostRegressor(
         n_estimators=1000, learning_rate=0.05, depth=6, l2_leaf_reg=3,
         loss_function='MAE', eval_metric='RMSE',
@@ -174,7 +211,7 @@ def train_advanced_models():
         ('svr', SVR(kernel='rbf', C=1.0, epsilon=0.1))
     ])
 
-    # 3. Train and Evaluate Base Regressors
+    # 4. Train and Evaluate Base Regressors
     print("\n--- Training Regressors ---")
 
     print("   Evaluating XGBoost...")
@@ -191,9 +228,15 @@ def train_advanced_models():
     cat_preds = cat_reg.predict(X_test)
     print_performance_report("CatBoost Regressor", y_reg_test, cat_preds)
 
-    # 4. Train Stacking Ensemble
+    # 5. Train Stacking Ensemble (FUSED with Ordinal)
     print("\n--- Training Stacking Ensemble ---")
-    estimators = [('xgb', xgb_reg), ('svr', svr_pipe), ('catboost', cat_reg)]
+    # Fusing the ordinal classifier expected value into the stack
+    estimators = [
+        ('xgb', xgb_reg), 
+        ('svr', svr_pipe), 
+        ('catboost', cat_reg),
+        ('ordinal_ev', ord_wrapper)
+    ]
 
     stacking_regressor = StackingRegressor(
         estimators=estimators,
@@ -202,43 +245,10 @@ def train_advanced_models():
         n_jobs=-1
     )
 
-    print("   Fitting Stacking Regressor... (This may take a while)")
+    print("   Fitting Stacking Regressor (Fused)...")
     stacking_regressor.fit(X_train, y_reg_train)
     stack_preds = stacking_regressor.predict(X_test)
-    print_performance_report("🚀 STACKING ENSEMBLE 🚀", y_reg_test, stack_preds)
-
-    # 5. Train Ordinal Confidence Classifier
-    print("\n--- Training 10-Bucket Ordinal Classifier ---")
-
-    # Identify unique classes present in training data
-    unique_classes = np.sort(np.unique(y_ord_train))
-    num_classes_present = len(unique_classes)
-
-    # Map classes to 0...N-1 for XGBoost
-    class_map = {old: new for new, old in enumerate(unique_classes)}
-    y_ord_train_mapped = pd.Series(y_ord_train).map(class_map)
-
-    ordinal_clf = xgb.XGBClassifier(
-        n_estimators=200,
-        learning_rate=0.03,
-        max_depth=5,
-        objective='multi:softprob',
-        num_class=num_classes_present,
-        subsample=0.8,
-        random_state=42,
-        n_jobs=-1
-    )
-    ordinal_clf.fit(X_train, y_ord_train_mapped, sample_weight=sample_weights)
-
-    ord_probs = ordinal_clf.predict_proba(X_test)
-
-    # Map back to actual bucket values
-    bucket_map = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0, 4: 2.5, 5: 3.0, 6: 3.5, 7: 4.0, 8: 4.5, 9: 5.0}
-    present_bucket_vals = np.array([bucket_map[c] for c in unique_classes])
-
-    # Expected Value rather than Argmax for stability
-    ord_ev_preds = np.sum(ord_probs * present_bucket_vals, axis=1)
-    print_performance_report("10-Bucket Ordinal Classifier (Expected Value)", y_reg_test, ord_ev_preds)
+    print_performance_report("🚀 FUSED STACKING ENSEMBLE 🚀", y_reg_test, stack_preds)
 
     # --- 6. Visualizations (Advanced Ensemble) ---
     print("\n--- Generating Ensemble Visualizations ---")

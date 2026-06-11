@@ -268,6 +268,27 @@ if st.session_state['selected_movie_raw_data']:
                     c_ord.metric(label="Ordinal (EV)", value=f"⭐ {v_ordinal_ev:.1f}", help="Expected Value from the probability distribution.")
                 c_tier.metric(label="Classifier Tier", value=verdict, help="0: Skip | 1: Watchable | 2: Masterpiece")
 
+                # SHAP Explainability
+                import shap
+                import matplotlib.pyplot as plt
+                
+                st.markdown("#### Why this prediction?")
+                st.caption("SHAP waterfall showing the top features driving this specific verdict.")
+                
+                try:
+                    # Use the base XGBoost model for explanation
+                    explainer = shap.TreeExplainer(artifacts['xgb'])
+                    shap_values = explainer(input_df)
+                    
+                    # Create a SHAP waterfall plot
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    shap.plots.waterfall(shap_values[0], max_display=10, show=False)
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+                except Exception as e:
+                    st.info(f"Feature explanation currently unavailable for this item. ({e})")
+
                 # Confidence Engine Chart
                 if ord_probs is not None:
                     st.markdown("#### Confidence Engine (Ordinal Spread)")

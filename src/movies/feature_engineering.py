@@ -127,13 +127,61 @@ def process_features():
     mlb = MultiLabelBinarizer()
     X_genre = pd.DataFrame(mlb.fit_transform(df['genre_list']), columns=[f"gen_{c}" for c in mlb.classes_], index=df.index)
 
+    # 5.1 Target Encoding for Directors/Creators (Leakage-Safe)
+    print("   Applying Leakage-Safe Target Encoding...")
+    from sklearn.model_selection import KFold
+    
+    def target_encode(train_df, col, target='user_rating', m=10):
+        # Bayesian smoothing: (n * mean + m * global_mean) / (n + m)
+        global_mean = train_df[target].mean()
+        
+        # We must compute this strictly out-of-fold to avoid leakage
+        kf = KFold(n_splits=5, shuffle=True, random_state=42)
+        encoded = pd.Series(index=train_df.index, dtype=float)
+        
+        # Flatten creators if it's a list (for directors/actors)
+        temp_df = train_df[[col, target]].copy()
+        if isinstance(temp_df[col].iloc[0], (list, str)) and '[' in str(temp_df[col].iloc[0]):
+             temp_df[col] = temp_df[col].apply(parse_list)
+        elif isinstance(temp_df[col].iloc[0], str):
+             temp_df[col] = temp_df[col].str.split(', ')
+
+        # Function to get mean for a set of items (e.g. multiple directors)
+        def get_item_mean(items, mapping, g_mean):
+            if not items: return g_mean
+            vals = [mapping.get(i, g_mean) for i in items]
+            return np.mean(vals)
+
+        for train_idx, val_idx in kf.split(temp_df):
+            # Compute mapping on training folds
+            fold_train = temp_df.iloc[train_idx].explode(col)
+            stats = fold_train.groupby(col)[target].agg(['count', 'mean'])
+            mapping = (stats['count'] * stats['mean'] + m * global_mean) / (stats['count'] + m)
+            mapping = mapping.to_dict()
+            
+            # Apply to validation fold
+            encoded.iloc[val_idx] = temp_df.iloc[val_idx][col].apply(lambda x: get_item_mean(x, mapping, global_mean))
+        
+        return encoded.fillna(global_mean)
+
+    df['director_encoded'] = target_encode(df, 'director')
+    df['actors_encoded'] = target_encode(df, 'actors')
+    
+    # 5.2 Director x Genre Interaction
+    # Simplification: Top genre x Director encoding
+    df['primary_genre'] = df['genre_list'].apply(lambda x: x[0] if x else 'Unknown')
+    df['dir_genre_key'] = df['director'].astype(str) + "_" + df['primary_genre']
+    df['dir_genre_encoded'] = target_encode(df, 'dir_genre_key')
+
+    X_te = df[['director_encoded', 'actors_encoded', 'dir_genre_encoded']].reset_index(drop=True)
+
     # 6. MPAA Rating
     df['mpaa_cat'] = df['rated'].apply(categorize_rating)
     X_mpaa = pd.get_dummies(df['mpaa_cat'], prefix='rated')
 
     # 7. Combine Final Features
     print("   Combining all features...")
-    X_final = pd.concat([X_num, X_lang, X_genre, X_mpaa, X_text], axis=1)
+    X_final = pd.concat([X_num, X_lang, X_genre, X_te, X_mpaa, X_text], axis=1)
     X_final.columns = [sanitize_col(col) for col in X_final.columns]
     X_final = X_final.loc[:, ~X_final.columns.duplicated()]
 
@@ -151,6 +199,18 @@ def process_features():
     X_final['target_ordinal'] = df['user_rating'].map(mapping).fillna(5).astype(int).reset_index(drop=True)
 
     # 9. Save Data and Preprocessor State
+    # Compute global mappings for inference
+    def get_global_mapping(train_df, col, target='user_rating', m=10):
+        global_mean = train_df[target].mean()
+        temp_df = train_df[[col, target]].copy().explode(col)
+        stats = temp_df.groupby(col)[target].agg(['count', 'mean'])
+        mapping = (stats['count'] * stats['mean'] + m * global_mean) / (stats['count'] + m)
+        return mapping.to_dict(), global_mean
+
+    dir_map, dir_mean = get_global_mapping(df, 'director')
+    act_map, act_mean = get_global_mapping(df, 'actors')
+    dg_map, dg_mean = get_global_mapping(df, 'dir_genre_key')
+
     X_final.to_csv(config.TRAINING_DATA_PATH, index=False)
     state = {
         'top_languages': top_3_languages,
@@ -158,7 +218,12 @@ def process_features():
         'sentence_transformer': 'all-MiniLM-L6-v2',
         'pca': pca,
         'median_values': df[num_cols].median().to_dict(),
-        'training_columns': [c for c in X_final.columns if 'target' not in c]
+        'training_columns': [c for c in X_final.columns if 'target' not in c],
+        'target_encodings': {
+            'director': {'map': dir_map, 'mean': dir_mean},
+            'actors': {'map': act_map, 'mean': act_mean},
+            'dir_genre': {'map': dg_map, 'mean': dg_mean}
+        }
     }
     joblib.dump(state, config.PREPROCESSOR_STATE)
     print(f"✅ Features processed. Shape: {X_final.shape}")
@@ -238,6 +303,24 @@ def transform_single_movie(movie_data, state):
     mpaa = categorize_rating(movie_data.get('rated', ''))
     mpaa_col = sanitize_col(f"rated_{mpaa}")
     if mpaa_col in final_df.columns: final_df[mpaa_col] = 1.0
+
+    # Apply Target Encodings
+    te = state.get('target_encodings', {})
+    
+    def apply_te(val, te_meta):
+        if not te_meta: return 0.0
+        mapping, g_mean = te_meta['map'], te_meta['mean']
+        items = parse_list(val)
+        if not items: return g_mean
+        return np.mean([mapping.get(i, g_mean) for i in items])
+
+    final_df['director_encoded'] = apply_te(movie_data.get('director'), te.get('director'))
+    final_df['actors_encoded'] = apply_te(movie_data.get('actors'), te.get('actors'))
+    
+    primary_genre = parse_list(movie_data.get('genre', []))
+    primary_genre = primary_genre[0] if primary_genre else 'Unknown'
+    dir_genre_key = str(movie_data.get('director')) + "_" + primary_genre
+    final_df['dir_genre_encoded'] = apply_te(dir_genre_key, te.get('dir_genre'))
 
     # Match predict_ratings.py text_content construction exactly
     text_content = "Title: " + str(movie_data.get('title', 'Unknown')) + \

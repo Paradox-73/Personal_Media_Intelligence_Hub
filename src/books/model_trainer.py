@@ -6,23 +6,75 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, cross_val_predict, RepeatedKFold
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, accuracy_score
+from sklearn.svm import SVR
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 
 # Add Project Root to Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 
+def get_unified_predictions(df, media_type='book'):
+    """
+    Helper to get predictions from the Unified Model to use as a feature (distillation).
+    """
+    try:
+        ensemble_dir = config.UNIFIED_ENSEMBLE_DIR
+        stack_path = ensemble_dir / "stacking_ensemble_regressor.joblib"
+        state_path = config.UNIFIED_PREPROCESSOR_STATE
+        
+        if not stack_path.exists() or not state_path.exists():
+            return None
+            
+        unified_results_path = config.UNIFIED_PREDICTIONS_DIR / "unified_predictions_ensemble.csv"
+        if unified_results_path.exists():
+            u_df = pd.read_csv(unified_results_path)
+            mapping = u_df[u_df['media_type'] == media_type].set_index('display_name')['pred_Stacking'].to_dict()
+            name_col = 'title' if 'title' in df.columns else 'name'
+            return df[name_col].map(mapping).fillna(df['user_rating'].mean() if 'user_rating' in df else 3.0)
+        
+        return None
+    except Exception as e:
+        print(f"   ⚠️ Error getting unified predictions: {e}")
+        return None
+
+def calculate_skill_score(y_true, y_pred, y_train_mean):
+    mae_model = mean_absolute_error(y_true, y_pred)
+    mae_baseline = mean_absolute_error(y_true, np.full_like(y_true, y_train_mean))
+    if mae_baseline == 0: return 0
+    return 1 - (mae_model / mae_baseline)
+
 def train_models():
-    print("🤖 Starting Book Model Training...")
+    print("🤖 Starting Book Model Training (Distillation Mode)...")
 
     if not config.BOOKS_TRAINING_DATA_PATH.exists():
         print("❌ Error: Training data not found.")
         return
 
-    df = pd.read_csv(config.BOOKS_TRAINING_DATA_PATH)
+    try:
+        df = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH)
+    except:
+        df = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH, encoding='latin1')
+        
+    df = df.dropna(subset=['my_rating']).copy()
 
-    X = df.drop(columns=['target_reg', 'target_class'], errors='ignore')
+    # 1. Distillation: Get Unified Model Predictions as a feature
+    unified_preds = get_unified_predictions(df, 'book')
+    
+    # Map features
+    df['target_reg'] = df['my_rating']
+    df['target_class'] = df['my_rating'].apply(lambda r: 2 if r >= 4.0 else (1 if r >= 2.5 else 0))
+    X = df.drop(columns=['target_reg', 'target_class', 'my_rating', 'title', 'authors', 'description', 'thumbnail', 'infoLink', 'categories', 'publisher', 'publishedDate', 'isbn'], errors='ignore')
+    
+    # Dummy encoding for numeric fallback
+    X = X.select_dtypes(include=[np.number]).fillna(0)
+    
+    if unified_preds is not None:
+        print("   ✅ Fusing Unified Model Predictions as a feature.")
+        X['unified_prior'] = unified_preds.values
+        
     y_reg = df['target_reg']
     y_class = df['target_class']
 
@@ -33,108 +85,79 @@ def train_models():
 
     print(f"   Training Set: {len(X_train)} | Test Set: {len(X_test)}")
 
-    # --- 1. Regressor ---
-    print(f"   Training Regressor (XGBoost)...")
+    # --- 1. SVR (Distilled) ---
+    # With N<100, we freeze hyperparameters as recommended
+    print(f"   Training Distilled SVR (Frozen HPs: C=1.0, kernel=rbf)...")
     
-    regressor = xgb.XGBRegressor(
-        n_estimators=100,
-        learning_rate=0.05,
-        max_depth=4,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        objective='reg:absoluteerror',
-        random_state=42
-    )
-    regressor.fit(X_train, y_train)
+    svr_pipe = Pipeline([
+        ('scaler', StandardScaler()),
+        ('svr', SVR(kernel='rbf', C=1.0, gamma='scale', epsilon=0.1))
+    ])
+    svr_pipe.fit(X_train, y_train)
+    
+    # --- CONFORMAL PREDICTION (Uncertainty) ---
+    print("   Computing conformal intervals via 5x2 repeated CV residuals...")
+    rkf = RepeatedKFold(n_splits=5, n_repeats=2, random_state=42)
+    oof_preds = cross_val_predict(svr_pipe, X, y_reg, cv=rkf)
+    abs_residuals = np.abs(y_reg - oof_preds)
+    
+    # 80% coverage interval width
+    q_80 = np.quantile(abs_residuals, 0.8)
+    print(f"   ✅ Conformal Interval (80% coverage): ±{q_80:.3f}")
 
-    preds_xgb = regressor.predict(X_test)
-    
+    y_pred_raw = svr_pipe.predict(X_test)
+
     # Rounding to 0.5 increments
     def round_h(x): return np.round(np.clip(x, 0, 5) * 2) / 2
-    y_pred = round_h(preds_xgb)
+    y_pred = round_h(y_pred_raw)
 
-    mse = mean_squared_error(y_test, y_pred)
-    rmse = np.sqrt(mse)
     mae = mean_absolute_error(y_test, y_pred)
     r2 = r2_score(y_test, y_pred)
+    skill_score = calculate_skill_score(y_test, y_pred, y_train.mean())
 
     print("\n" + "="*50)
-    print("📊 PERFORMANCE REPORT: Book XGBoost Regressor")
+    print("📊 PERFORMANCE REPORT: Distilled Book SVR")
     print("="*50)
-    print(f"   📉 [TEST SET] MSE:  {mse:.4f}")
-    print(f"   📉 [TEST SET] RMSE: {rmse:.4f}")
-    print(f"   📉 [TEST SET] MAE:  {mae:.4f}")
-    print(f"   📈 [TEST SET] R²:   {r2:.4f}")
-
-    # Detailed Diff Report
-    diffs = np.abs(y_test - y_pred)
-    total = len(diffs)
-    print("   " + "-"*40)
-    print(f"   Exact (0.0):  {(diffs == 0.0).sum():<3} ({((diffs == 0.0).sum()/total)*100:.1f}%)")
-    print(f"   Off by 0.5:   {(diffs == 0.5).sum():<3} ({((diffs == 0.5).sum()/total)*100:.1f}%)")
-    print(f"   Off by 1.0:   {(diffs == 1.0).sum():<3} ({((diffs == 1.0).sum()/total)*100:.1f}%)")
-    print(f"   Off by >1.0:  {(diffs > 1.0).sum():<3} ({((diffs > 1.0).sum()/total)*100:.1f}%)")
-    print("   " + "-"*40)
+    print(f"   📉 [TEST SET] MAE:   {mae:.4f}")
+    print(f"   📈 [TEST SET] R²:    {r2:.4f}")
+    print(f"   🎯 [TEST SET] Skill: {skill_score:.4f} (MAE vs. Global Mean)")
     print("="*50 + "\n")
 
-    # --- 2. Full Dataset Predictions for Visualization ---
-    preds_full = round_h(regressor.predict(X))
+    # Save Model and Interval Metadata
+    joblib.dump(svr_pipe, config.BOOKS_MODEL_REGRESSOR)
     
-    results_dir = config.BASE_DIR / "results" / "books"
-    results_dir.mkdir(parents=True, exist_ok=True)
+    # Save metadata including the conformal width
+    meta_path = Path(config.BOOKS_MODEL_REGRESSOR).parent / "model_meta.joblib"
+    joblib.dump({
+        'conformal_width_80': q_80,
+        'skill_score': skill_score,
+        'mae': mae,
+        'r2': r2,
+        'train_mean': y_train.mean()
+    }, meta_path)
     
-    # KDE Plot
-    plt.figure(figsize=(12, 6))
-    sns.kdeplot(y_reg, label='Actual (Whole Data)', color='black', fill=True, alpha=0.1)
-    sns.kdeplot(preds_full, label='Predicted (Whole Data)', color='green', linestyle='--')
-    plt.title("Book Rating Distribution (KDE) - Whole Data")
-    plt.xticks(np.arange(0, 5.5, 0.5))
-    plt.legend()
-    plt.savefig(results_dir / "books_distribution_kde.png")
-    plt.close()
-
-    # Histogram
-    fig, axes = plt.subplots(1, 2, figsize=(15, 6), sharey=True)
-    sns.histplot(y_reg, bins=np.arange(-0.25, 5.75, 0.5), ax=axes[0], color='gray')
-    axes[0].set_title("Actual Ratings (Whole Data)")
-    sns.histplot(preds_full, bins=np.arange(-0.25, 5.75, 0.5), ax=axes[1], color='green')
-    axes[1].set_title("Predicted Ratings (Whole Data)")
-    for ax in axes:
-        ax.set_xticks(np.arange(0, 5.5, 0.5))
-    plt.suptitle("Book Rating Histograms")
-    plt.savefig(results_dir / "books_distribution_histograms.png")
-    plt.close()
-
-    # --- 3. Classifier ---
+    # --- 2. Classifier ---
     classifier = xgb.XGBClassifier(
-        n_estimators=100,
-        learning_rate=0.05,
-        max_depth=3,
-        objective='multi:softmax',
-        num_class=3,
-        random_state=42
+        n_estimators=50, learning_rate=0.05, max_depth=3,
+        objective='multi:softmax', num_class=3, random_state=42
     )
     y_class_train = y_class.iloc[X_train.index]
     classifier.fit(X_train, y_class_train)
-
-    # Save Models
-    joblib.dump(regressor, config.BOOKS_MODEL_REGRESSOR)
     joblib.dump(classifier, config.BOOKS_MODEL_CLASSIFIER)
+
+    # --- 3. Full Dataset Predictions for Visualization ---
+    preds_full = round_h(svr_pipe.predict(X))
+    results_dir = config.BASE_DIR / "results" / "books"
+    results_dir.mkdir(parents=True, exist_ok=True)
     
-    # Save results CSV
-    try:
-        df_orig = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH)
-    except:
-        df_orig = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH, encoding='latin1')
-        
     df_results = pd.DataFrame({
-        'title': df_orig['title'],
+        'title': df['title'],
         'actual': y_reg,
         'predicted': preds_full
     })
     df_results.to_csv(results_dir / "book_predictions_full.csv", index=False)
     
-    print(f"✅ Models and graphs saved to {results_dir}")
+    print(f"✅ Models and results saved to {results_dir}")
 
 if __name__ == "__main__":
     train_models()

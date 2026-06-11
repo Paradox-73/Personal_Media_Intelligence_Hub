@@ -189,35 +189,28 @@ def load_theatre_watch():
         return None
 
 @st.cache_data
+def load_diary():
+    try:
+        path = config.DATA_DIR / "raw" / "movies" / "diary.csv"
+        if not path.exists():
+            return None
+        df_diary = pd.read_csv(path)
+        # Ensure column names are correct and handle the space in 'Watched Date'
+        df_diary['Watched Date'] = pd.to_datetime(df_diary['Watched Date'], errors='coerce')
+        # Drop rows where we don't have a date or a rating
+        df_diary = df_diary.dropna(subset=['Watched Date', 'Rating'])
+        return df_diary.sort_values('Watched Date')
+    except Exception as e:
+        print(f"Error loading diary: {e}")
+        return None
+
+@st.cache_data
 def load_data():
     try:
-        # 1. Load Main Enriched Data
+        # 1. Load Main Enriched Data (Now consolidated)
         df = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
         
-        # 2. Load New Ratings & Metadata Cache (if they exist)
-        new_ratings_path = config.DATA_DIR / "raw" / "movies" / "new_ratings.csv"
-        metadata_cache_path = config.CACHE_DIR / "movies_test_metadata_cache.csv"
-        
-        if new_ratings_path.exists() and metadata_cache_path.exists():
-            df_new_ratings = pd.read_csv(new_ratings_path)
-            df_metadata = pd.read_csv(metadata_cache_path)
-            
-            # Standardize column names for new_ratings (Name, Year, Rating, Letterboxd URI)
-            df_new_ratings.rename(columns={
-                'Name': 'title', 
-                'Year': 'year', 
-                'Rating': 'user_rating',
-                'Letterboxd URI': 'letterboxd_uri'
-            }, inplace=True)
-            
-            # Standardize metadata cache (it uses 'title' and 'year')
-            # Merge metadata with ratings
-            df_new_full = pd.merge(df_new_ratings, df_metadata, on=['title', 'year'], how='inner', suffixes=('', '_cache'))
-            
-            # Append to main dataframe
-            df = pd.concat([df, df_new_full], ignore_index=True).drop_duplicates(subset=['letterboxd_uri'], keep='first')
-
-        # 3. Clean and process for display
+        # 2. Clean and process for display
         df['rotten_tomatoes_rating'] = df['rotten_tomatoes_rating'].apply(clean_percentage)
         df['box_office'] = df['box_office'].apply(clean_currency)
         for c in ['runtime', 'year', 'vote_average', 'imdb_rating', 'metascore']:
@@ -238,11 +231,46 @@ def load_data():
         return None
 
 df = load_data()
+df_diary = load_diary()
 df_theatre_raw = load_theatre_watch()
 
 if df is None:
     st.error("❌ Data not found. Run ingestion first.")
     st.stop()
+
+# --- SIDEBAR FILTERS ---
+st.sidebar.header("🔍 Filters")
+
+# Date Filter for Diary
+if df_diary is not None and not df_diary.empty:
+    st.sidebar.subheader("📅 Watch Date Range")
+    min_date = df_diary['Watched Date'].min().date()
+    max_date = df_diary['Watched Date'].max().date()
+    
+    # Default to current year if there's a lot of data
+    start_default = min_date
+    if max_date.year > min_date.year:
+        # If we have multiple years, default to the start of the most recent year
+        start_default = pd.Timestamp(year=max_date.year, month=1, day=1).date()
+    
+    date_range = st.sidebar.date_input(
+        "Select Watch Period",
+        value=(start_default, max_date),
+        min_value=min_date,
+        max_value=max_date
+    )
+    
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        df_diary_filtered = df_diary[
+            (df_diary['Watched Date'].dt.date >= date_range[0]) & 
+            (df_diary['Watched Date'].dt.date <= date_range[1])
+        ]
+    else:
+        df_diary_filtered = df_diary
+else:
+    df_diary_filtered = df_diary
+
+st.sidebar.divider()
 
 # Prepare Theatre Watch DF by joining with main df to get ratings and genres
 df_theatre = None
@@ -307,7 +335,7 @@ st.divider()
 
 # 2. TIME, LENGTH & SEASONALITY
 st.subheader("⏳ Time & Duration")
-t_dec, t_run, t_sea = st.tabs(["Decades", "Runtime", "Release Season"])
+t_dec, t_run, t_sea, t_time = st.tabs(["Decades", "Runtime", "Release Season", "Ratings over Time"])
 
 with t_dec:
     dec_ent = calculate_entropy(df['decade'])
@@ -343,6 +371,65 @@ with t_sea:
                       title="Average Rating by Release Month", range_y=[0, 5], color_discrete_sequence=[HUB_PALETTE[2]])
         update_bar_trace(fig)
         st.plotly_chart(fig, use_container_width=True)
+
+with t_time:
+    if df_diary_filtered is not None and not df_diary_filtered.empty:
+        st.markdown("#### Ratings Over Time (Direct from Diary)")
+        st.caption("Each point represents a watch entry. Use the sidebar to change the date range, or use the range slider below the chart to zoom in.")
+        
+        # Scatter plot with trendline
+        fig = px.scatter(df_diary_filtered, x='Watched Date', y='Rating', 
+                         hover_data=['Name', 'Year'],
+                         color='Rating',
+                         color_continuous_scale=[[0, HUB_PALETTE[3]], [1, HUB_PALETTE[0]]],
+                         title="Your Ratings over Time (Watched Date)",
+                         labels={'Watched Date': 'Date Watched', 'Rating': 'Rating'},
+                         trendline="lowess",
+                         trendline_color_override="#ff8000")
+        
+        # Add a line connecting all dots in chronological order
+        fig.add_trace(go.Scatter(
+            x=df_diary_filtered['Watched Date'],
+            y=df_diary_filtered['Rating'],
+            mode='lines',
+            line=dict(color=HUB_PALETTE[2], width=1, dash='dot'), # Blue dotted line
+            name='Watch Path',
+            hoverinfo='skip'
+        ))
+        
+        # Add range slider and range selectors
+        fig.update_layout(
+            xaxis=dict(
+                rangeselector=dict(
+                    buttons=list([
+                        dict(count=1, label="1m", step="month", stepmode="backward"),
+                        dict(count=6, label="6m", step="month", stepmode="backward"),
+                        dict(count=1, label="YTD", step="year", stepmode="todate"),
+                        dict(count=1, label="1y", step="year", stepmode="backward"),
+                        dict(step="all")
+                    ]),
+                    bgcolor="#2C343F",
+                    activecolor="#ff8000"
+                ),
+                rangeslider=dict(visible=True, thickness=0.05),
+                type="date"
+            ),
+            yaxis=dict(range=[0, 5.5], dtick=0.5),
+            height=600
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Summary by Month/Year
+        st.markdown("#### Monthly Rating Volume")
+        df_diary_filtered['month_year'] = df_diary_filtered['Watched Date'].dt.to_period('M').astype(str)
+        monthly_agg = df_diary_filtered.groupby('month_year').size().reset_index(name='Count')
+        fig_monthly = px.bar(monthly_agg, x='month_year', y='Count', 
+                             title="Movies Watched per Month",
+                             color_discrete_sequence=[HUB_PALETTE[2]])
+        update_bar_trace(fig_monthly)
+        st.plotly_chart(fig_monthly, use_container_width=True)
+    else:
+        st.info("No watch date data available for the selected period.")
 
 st.divider()
 

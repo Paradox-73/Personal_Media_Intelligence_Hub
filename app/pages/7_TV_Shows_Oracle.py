@@ -134,6 +134,20 @@ if query:
                         st.divider()
                         st.metric("Oracle Rating", f"⭐ {pred:.1f} / 5.0")
                         
+                        import shap
+                        import matplotlib.pyplot as plt
+                        st.markdown("#### Why this prediction?")
+                        try:
+                            explainer = shap.TreeExplainer(regressor)
+                            shap_values = explainer(X_input)
+                            fig, ax = plt.subplots(figsize=(10, 5))
+                            shap.plots.waterfall(shap_values[0], max_display=10, show=False)
+                            plt.tight_layout()
+                            st.pyplot(fig)
+                            plt.close(fig)
+                        except Exception as e:
+                            st.info(f"SHAP explanation unavailable. {e}")
+                        
                         st.json({
                             "Network": full_meta.get('network'),
                             "Seasons": full_meta.get('number_of_seasons'),
