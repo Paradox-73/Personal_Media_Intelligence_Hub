@@ -2,157 +2,269 @@ import pandas as pd
 import numpy as np
 import joblib
 import sys
-import matplotlib.pyplot as plt
-import seaborn as sns
-from pathlib import Path
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import json
+from pathlib import Path
+from sklearn.model_selection import RepeatedKFold
+from sklearn.metrics import mean_absolute_error, r2_score
+import xgboost as xgb
+import catboost as ctb
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.unified_model.unified_feature_engineering import transform_single_media
-from src.movies.ingestion import get_movie_metadata
+from src.unified_model.unified_utils import DomainAligner, compute_temporal_weights
+from src.reporting.metrics_writer import write_latest_metrics
+from src.reporting.standalone_benchmarks import generate_standalone_oof
+from src.unified_model.unified_repeated_cv import run_unified_ablation_study
 
-def calculate_metrics(y_true, y_pred):
-    y_pred = np.round(np.clip(y_pred, 0.5, 5.0) * 2) / 2
-    mse = mean_squared_error(y_true, y_pred)
-    rmse = np.sqrt(mse)
-    mae = mean_absolute_error(y_true, y_pred)
-    r2 = r2_score(y_true, y_pred)
-    diffs = np.abs(y_true - y_pred)
-    total = len(diffs)
-    return {
-        "MSE": mse, "RMSE": rmse, "MAE": mae, "R2": r2,
-        "Exact": (diffs == 0.0).sum() / total * 100,
-        "Off_05": (diffs == 0.5).sum() / total * 100,
-        "Off_10": (diffs == 1.0).sum() / total * 100,
-        "Off_GT1": (diffs > 1.0).sum() / total * 100
-    }
+LAMBDA_DECAY = 0.000429
 
-def print_metrics(label, metrics):
-    print(f"\n--- {label} ---")
-    print(f"   📉 MSE: {metrics['MSE']:.4f} | RMSE: {metrics['RMSE']:.4f} | MAE: {metrics['MAE']:.4f} | R²: {metrics['R2']:.4f}")
-    print(f"   🎯 Exact: {metrics['Exact']:.1f}% | ±0.5: {metrics['Off_05']:.1f}% | ±1.0: {metrics['Off_10']:.1f}% | >1.0: {metrics['Off_GT1']:.1f}%")
 
-def run_comprehensive_evaluation(new_ratings_path=None):
-    print("🚀 Initializing Master Evaluation Pipeline...")
-    
-    # 1. Load Data
-    if not config.UNIFIED_TRAINING_DATA_PATH.exists():
-        print("❌ Unified training data missing. Run feature engineering first.")
-        return
+def get_metrics(y_true, y_pred):
+    """Round to nearest 0.5, then score (project-wide convention)."""
+    y_pred_r = np.round(np.clip(y_pred, 0.5, 5.0) * 2) / 2
+    mae = mean_absolute_error(y_true, y_pred_r)
+    r2 = r2_score(y_true, y_pred_r)
+    acc = (np.abs(np.asarray(y_true) - y_pred_r) <= 0.5).mean() * 100
+    return {"MAE": float(mae), "R2": float(r2), "Acc": float(acc)}
+
+
+def _fit_mean_ensemble(X_train, y_train, X_test, w_train):
+    m1 = xgb.XGBRegressor(n_estimators=300, learning_rate=0.03, max_depth=6, random_state=42)
+    m2 = ctb.CatBoostRegressor(iterations=500, learning_rate=0.05, depth=6,
+                               loss_function='MAE', verbose=0, random_seed=42)
+    m1.fit(X_train, y_train, sample_weight=w_train)
+    m2.fit(X_train, y_train, sample_weight=w_train)
+    return (m1.predict(X_test) + m2.predict(X_test)) / 2
+
+
+def unified_oof_on_registry(df, registry):
+    """
+    Unified Mean-Ensemble OOF on the 50 frozen registry folds.
+    Returns a per-(item, repeat) frame: media_type, source_id, target_reg, pred(raw).
+    Music is never in the registry, so this covers the 1,264 rated items only.
+    """
+    pca_cols = [c for c in df.columns if c.startswith('pca_')]
+    X_cols = [c for c in df.columns if c not in
+              ['target_reg', 'target_ordinal', 'target_class', 'source_id',
+               'media_type', 'rating_date', 'global_id']]
+    results = []
+    for fold_id in range(50):
+        test_mask = df['global_id'].apply(lambda g: fold_id in registry.get(g, []))
+        if not test_mask.any():
+            continue
+        train_mask = ~test_mask
+
+        X_train = df.loc[train_mask, X_cols].copy()
+        X_test = df.loc[test_mask, X_cols].copy()
+        y_train = df.loc[train_mask, 'target_reg']
+        m_train = df.loc[train_mask, 'media_type']
+        m_test = df.loc[test_mask, 'media_type']
+        d_train = pd.to_datetime(df.loc[train_mask, 'rating_date'])
+
+        aligner = DomainAligner(method='centroid')
+        aligner.fit(X_train[pca_cols].values, m_train)
+        X_train.loc[:, pca_cols] = aligner.transform(X_train[pca_cols].values, m_train)
+        X_test.loc[:, pca_cols] = aligner.transform(X_test[pca_cols].values, m_test)
+
+        w_train = compute_temporal_weights(d_train, lambda_decay=LAMBDA_DECAY)
+        preds = _fit_mean_ensemble(X_train, y_train, X_test, w_train)
+
+        res = df.loc[test_mask, ['media_type', 'source_id', 'target_reg']].copy()
+        res['pred'] = preds
+        results.append(res)
+        if (fold_id + 1) % 10 == 0:
+            print(f"      unified registry fold {fold_id + 1}/50")
+    return pd.concat(results, ignore_index=True)
+
+
+def dedup_per_item(oof):
+    """Average raw predictions across the 5 CV repeats -> one row per item."""
+    return (oof.groupby(['media_type', 'source_id'], as_index=False)
+               .agg(target_reg=('target_reg', 'first'), pred=('pred', 'mean')))
+
+
+def full_pool_with_music(df_full, registry):
+    """
+    Secondary, footnoted row: train on the FULL pool (incl. 3,688 music PU
+    pseudo-labels) and evaluate INCLUDING music. Music has no frozen registry,
+    so this row uses a separate RepeatedKFold(5x1) over the full pool and is NOT
+    a frozen-fold / actual-taste metric -- it exists only to show transparently
+    what the pooled headline (~0.50) actually measures.
+
+    Uses an XGBoost proxy (not the full XGB+CatBoost ensemble): the rated-only
+    ablation showed the CatBoost member contributes a significant-but-trivial
+    delta-MAE < 0.01, and this is a secondary/footnoted row, so the proxy is
+    faithful and keeps the 4,952-item pass tractable.
+    """
+    pca_cols = [c for c in df_full.columns if c.startswith('pca_')]
+    X_cols = [c for c in df_full.columns if c not in
+              ['target_reg', 'target_ordinal', 'target_class', 'source_id',
+               'media_type', 'rating_date', 'global_id']]
+    df = df_full.reset_index(drop=True)
+    rkf = RepeatedKFold(n_splits=5, n_repeats=1, random_state=42)
+    preds_accum = np.zeros(len(df))
+    counts = np.zeros(len(df))
+    for tr_idx, te_idx in rkf.split(df):
+        X_train = df.loc[tr_idx, X_cols].copy()
+        X_test = df.loc[te_idx, X_cols].copy()
+        y_train = df.loc[tr_idx, 'target_reg']
+        m_train = df.loc[tr_idx, 'media_type']
+        m_test = df.loc[te_idx, 'media_type']
+        d_train = pd.to_datetime(df.loc[tr_idx, 'rating_date'])
+        aligner = DomainAligner(method='centroid')
+        aligner.fit(X_train[pca_cols].values, m_train)
+        X_train.loc[:, pca_cols] = aligner.transform(X_train[pca_cols].values, m_train)
+        X_test.loc[:, pca_cols] = aligner.transform(X_test[pca_cols].values, m_test)
+        w_train = compute_temporal_weights(d_train, lambda_decay=LAMBDA_DECAY)
+        model = xgb.XGBRegressor(n_estimators=300, learning_rate=0.03, max_depth=6,
+                                 random_state=42)
+        model.fit(X_train, y_train, sample_weight=w_train)
+        preds_accum[te_idx] += model.predict(X_test)
+        counts[te_idx] += 1
+    per_item = preds_accum / np.maximum(counts, 1)
+    return get_metrics(df['target_reg'], per_item), len(df)
+
+
+def load_unified_params():
+    """Report the params actually deployed in the evaluated ensemble.
+
+    The frozen-fold Mean Ensemble uses XGB(MAE)+CatBoost(MAE) with temporal
+    weighting -- it does NOT use the AsymmetricEdgePenalty objective, so its
+    alpha_hi/alpha_lo are not applied here. If the advanced trainer has persisted
+    tuned values (models/unified/best_params.json) we surface them as 'tuned
+    (production asymmetric objective)'; otherwise alphas are reported null with a
+    note rather than as misleading hardcoded defaults.
+    """
+    params = {"lambda": LAMBDA_DECAY,
+              "lambda_note": "temporal decay applied in the evaluated Mean Ensemble (half-life ~1,615 days)",
+              "alpha_hi": None, "alpha_lo": None,
+              "alpha_note": ("AsymmetricEdgePenalty alphas are tuned by the advanced trainer "
+                             "but NOT applied in the frozen-fold Mean Ensemble evaluation")}
+    bp = config.UNIFIED_MODEL_DIR / "best_params.json"
+    if bp.exists():
+        try:
+            saved = json.loads(bp.read_text())
+            params["alpha_hi"] = saved.get("alpha_hi")
+            params["alpha_lo"] = saved.get("alpha_lo")
+            params["alpha_note"] = "tuned via Optuna in the advanced (production) asymmetric objective"
+            if "lambda_decay" in saved:
+                params["lambda"] = saved["lambda_decay"]
+        except Exception:
+            pass
+    return params
+
+
+def run_master_evaluation():
+    print("🚀 Running Master Evaluation Pipeline (Phase 0 corrected)...")
+
     df = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
-    
-    # 80/20 Split (Same seed as trainer)
-    train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
-    print(f"✅ Loaded Unified Data. Test set size: {len(test_df)}")
+    df['global_id'] = df['media_type'] + "_" + df['source_id'].astype(str)
+    df_rated = df[df['media_type'] != 'music'].copy()
 
-    # 2. Load Models
-    # Unified Models
-    uni_dir = config.UNIFIED_ENSEMBLE_DIR
-    uni_models = {
-        "Unified_Stacking": joblib.load(uni_dir / "stacking_ensemble_regressor.joblib"),
-        "Unified_XGB": joblib.load(uni_dir / "xgb_base_regressor.joblib"),
-        "Unified_CatBoost": joblib.load(uni_dir / "catboost_base_regressor.joblib"),
-        "Unified_Ordinal_EV": joblib.load(uni_dir / "ordinal_classifier.joblib")
-    }
-    uni_state = joblib.load(config.UNIFIED_PREPROCESSOR_STATE)
-    uni_classes = joblib.load(uni_dir / "ordinal_classes.joblib")
-    bucket_vals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])[uni_classes]
+    with open(config.UNIFIED_MODEL_DIR / "fold_registry.json") as f:
+        registry = json.load(f)
 
-    # Baseline Movie Model
-    movie_baseline = joblib.load(config.MODEL_REGRESSOR)
-    movie_state = joblib.load(config.PREPROCESSOR_STATE)
-
-    # 3. Predict on Unified Test Set
-    print("🧠 Predicting on Unified Test Set...")
-    X_test = test_df[uni_state['training_columns']]
-    y_true = test_df['target_reg']
-    
-    results = test_df.copy()
-    for name, model in uni_models.items():
-        if "Ordinal" in name:
-            probs = model.predict_proba(X_test)
-            results[f'pred_{name}'] = np.sum(probs * bucket_vals, axis=1)
+    # 1) Unified rated OOF on registry folds -> headline + per-domain slices.
+    #    Reuse the cached per-(item,repeat) OOF if present (it is deterministic and
+    #    expensive: 50 folds x XGB+CatBoost). Delete reports/oof_predictions.csv to
+    #    force a fresh recompute.
+    oof_cache = Path("reports/oof_predictions.csv")
+    if oof_cache.exists():
+        uni_oof = pd.read_csv(oof_cache)
+        if {'media_type', 'source_id', 'target_reg', 'pred'}.issubset(uni_oof.columns) \
+                and 'music' not in set(uni_oof['media_type']):
+            print("📊 Reusing cached unified registry OOF (reports/oof_predictions.csv)")
         else:
-            results[f'pred_{name}'] = model.predict(X_test)
+            print("📊 Unified (rated) OOF on registry folds (cache stale)...")
+            uni_oof = unified_oof_on_registry(df_rated, registry)
+            uni_oof.to_csv(oof_cache, index=False)
+    else:
+        print("📊 Unified (rated) OOF on registry folds...")
+        uni_oof = unified_oof_on_registry(df_rated, registry)
+        uni_oof.to_csv(oof_cache, index=False)
+    uni_item = dedup_per_item(uni_oof)
+    met_rated = get_metrics(uni_item['target_reg'], uni_item['pred'])
+    n_rated = uni_item[['media_type', 'source_id']].drop_duplicates().shape[0]
 
-    # 4. Report Metrics
-    print("\n" + "="*60)
-    print("📊 COMPREHENSIVE PERFORMANCE SUMMARY")
-    print("="*60)
+    slices = []
+    for domain in ['movie', 'tv', 'game', 'book']:
+        d = uni_item[uni_item['media_type'] == domain]
+        if d.empty:
+            continue
+        slices.append({"Domain": domain, "N": int(len(d)),
+                       **get_metrics(d['target_reg'], d['pred'])})
 
-    # Slices
-    slices = {
-        "WHOLE UNIFIED TEST SET": results,
-        "MOVIES ONLY (TEST)": results[results['is_tv_flag'] == 0],
-        "SHOWS ONLY (TEST)": results[results['is_tv_flag'] == 1]
+    # 2) Unified full pool (incl. music PU pseudo-labels) -- secondary, footnoted
+    print("📊 Unified (full pool incl. music pseudo-labels) -- secondary CV...")
+    met_full, n_full = full_pool_with_music(df, registry)
+
+    # 3) Standalone per-domain benchmarks on registry folds (genuine local models)
+    print("📊 Standalone per-domain benchmarks (registry folds)...")
+    standalone_bms, _ = generate_standalone_oof(df, registry, use_cache=True)
+    standalone_by_domain = {b['Domain']: b for b in standalone_bms}
+
+    # 4) Assemble benchmarks (standalone locals + dual unified headline)
+    benchmarks = [
+        standalone_by_domain['movie'],
+        {"Domain": "unified_rated", "N": int(n_rated), "Model": "Mean Ensemble", **met_rated},
+        {"Domain": "unified_full", "N": int(n_full),
+         "Model": "Mean Ensemble (+music pool)", **met_full},
+        standalone_by_domain['tv'],
+        standalone_by_domain['game'],
+        standalone_by_domain['book'],
+    ]
+
+    # ---- Phase 0 acceptance assertions -------------------------------------
+    # (a) Standalone benchmarks must NOT be the unified slice (the original bug).
+    slice_by_domain = {s['Domain']: s for s in slices}
+    for dom in ['movie', 'tv', 'game', 'book']:
+        b = standalone_by_domain[dom]
+        s = slice_by_domain.get(dom, {})
+        assert not (abs(b['MAE'] - s.get('MAE', -1)) < 1e-9 and
+                    abs(b['R2'] - s.get('R2', -1)) < 1e-9), \
+            f"benchmarks == slices for {dom} -- standalone/slice not separated!"
+    # (b) N must be unique item counts, never OOF rows (no 5x inflation).
+    #   Unified slices cover all rated registry items: movie 980, tv 159, game 62, book 63.
+    #   Standalone Games covers only 55 -- 7 "Incomplete"-status games have NaN target_reg
+    #   in the standalone pipeline and cannot be scored locally (provenance, documented).
+    slice_counts = {'movie': 980, 'tv': 159, 'game': 62, 'book': 63}
+    standalone_counts = {'movie': 980, 'tv': 159, 'game': 55, 'book': 63}
+    for dom in ['movie', 'tv', 'game', 'book']:
+        assert slice_by_domain[dom]['N'] == slice_counts[dom], \
+            f"{dom} slice N={slice_by_domain[dom]['N']} != unique items {slice_counts[dom]}"
+        assert standalone_by_domain[dom]['N'] == standalone_counts[dom], \
+            f"{dom} standalone N={standalone_by_domain[dom]['N']} != {standalone_counts[dom]}"
+    print("✅ Assertions passed: benchmarks != slices; N == unique items (no 5x inflation).")
+
+    # 5) Ablation (rated-only registry folds)
+    ablation_rows = run_unified_ablation_study()
+
+    # 6) Per-domain DROP verdict for distillation prior (load if present)
+    distill = []
+    dpath = Path("reports/distillation_ablation_results.json")
+    if dpath.exists():
+        distill = json.loads(dpath.read_text())
+
+    final_metrics = {
+        "benchmarks": benchmarks,
+        "slices": slices,
+        "ablation": ablation_rows,
+        "distillation": distill,
+        "params": load_unified_params(),
+        "notes": {
+            "dedup": "per-item: raw predictions averaged across 5 CV repeats, then rounded to 0.5",
+            "standalone_models": {"movie": "XGBoost", "tv": "Simplex-Stack",
+                                  "game": "Local SVR (no prior)", "book": "Local SVR (no prior)"},
+            "unified_full": ("trained on rated + 3,688 music PU pseudo-labels and evaluated "
+                             "INCLUDING music via RepeatedKFold(5x1), XGB proxy; not a frozen-fold / "
+                             "actual-taste metric -- secondary line only"),
+        },
     }
 
-    for label, slice_df in slices.items():
-        if slice_df.empty: continue
-        print(f"\n[{label}] (N={len(slice_df)})")
-        for name in uni_models.keys():
-            m = calculate_metrics(slice_df['target_reg'], slice_df[f'pred_{name}'])
-            print_metrics(name, m)
+    write_latest_metrics(final_metrics)
+    print("🏁 Master evaluation complete.")
 
-    # 5. NEW RATINGS EVALUATION
-    if new_ratings_path and Path(new_ratings_path).exists():
-        print("\n" + "="*60)
-        print(f"🔥 EVALUATING ON NEW RATINGS (50 MOVIES): {new_ratings_path}")
-        print("="*60)
-        df_new = pd.read_csv(new_ratings_path)
-        # Assuming columns: Name, Year, Rating
-        new_results = []
-        for _, row in df_new.iterrows():
-            meta = get_movie_metadata(row['Name'], row['Year'])
-            if not meta or not meta.get('title'): continue
-            
-            # Transform for Unified
-            feat = transform_single_media(meta, uni_state, is_tv_show=False)
-            res = {'Name': row['Name'], 'Actual': row['Rating']}
-            for name, model in uni_models.items():
-                if "Ordinal" in name:
-                    probs = model.predict_proba(feat)[0]
-                    res[f'pred_{name}'] = np.sum(probs * bucket_vals)
-                else:
-                    res[f'pred_{name}'] = model.predict(feat)[0]
-            new_results.append(res)
-        
-        if new_results:
-            df_new_res = pd.DataFrame(new_results)
-            print(f"N={len(df_new_res)}")
-            for name in uni_models.keys():
-                m = calculate_metrics(df_new_res['Actual'], df_new_res[f'pred_{name}'])
-                print_metrics(name, m)
-
-    # 6. VISUALIZATION
-    plt.style.use('seaborn-v0_8-whitegrid')
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 12))
-    
-    # KDE
-    sns.kdeplot(data=results, x='target_reg', ax=ax1, label='Actual', color='black', linewidth=3, fill=True, alpha=0.1)
-    for name in uni_models.keys():
-        sns.kdeplot(data=results, x=f'pred_{name}', ax=ax1, label=name, linestyle='--')
-    ax1.set_title("Unified Test Set: Distribution Comparison (KDE)")
-    ax1.legend()
-
-    # Histograms
-    sns.histplot(results['target_reg'], ax=ax2, color='black', alpha=0.3, label='Actual', bins=10)
-    sns.histplot(results['pred_Unified_Stacking'], ax=ax2, color='orange', alpha=0.5, label='Stacking Preds', bins=10)
-    ax2.set_title("Unified Test Set: Stacking vs Actual (Histogram)")
-    ax2.legend()
-
-    plt.tight_layout()
-    plot_path = config.UNIFIED_PREDICTIONS_DIR / "comprehensive_eval_plots.png"
-    plt.savefig(plot_path, dpi=150)
-    print(f"\n📈 Comprehensive plots saved to {plot_path}")
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--new_ratings", help="Path to the 50 new movies CSV", default=None)
-    args = parser.parse_args()
-    run_comprehensive_evaluation(args.new_ratings)
+    run_master_evaluation()

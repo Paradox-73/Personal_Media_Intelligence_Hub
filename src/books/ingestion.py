@@ -12,103 +12,174 @@ from src import config
 
 # Load Environment Variables
 load_dotenv()
-GOOGLE_BOOKS_KEY = os.getenv("GOOGLE_BOOKS_API_KEY")
 
-def fetch_google_books_data(query):
-    url = "https://www.googleapis.com/books/v1/volumes"
-    params = {'q': query}
-    if GOOGLE_BOOKS_KEY:
-        params['key'] = GOOGLE_BOOKS_KEY
-        
+# Hardcover stores the full "Bearer <jwt>" string in HARDCOVER_API_KEY
+HARDCOVER_TOKEN = os.getenv("HARDCOVER_API_KEY")
+HARDCOVER_URL = "https://api.hardcover.app/v1/graphql"
+OPENLIBRARY_URL = "https://openlibrary.org/api/books"
+
+HARDCOVER_QUERY = """
+query BookByIsbn($isbn: String!) {
+  editions(where: {isbn_13: {_eq: $isbn}}, limit: 1) {
+    pages
+    book {
+      title
+      slug
+      rating
+      ratings_count
+      release_year
+      description
+      cached_tags
+      contributions { author { name } }
+    }
+  }
+}
+"""
+
+
+def _auth_header():
+    if not HARDCOVER_TOKEN:
+        return None
+    token = HARDCOVER_TOKEN.strip()
+    if not token.lower().startswith("bearer "):
+        token = f"Bearer {token}"
+    return {"Authorization": token, "Content-Type": "application/json"}
+
+
+def fetch_hardcover(isbn):
+    """Return Hardcover metadata (rating, description, authors, genres) for an ISBN-13."""
+    header = _auth_header()
+    if not header or not isbn:
+        return None
     try:
-        response = requests.get(url, params=params, timeout=10)
-        data = response.json()
-        if data.get('totalItems', 0) > 0:
-            return data['items'][0]['volumeInfo']
+        resp = requests.post(HARDCOVER_URL, headers=header,
+                             json={"query": HARDCOVER_QUERY, "variables": {"isbn": str(isbn)}}, timeout=15)
+        editions = (resp.json().get("data", {}) or {}).get("editions", [])
+        if not editions:
+            return None
+        ed = editions[0]
+        book = ed.get("book") or {}
+
+        authors = [c["author"]["name"] for c in book.get("contributions", []) if c.get("author")]
+
+        genres = []
+        tags = book.get("cached_tags") or {}
+        if isinstance(tags, dict):
+            genres = [t.get("tag") for t in tags.get("Genre", []) if t.get("tag")]
+
+        slug = book.get("slug")
+        return {
+            "title": book.get("title"),
+            "authors": ", ".join(dict.fromkeys(authors)),
+            "pageCount": ed.get("pages") or 0,
+            "categories": ", ".join(genres),
+            "averageRating": round(book.get("rating"), 2) if book.get("rating") else 0.0,
+            "ratingsCount": book.get("ratings_count") or 0,
+            "description": book.get("description") or "",
+            "publishedDate": str(book.get("release_year") or ""),
+            "infoLink": f"https://hardcover.app/books/{slug}" if slug else "",
+        }
     except Exception as e:
-        print(f"Error fetching from Google Books: {e}")
-    return None
+        print(f"  ⚠️ Hardcover error for {isbn}: {e}")
+        return None
+
+
+def fetch_openlibrary(isbn):
+    """Return Open Library metadata (pages, cover, publisher, subjects) for an ISBN."""
+    if not isbn:
+        return None
+    try:
+        resp = requests.get(OPENLIBRARY_URL,
+                            params={"bibkeys": f"ISBN:{isbn}", "format": "json", "jscmd": "data"}, timeout=12)
+        data = resp.json().get(f"ISBN:{isbn}")
+        if not data:
+            return None
+        cover = data.get("cover") or {}
+        return {
+            "title": data.get("title"),
+            "authors": ", ".join(a["name"] for a in data.get("authors", [])),
+            "pageCount": data.get("number_of_pages") or 0,
+            "categories": ", ".join(s["name"] for s in data.get("subjects", [])[:8]),
+            "publisher": ", ".join(p["name"] for p in data.get("publishers", [])),
+            "publishedDate": data.get("publish_date") or "",
+            "thumbnail": cover.get("medium") or cover.get("large") or cover.get("small") or "",
+            "infoLink": data.get("url") or "",
+        }
+    except Exception as e:
+        print(f"  ⚠️ Open Library error for {isbn}: {e}")
+        return None
+
+
+def _coalesce(*vals):
+    """First truthy, non-empty value."""
+    for v in vals:
+        if v not in (None, "", 0, 0.0, "0"):
+            return v
+    return vals[-1] if vals else ""
+
 
 def process_books_from_txt():
-    print("📚 Starting Book Ingestion from book.txt...")
-    
-    txt_path = config.BASE_DIR / "data" / "raw" / "books" / "book.txt"
+    print("📚 Starting Book Ingestion (Hardcover + Open Library)...")
+    if not HARDCOVER_TOKEN:
+        print("⚠️ HARDCOVER_API_KEY not set — will rely on Open Library only.")
+
+    txt_path = config.BOOKS_RAW_DIR / "book.txt"
     if not txt_path.exists():
         print(f"❌ Raw book.txt not found at {txt_path}")
         return
 
-    with open(txt_path, 'r', encoding='utf-8') as f:
+    with open(txt_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
-        
-    raw_rows = []
-    
+
+    rows = []
     for line in lines:
         line = line.strip()
         if not line:
             continue
-            
-        parts = line.split(':')
-        if len(parts) >= 3:
-            title = ":".join(parts[:-2]).strip()
-            isbn = parts[-2].strip()
-            rating_str = parts[-1].strip()
-            try:
-                rating = float(rating_str)
-            except:
-                continue
-                
-            print(f"Processing: {title} (ISBN: {isbn})")
-            
-            # Fetch by ISBN first if possible
-            book_info = None
-            if isbn and isbn.isdigit():
-                book_info = fetch_google_books_data(f"isbn:{isbn}")
-            
-            if not book_info:
-                book_info = fetch_google_books_data(f"intitle:{title}")
-                
-            row = {
-                'title': title,
-                'isbn': isbn,
-                'my_rating': rating,
-                'authors': '',
-                'publisher': '',
-                'publishedDate': '',
-                'pageCount': 0,
-                'categories': '',
-                'averageRating': 0.0,
-                'ratingsCount': 0,
-                'description': '',
-                'thumbnail': '',
-                'infoLink': ''
-            }
-            
-            if book_info:
-                row['authors'] = ", ".join(book_info.get('authors', []))
-                row['publisher'] = book_info.get('publisher') or ''
-                row['publishedDate'] = book_info.get('publishedDate') or ''
-                row['pageCount'] = book_info.get('pageCount') or 0
-                row['categories'] = ", ".join(book_info.get('categories', []))
-                row['averageRating'] = book_info.get('averageRating') or 0.0
-                row['ratingsCount'] = book_info.get('ratingsCount') or 0
-                row['description'] = book_info.get('description') or ''
-                images = book_info.get('imageLinks', {})
-                row['thumbnail'] = images.get('thumbnail') or images.get('smallThumbnail') or ''
-                row['infoLink'] = book_info.get('infoLink') or ''
-            
-            raw_rows.append(row)
-            time.sleep(0.2)
-            
-    df = pd.DataFrame(raw_rows)
-    
-    # Save to raw directory
+        # Format: "Title : ISBN : rating"
+        parts = line.split(":")
+        if len(parts) < 3:
+            continue
+        title = ":".join(parts[:-2]).strip()
+        isbn = parts[-2].strip()
+        try:
+            rating = float(parts[-1].strip())
+        except ValueError:
+            continue
+
+        print(f"Processing: {title} (ISBN: {isbn})")
+        hc = fetch_hardcover(isbn) or {}
+        ol = fetch_openlibrary(isbn) or {}
+
+        rows.append({
+            "title": title,
+            "isbn": isbn,
+            "my_rating": rating,
+            "authors": _coalesce(hc.get("authors"), ol.get("authors"), ""),
+            "publisher": _coalesce(ol.get("publisher"), ""),
+            "publishedDate": _coalesce(hc.get("publishedDate"), ol.get("publishedDate"), ""),
+            "pageCount": _coalesce(hc.get("pageCount"), ol.get("pageCount"), 0),
+            "categories": _coalesce(hc.get("categories"), ol.get("categories"), ""),
+            "averageRating": _coalesce(hc.get("averageRating"), 0.0),
+            "ratingsCount": _coalesce(hc.get("ratingsCount"), 0),
+            "description": _coalesce(hc.get("description"), ""),
+            "thumbnail": _coalesce(ol.get("thumbnail"), ""),
+            "infoLink": _coalesce(hc.get("infoLink"), ol.get("infoLink"), ""),
+        })
+        time.sleep(0.3)  # be polite to both APIs
+
+    df = pd.DataFrame(rows)
+
     config.BOOKS_RAW_DIR.mkdir(parents=True, exist_ok=True)
     df.to_csv(config.BOOKS_RAW_DIR / "books_data.csv", index=False)
-    
-    # Save to processed directory (since we fetched all details during parsing)
     config.BOOKS_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     df.to_csv(config.BOOKS_ENRICHED_DATA_PATH, index=False)
-    print(f"✅ Enrichment complete. Saved {len(df)} books to {config.BOOKS_ENRICHED_DATA_PATH}")
+
+    filled = (df["authors"].astype(str).str.len() > 0).sum()
+    pages = pd.to_numeric(df["pageCount"], errors="coerce").fillna(0).gt(0).sum()
+    print(f"✅ Done. {len(df)} books | authors filled: {filled} | pages filled: {pages}")
+    print(f"   Saved to {config.BOOKS_ENRICHED_DATA_PATH}")
+
 
 if __name__ == "__main__":
     process_books_from_txt()

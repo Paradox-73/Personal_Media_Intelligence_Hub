@@ -1,0 +1,160 @@
+{
+  "affinity": {
+    "game": {
+      "book": 0.0827,
+      "movie": 0.1577,
+      "tv": 0.1015
+    },
+    "movie": {
+      "book": -0.2017,
+      "game": -0.1677,
+      "tv": 0.1072
+    },
+    "tv": {
+      "book": 0.015,
+      "game": -0.234,
+      "movie": 0.192
+    },
+    "book": {
+      "game": 0.002,
+      "movie": -0.8609,
+      "tv": -0.1786
+    }
+  },
+  "best_subset": {
+    "movie": {
+      "source": "tv+game",
+      "music": false,
+      "lift@100": 0.0112,
+      "frac_significant": 0,
+      "lifts": {
+        "0.0": {
+          "lift": -0.2457,
+          "p": 0.0156
+        },
+        "0.5": {
+          "lift": -0.0342,
+          "p": 0.0625
+        },
+        "1.0": {
+          "lift": 0.0112,
+          "p": 0.1562
+        }
+      },
+      "positive": false
+    },
+    "tv": {
+      "source": "movie+game+book",
+      "music": false,
+      "lift@100": 0.055,
+      "frac_significant": 0,
+      "lifts": {
+        "0.0": {
+          "lift": 0.0353,
+          "p": 0.5781
+        },
+        "0.5": {
+          "lift": 0.0532,
+          "p": 0.375
+        },
+        "1.0": {
+          "lift": 0.055,
+          "p": 0.375
+        }
+      },
+      "positive": false
+    },
+    "game": {
+      "source": "movie+tv+book",
+      "music": false,
+      "lift@100": 0.2032,
+      "frac_significant": 0,
+      "lifts": {
+        "0.0": {
+          "lift": 0.2072,
+          "p": 0.125
+        },
+        "0.5": {
+          "lift": 0.2088,
+          "p": 0.0625
+        },
+        "1.0": {
+          "lift": 0.2032,
+          "p": 0.0938
+        }
+      },
+      "positive": false
+    },
+    "book": {
+      "source": "movie+tv",
+      "music": false,
+      "lift@100": 0.0252,
+      "frac_significant": 0,
+      "lifts": {
+        "0.0": {
+          "lift": -0.7484,
+          "p": 0.0156
+        },
+        "0.5": {
+          "lift": 0.0026,
+          "p": 0.9375
+        },
+        "1.0": {
+          "lift": 0.0252,
+          "p": 1.0
+        }
+      },
+      "positive": false
+    }
+  },
+  "learning_curves": {
+    "movie": {
+      "best_source": "tv+game",
+      "music": false,
+      "skill_by_fraction": {
+        "0.0": -0.0056,
+        "0.5": 0.2704,
+        "1.0": 0.3284
+      },
+      "target_alone_skill": 0.3136
+    },
+    "tv": {
+      "best_source": "movie+game+book",
+      "music": false,
+      "skill_by_fraction": {
+        "0.0": 0.1957,
+        "0.5": 0.2208,
+        "1.0": 0.2163
+      },
+      "target_alone_skill": 0.1357
+    },
+    "game": {
+      "best_source": "movie+tv+book",
+      "music": false,
+      "skill_by_fraction": {
+        "0.0": 0.1253,
+        "0.5": 0.1176,
+        "1.0": 0.1241
+      },
+      "target_alone_skill": -0.0279
+    },
+    "book": {
+      "best_source": "movie+tv",
+      "music": false,
+      "skill_by_fraction": {
+        "0.0": -0.868,
+        "0.5": 0.1828,
+        "1.0": 0.1925
+      },
+      "target_alone_skill": 0.1714
+    }
+  },
+  "positive_findings": [],
+  "similarity_corr": {
+    "spearman_centroid_dist_vs_zeroshot_skill": -0.0989,
+    "spearman_mmd_vs_zeroshot_skill": -0.0989,
+    "n_pairs": 12
+  },
+  "verdict": "NULL: in the shared feature space, no domain combination beats the local model (Protocol A). Cross-domain taste signal, if it exists, must be item-level (entity bridges), not feature-level pooling.",
+  "verdict_is_positive": false
+}

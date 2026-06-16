@@ -1,0 +1,12 @@
+{
+  "n_linked": 293,
+  "mae_without_bridge": 0.5427,
+  "mae_with_bridge": 0.5222,
+  "mae_delta": 0.0205,
+  "delta_ci95": [
+    -0.0171,
+    0.058
+  ],
+  "wilcoxon_p": 0.2772,
+  "verdict": "no significant bridge effect at this N (pilot)"
+}

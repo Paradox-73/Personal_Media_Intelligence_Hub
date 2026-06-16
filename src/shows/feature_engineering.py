@@ -3,9 +3,10 @@ import numpy as np
 import ast
 import joblib
 import sys
-from sklearn.preprocessing import MultiLabelBinarizer
-from sklearn.feature_extraction.text import TfidfVectorizer
 from pathlib import Path
+from sklearn.preprocessing import MultiLabelBinarizer
+from sentence_transformers import SentenceTransformer
+from sklearn.decomposition import PCA
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
@@ -31,7 +32,7 @@ def get_primary_network(val):
         return "Other"
 
 def run_feature_engineering():
-    print("⚙️ STARTING TV SHOW FEATURE ENGINEERING (Robust Mode)...")
+    print("⚙️ STARTING TV SHOW FEATURE ENGINEERING (MiniLM Upgrade)...")
 
     if not config.TV_SHOWS_ENRICHED_DATA_PATH.exists():
         print(f"❌ Error: Enriched data not found at {config.TV_SHOWS_ENRICHED_DATA_PATH}")
@@ -85,28 +86,31 @@ def run_feature_engineering():
     
     print(f"   Selected {len(kept_genres)} common genres.")
 
-    # --- 4. NLP ---
-    print("   Processing NLP features...")
-    df['overview'] = df['overview'].fillna('')
-    tfidf = TfidfVectorizer(stop_words='english', max_features=30, min_df=2)
-    tfidf_matrix = tfidf.fit_transform(df['overview'])
-    tfidf_cols = [f"txt_{word}" for word in tfidf.get_feature_names_out()]
-    tfidf_df = pd.DataFrame(tfidf_matrix.toarray(), columns=tfidf_cols, index=df.index)
+    # --- 4. Upgraded Text Representation (Sentence Transformers) ---
+    print("   Generating MiniLM embeddings for TV shows...")
+    df['text_content'] = "Title: " + df['name'].fillna('Unknown') + \
+                         ". Network: " + df['primary_network'].fillna('Unknown') + \
+                         ". " + df['overview'].fillna('')
+    
+    transformer_model = SentenceTransformer('all-MiniLM-L6-v2')
+    text_embeddings = transformer_model.encode(df['text_content'].tolist(), show_progress_bar=True)
+
+    print("   Applying PCA (15 components) to embeddings...")
+    pca = PCA(n_components=15)
+    X_text_pca = pca.fit_transform(text_embeddings)
+    pca_cols = [f'pca_{i}' for i in range(15)]
+    text_df = pd.DataFrame(X_text_pca, columns=pca_cols, index=df.index)
 
     # --- 5. Combine ---
-    # Ensure numerical columns are clearly selected
     feature_cols = ['year', 'vote_average', 'vote_count_log', 'season_count', 'is_adult']
-    
-    X = pd.concat([df[feature_cols], genre_df, network_dummies, tfidf_df], axis=1)
+    X = pd.concat([df[feature_cols], genre_df, network_dummies, text_df], axis=1)
     
     # --- 6. Targets & Save Data ---
     y_reg = df['user_rating']
     
-    # Classification Target (for potential future use)
+    # Classification Target (for legacy compatibility)
     user_median = df['user_rating'].median()
-    y_class = (df['user_rating'] > user_median).astype(int)
-    if y_class.value_counts().min() < 5: 
-        y_class = (df['user_rating'] >= user_median).astype(int)
+    y_class = (df['user_rating'] >= user_median).astype(int)
 
     # NEW: Ordinal target mapping (10 buckets: 0 to 9)
     mapping = {0.5: 0, 1.0: 1, 1.5: 2, 2.0: 3, 2.5: 4, 3.0: 5, 3.5: 6, 4.0: 7, 4.5: 8, 5.0: 9}
@@ -119,28 +123,21 @@ def run_feature_engineering():
     
     output.to_csv(config.TV_SHOWS_TRAINING_DATA_PATH, index=False)
     
-    # --- 7. Save Artifacts (CRITICAL FIX) ---
+    # --- 7. Save Artifacts ---
     artifacts = {
-        # Feature Columns (Required for prediction alignment)
         'features_columns': X.columns.tolist(),
-        
-        # --- DUAL COMPATIBILITY MODE ---
-        # 1. Flat keys (for predict_ratings.py)
-        'median_vote_avg': median_vote,
-        'median_year': median_year,
-        
-        # 2. Nested keys (for Streamlit Oracle App)
         'median_values': {
             'year': median_year,
             'vote_average': median_vote,
+            'vote_count_log': df['vote_count_log'].median(),
+            'season_count': df['season_count'].median()
         },
-        
-        # Encoders & Lists
         'top_networks': top_networks,
-        'mlb_genres': mlb,              # For Oracle App input transformation
-        'kept_genres': kept_genres,     # For predict_ratings.py reconstruction
-        'tfidf_model': tfidf,
-        'tfidf_cols': tfidf_cols
+        'mlb_genres': mlb,
+        'kept_genres': kept_genres,
+        'sentence_transformer': 'all-MiniLM-L6-v2',
+        'pca': pca,
+        'pca_cols': pca_cols
     }
     
     config.TV_SHOWS_PREPROCESSOR_STATE.parent.mkdir(parents=True, exist_ok=True)
@@ -149,6 +146,9 @@ def run_feature_engineering():
     print(f"✅ Features processed & Artifacts saved.")
     print(f"   Shape: {X.shape}")
     print(f"   Artifacts path: {config.TV_SHOWS_PREPROCESSOR_STATE}")
+
+if __name__ == "__main__":
+    run_feature_engineering()
 
 if __name__ == "__main__":
     run_feature_engineering()

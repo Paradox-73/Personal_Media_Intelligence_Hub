@@ -1,0 +1,20 @@
+[
+    {
+        "Domain": "game",
+        "MAE_NoPrior": 0.6581818181818182,
+        "Skill_NoPrior": 0.2252918287937743,
+        "MAE_WithPrior": 0.6509090909090909,
+        "Skill_WithPrior": 0.23385214007782107,
+        "p_value": 0.2059032107320684,
+        "Verdict": "DROP"
+    },
+    {
+        "Domain": "book",
+        "MAE_NoPrior": 0.5476190476190477,
+        "Skill_NoPrior": 0.10775862068965503,
+        "MAE_WithPrior": 0.5587301587301587,
+        "Skill_WithPrior": 0.08965517241379306,
+        "p_value": 0.17793172526825463,
+        "Verdict": "DROP"
+    }
+]

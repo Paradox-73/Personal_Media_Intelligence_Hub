@@ -119,6 +119,42 @@ def parse_list_col(x):
         return ast.literal_eval(str(x))
     except: return [str(x)]
 
+# Canonicalize language labels so ISO codes and full names collapse together
+# (e.g. "en"/"English", "hi"/"Hindi", "ja"/"Japanese" all map to one label).
+LANGUAGE_MAP = {
+    'en': 'English', 'eng': 'English', 'english': 'English',
+    'hi': 'Hindi', 'hin': 'Hindi', 'hindi': 'Hindi',
+    'ja': 'Japanese', 'jpn': 'Japanese', 'japanese': 'Japanese',
+    'ko': 'Korean', 'kor': 'Korean', 'korean': 'Korean',
+    'fr': 'French', 'fra': 'French', 'french': 'French',
+    'es': 'Spanish', 'spa': 'Spanish', 'spanish': 'Spanish',
+    'de': 'German', 'ger': 'German', 'deu': 'German', 'german': 'German',
+    'it': 'Italian', 'ita': 'Italian', 'italian': 'Italian',
+    'ru': 'Russian', 'rus': 'Russian', 'russian': 'Russian',
+    'pt': 'Portuguese', 'por': 'Portuguese', 'portuguese': 'Portuguese',
+    'nl': 'Dutch', 'dut': 'Dutch', 'dutch': 'Dutch',
+    'zh': 'Chinese', 'cn': 'Chinese', 'zho': 'Chinese', 'chinese': 'Chinese',
+    'mandarin': 'Chinese', 'cantonese': 'Chinese',
+    'pa': 'Punjabi', 'punjabi': 'Punjabi',
+    'bn': 'Bengali', 'ben': 'Bengali', 'bengali': 'Bengali',
+    'ta': 'Tamil', 'tamil': 'Tamil',
+    'te': 'Telugu', 'telugu': 'Telugu',
+    'mr': 'Marathi', 'marathi': 'Marathi',
+    'sv': 'Swedish', 'swedish': 'Swedish',
+    'no': 'Norwegian', 'nb': 'Norwegian', 'norwegian': 'Norwegian',
+    'th': 'Thai', 'thai': 'Thai',
+    'uk': 'Ukrainian', 'ukrainian': 'Ukrainian',
+    'la': 'Latin', 'latin': 'Latin',
+}
+
+def normalize_language(val):
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return val
+    key = str(val).strip().lower()
+    if key in ('', 'nan', 'none', 'unknown'):
+        return str(val).strip()
+    return LANGUAGE_MAP.get(key, str(val).strip().title())
+
 def get_frequent_items_with_avg(df, col_name, top_n=10):
     df_exp = df.explode(col_name)
     df_exp = df_exp[~df_exp[col_name].isin(['Unknown', 'nan', np.nan, ''])]
@@ -218,11 +254,15 @@ def load_data():
         df['popularity'] = pd.to_numeric(df['popularity'], errors='coerce').fillna(0)
         
         for c in ['genre', 'actors', 'writer', 'director', 'production', 'country', 'language']:
-            if c in df.columns: 
+            if c in df.columns:
                 df[f'{c}_list'] = df[c].apply(parse_list_col)
                 # Apply actor threshold
                 if c == 'actors':
                     df[f'{c}_list'] = df[f'{c}_list'].apply(lambda x: x[:MAX_ACTORS_PER_MOVIE] if isinstance(x, list) else x)
+                # Collapse equivalent language labels (en == English, etc.)
+                if c == 'language':
+                    df['language_list'] = df['language_list'].apply(
+                        lambda lst: list(dict.fromkeys(normalize_language(i) for i in lst)) if isinstance(lst, list) else lst)
             
         df['decade'] = (df['year'] // 10) * 10
         return df
@@ -238,48 +278,28 @@ if df is None:
     st.error("❌ Data not found. Run ingestion first.")
     st.stop()
 
-# --- SIDEBAR FILTERS ---
-st.sidebar.header("🔍 Filters")
-
-# Date Filter for Diary
-if df_diary is not None and not df_diary.empty:
-    st.sidebar.subheader("📅 Watch Date Range")
-    min_date = df_diary['Watched Date'].min().date()
-    max_date = df_diary['Watched Date'].max().date()
-    
-    # Default to current year if there's a lot of data
-    start_default = min_date
-    if max_date.year > min_date.year:
-        # If we have multiple years, default to the start of the most recent year
-        start_default = pd.Timestamp(year=max_date.year, month=1, day=1).date()
-    
-    date_range = st.sidebar.date_input(
-        "Select Watch Period",
-        value=(start_default, max_date),
-        min_value=min_date,
-        max_value=max_date
-    )
-    
-    if isinstance(date_range, tuple) and len(date_range) == 2:
-        df_diary_filtered = df_diary[
-            (df_diary['Watched Date'].dt.date >= date_range[0]) & 
-            (df_diary['Watched Date'].dt.date <= date_range[1])
-        ]
-    else:
-        df_diary_filtered = df_diary
-else:
-    df_diary_filtered = df_diary
-
-st.sidebar.divider()
+# Diary drives the "Ratings over Time" charts (no date-range filter; full history is shown).
+df_diary_filtered = df_diary
 
 # Prepare Theatre Watch DF by joining with main df to get ratings and genres
 df_theatre = None
 if df_theatre_raw is not None:
     # Use URL as the primary key for joining
-    df_theatre = pd.merge(df_theatre_raw, df[['letterboxd_uri', 'user_rating', 'genre_list', 'poster', 
-                                              'director_list', 'actors_list', 'writer_list', 'production_list', 
-                                              'runtime', 'overview', 'tagline', 'plot']], 
+    df_theatre = pd.merge(df_theatre_raw, df[['letterboxd_uri', 'user_rating', 'genre_list', 'poster',
+                                              'director_list', 'actors_list', 'writer_list', 'production_list',
+                                              'runtime', 'overview', 'tagline', 'plot']],
                           left_on='URL', right_on='letterboxd_uri', how='left')
+
+    # Theatre year: if the film is in your diary, bucket it by the date you actually saw it;
+    # otherwise fall back to the film's release year.
+    df_theatre['theatre_year'] = df_theatre['Year']
+    if df_diary is not None and not df_diary.empty:
+        saw_year_by_name = (df_diary.dropna(subset=['Watched Date'])
+                                    .groupby('Name')['Watched Date'].max().dt.year)
+        mapped_year = df_theatre['Name'].map(saw_year_by_name)
+        df_theatre['theatre_year'] = mapped_year.fillna(df_theatre['Year'])
+    df_theatre['theatre_year'] = pd.to_numeric(df_theatre['theatre_year'], errors='coerce').astype('Int64')
+
     # Filter to only include those that have a rating (meaning they've been watched/enriched)
     df_theatre_watched = df_theatre[df_theatre['user_rating'].notna()].copy()
     if not df_theatre_watched.empty:
@@ -375,7 +395,7 @@ with t_sea:
 with t_time:
     if df_diary_filtered is not None and not df_diary_filtered.empty:
         st.markdown("#### Ratings Over Time (Direct from Diary)")
-        st.caption("Each point represents a watch entry. Use the sidebar to change the date range, or use the range slider below the chart to zoom in.")
+        st.caption("Each point represents a watch entry. Use the range slider below the chart to zoom into a period.")
         
         # Scatter plot with trendline
         fig = px.scatter(df_diary_filtered, x='Watched Date', y='Rating', 
@@ -484,45 +504,59 @@ st.subheader("💰 Scores & Consensus Alignment")
 t1, t2, t3 = st.tabs(["Critic Alignment", "Box Office Impact", "Global Stats"])
 
 with t1:
-    st.markdown("#### Do you agree with Critics & Audiences?")
-    c_rt, c_meta = st.columns(2)
-    c_imdb, c_tmdb = st.columns(2)
-    
+    st.markdown("#### How often do you agree with each critic?")
+    st.caption("Each source is rescaled to your 0–5 scale, then compared movie-by-movie. "
+               "**Same** = within 0.5★ · **Close** = within 1★ · **Far** = more than 1★ apart.")
+
+    # (label, critic score normalised to the user's 0-5 scale)
+    critic_specs = []
     if 'rotten_tomatoes_rating' in df.columns:
-        df['rt_bin'] = pd.cut(df['rotten_tomatoes_rating'], bins=[0, 20, 40, 60, 80, 100], labels=['0-20%', '21-40%', '41-60%', '61-80%', '81-100%'])
-        rt_agg = df.groupby('rt_bin', observed=True)['user_rating'].mean().reset_index()
-        rt_agg['user_rating'] = rt_agg['user_rating'].round(3)
-        with c_rt:
-            fig = px.bar(rt_agg, x='rt_bin', y='user_rating', title="Avg Rating by Rotten Tomatoes", range_y=[0, 5], color='user_rating', color_continuous_scale=[[0, HUB_PALETTE[3]], [1, HUB_PALETTE[0]]])
-            fig.update_traces(marker_line_width=1, marker_line_color="#2C343F")
-            st.plotly_chart(fig, use_container_width=True)
-
+        critic_specs.append(('Rotten Tomatoes', df['rotten_tomatoes_rating'] / 20.0))   # 0-100 -> 0-5
     if 'metascore' in df.columns:
-        df['meta_bin'] = pd.cut(df['metascore'], bins=[0, 20, 40, 60, 80, 100], labels=['0-39', '40-60', '61-80', '81-100', '100'])
-        meta_agg = df.groupby('meta_bin', observed=True)['user_rating'].mean().reset_index()
-        meta_agg['user_rating'] = meta_agg['user_rating'].round(3)
-        with c_meta:
-            fig = px.bar(meta_agg, x='meta_bin', y='user_rating', title="Avg Rating by Metascore", range_y=[0, 5], color_discrete_sequence=[HUB_PALETTE[2]])
-            fig.update_traces(marker_line_width=1, marker_line_color="#2C343F")
-            st.plotly_chart(fig, use_container_width=True)
-            
+        critic_specs.append(('Metascore', df['metascore'] / 20.0))                       # 0-100 -> 0-5
     if 'imdb_rating' in df.columns:
-        df['imdb_bin'] = pd.cut(df['imdb_rating'], bins=[0, 4, 6, 7, 8, 10], labels=['<4.0', '4.0-6.0', '6.0-7.0', '7.0-8.0', '>8.0'])
-        imdb_agg = df.groupby('imdb_bin', observed=True)['user_rating'].mean().reset_index()
-        imdb_agg['user_rating'] = imdb_agg['user_rating'].round(3)
-        with c_imdb:
-            fig = px.bar(imdb_agg, x='imdb_bin', y='user_rating', title="Avg Rating by IMDb", range_y=[0, 5], color_discrete_sequence=[HUB_PALETTE[1]])
-            fig.update_traces(marker_line_width=1, marker_line_color="#2C343F")
-            st.plotly_chart(fig, use_container_width=True)
-
+        critic_specs.append(('IMDb', df['imdb_rating'] / 2.0))                            # 0-10 -> 0-5
     if 'vote_average' in df.columns:
-        df['tmdb_bin'] = pd.cut(df['vote_average'], bins=[0, 4, 6, 7, 8, 10], labels=['<4.0', '4.0-6.0', '6.0-7.0', '7.0-8.0', '>8.0'])
-        tmdb_agg = df.groupby('tmdb_bin', observed=True)['user_rating'].mean().reset_index()
-        tmdb_agg['user_rating'] = tmdb_agg['user_rating'].round(3)
-        with c_tmdb:
-            fig = px.bar(tmdb_agg, x='tmdb_bin', y='user_rating', title="Avg Rating by TMDB Votes", range_y=[0, 5], color_discrete_sequence=[HUB_PALETTE[0]])
-            fig.update_traces(marker_line_width=1, marker_line_color="#2C343F")
-            st.plotly_chart(fig, use_container_width=True)
+        critic_specs.append(('TMDB', df['vote_average'] / 2.0))                           # 0-10 -> 0-5
+
+    rows, summary = [], []
+    for label, norm in critic_specs:
+        comp = pd.DataFrame({'user': df['user_rating'], 'critic': pd.to_numeric(norm, errors='coerce')})
+        comp = comp[(comp['critic'] > 0)].dropna()   # drop missing/zero critic scores
+        if comp.empty:
+            continue
+        d = (comp['user'] - comp['critic']).abs()
+        same = int((d <= 0.5).sum())
+        close = int(((d > 0.5) & (d <= 1.0)).sum())
+        far = int((d > 1.0).sum())
+        rows += [{'Critic': label, 'Agreement': 'Same', 'Count': same},
+                 {'Critic': label, 'Agreement': 'Close', 'Count': close},
+                 {'Critic': label, 'Agreement': 'Far', 'Count': far}]
+        mode_bucket = max([('Same', same), ('Close', close), ('Far', far)], key=lambda x: x[1])[0]
+        summary.append({'Critic': label, '% Same': round(100 * same / len(comp), 1),
+                        'Avg |diff|': round(float(d.mean()), 2), 'Most common': mode_bucket, 'Movies': len(comp)})
+
+    if rows:
+        agg_df = pd.DataFrame(rows)
+        # Order critics on the x-axis by agreement (most agreed-with first)
+        order = [s['Critic'] for s in sorted(summary, key=lambda s: (-s['% Same'], s['Avg |diff|']))]
+        fig = px.bar(agg_df, x='Critic', y='Count', color='Agreement', barmode='group',
+                     title="Agreement Breakdown by Source",
+                     category_orders={'Critic': order, 'Agreement': ['Same', 'Close', 'Far']},
+                     color_discrete_map={'Same': HUB_PALETTE[1], 'Close': HUB_PALETTE[2], 'Far': HUB_PALETTE[0]})
+        fig.update_traces(marker_line_width=1, marker_line_color="#14171C")
+        st.plotly_chart(fig, use_container_width=True)
+
+        sdf = pd.DataFrame(summary).sort_values(['% Same', 'Avg |diff|'], ascending=[False, True]).reset_index(drop=True)
+        sdf.index += 1
+        sdf.index.name = 'Rank'
+        st.markdown("**Who you agree with most** — ranked by % Same, then smallest average difference:")
+        st.dataframe(sdf, use_container_width=True)
+        leader = sdf.iloc[0]
+        st.caption(f"🎯 You align most closely with **{leader['Critic']}** "
+                   f"({leader['% Same']}% within half a star, avg gap {leader['Avg |diff|']}★).")
+    else:
+        st.info("No critic scores available to compare.")
 
 with t2:
     if 'box_office' in df.columns:
@@ -804,8 +838,8 @@ if df_theatre is not None:
         tc1, tc2, tc3, tc4 = st.columns(4)
         with tc1: lb_metric("Theatre Visits", len(df_theatre))
         with tc2: lb_metric("Avg Theatre Rating", f"{df_theatre_watched['user_rating'].mean():.2f}")
-        with tc3: 
-            most_common_year = df_theatre['Year'].mode().iloc[0] if not df_theatre['Year'].mode().empty else "N/A"
+        with tc3:
+            most_common_year = df_theatre['theatre_year'].mode().iloc[0] if not df_theatre['theatre_year'].mode().empty else "N/A"
             lb_metric("Peak Theatre Year", most_common_year)
         with tc4:
             # Extract most common genre from watched theatre movies
@@ -825,8 +859,11 @@ if df_theatre is not None:
         t_tab1, t_tab2, t_tab3, t_tab4, t_tab5, t_tab6, t_tab7 = st.tabs(["Year-wise", "Genres", "Tags", "Cast & Crew", "Studios & Runtime", "Themes", "All Watches"])
         
         with t_tab1:
-            df_t_year = df_theatre.groupby('Year').size().reset_index(name='Count')
-            fig_t_year = px.bar(df_t_year, x='Year', y='Count', title="Theatre Watches per Year", color_discrete_sequence=[HUB_PALETTE[2]])
+            st.caption("Films in your diary are counted in the year you actually saw them; films not in the diary use their release year.")
+            df_t_year = df_theatre.dropna(subset=['theatre_year']).groupby('theatre_year').size().reset_index(name='Count')
+            df_t_year['theatre_year'] = df_t_year['theatre_year'].astype(int)
+            fig_t_year = px.bar(df_t_year, x='theatre_year', y='Count', title="Theatre Watches per Year",
+                                labels={'theatre_year': 'Year'}, color_discrete_sequence=[HUB_PALETTE[2]])
             update_bar_trace(fig_t_year)
             # Fix year axis to show every year
             fig_t_year.update_layout(xaxis=dict(tickmode='linear', dtick=1))

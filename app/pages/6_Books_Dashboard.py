@@ -38,10 +38,21 @@ def load_data():
         pred_path = config.BASE_DIR / "results" / "books" / "book_predictions_detailed.csv"
         if pred_path.exists():
             df_pred = pd.read_csv(pred_path)
-            # Merge on title and authors
-            df = pd.merge(df, df_pred[['title', 'authors', 'predicted_rating']], 
-                          on=['title', 'authors'], how='left')
-        
+            # The enriched export currently leaves 'authors'/'categories' empty, but the
+            # predictions file carries them. Merge on title only (authors dtypes differ and
+            # would otherwise raise a float64-vs-object merge error), then backfill metadata.
+            df['title'] = df['title'].astype(str)
+            df_pred['title'] = df_pred['title'].astype(str)
+            pred_cols = [c for c in ['title', 'authors', 'categories', 'predicted_rating'] if c in df_pred.columns]
+            df_pred = df_pred[pred_cols].drop_duplicates(subset='title', keep='first')
+            df = pd.merge(df, df_pred, on='title', how='left', suffixes=('', '_pred'))
+            # Coalesce metadata: prefer enriched value, fall back to prediction file
+            for col in ['authors', 'categories']:
+                pred_col = f'{col}_pred'
+                if pred_col in df.columns:
+                    df[col] = df[col].where(df[col].notna(), df[pred_col])
+                    df.drop(columns=[pred_col], inplace=True)
+
         # Cleanup
         df['my_rating'] = pd.to_numeric(df['my_rating'], errors='coerce')
         df['averageRating'] = pd.to_numeric(df['averageRating'], errors='coerce')
@@ -62,7 +73,7 @@ st.title("📚 Book Intelligence Dashboard")
 c1, c2, c3, c4 = st.columns(4)
 with c1: st.metric("Total Books", len(df))
 with c2: st.metric("Avg My Rating", f"{df['my_rating'].mean():.2f}")
-with c3: st.metric("Avg Google Rating", f"{df['averageRating'].dropna().mean():.1f}")
+with c3: st.metric("Avg Hardcover Rating", f"{df['averageRating'].dropna().mean():.1f}")
 with c4: 
     if 'predicted_rating' in df.columns:
         mae = (df['my_rating'] - df['predicted_rating']).abs().mean()
@@ -135,7 +146,7 @@ for _, book in top_books.iterrows():
             st.image(book['thumbnail'], width=150)
     with c2:
         st.markdown(f"### {book['title']} ({book['publishedDate']})")
-        st.markdown(f"**Authors:** {book['authors']} | **My Rating:** {book['my_rating']} | **Google Rating:** {book['averageRating']}")
+        st.markdown(f"**Authors:** {book['authors']} | **My Rating:** {book['my_rating']} | **Hardcover Rating:** {book['averageRating']}")
         st.markdown(f"**Categories:** {book['categories']} | **Pages:** {book['pageCount']}")
         st.write(f"{str(book['description'])[:500]}...")
     st.divider()

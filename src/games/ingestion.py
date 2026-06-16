@@ -86,7 +86,7 @@ def enrich_game_data():
         
         # Check if we need to fetch more data
         needs_fetch = False
-        cols_to_check = ['genres', 'developers', 'publishers', 'metacritic', 'rating', 'description_raw']
+        cols_to_check = ['genres', 'developers', 'publishers', 'metacritic', 'rating', 'description_raw', 'playtime']
         for col in cols_to_check:
             if col not in row or is_effectively_empty(row[col]):
                 needs_fetch = True
@@ -116,7 +116,10 @@ def enrich_game_data():
                     row['tags'] = ", ".join([t['name'] for t in rawg_data.get('tags', [])])
                 if is_effectively_empty(row.get('description_raw')):
                     row['description_raw'] = rawg_data.get('description_raw') or rawg_data.get('description')
-                
+                if is_effectively_empty(row.get('playtime')):
+                    # RAWG 'playtime' = average hours players take to beat the game
+                    row['playtime'] = rawg_data.get('playtime')
+
                 # Update release year if missing
                 if is_effectively_empty(row.get('released')):
                     row['released'] = rawg_data.get('released')

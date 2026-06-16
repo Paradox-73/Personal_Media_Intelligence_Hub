@@ -141,6 +141,12 @@ def train_advanced_unified_models():
     joblib.dump(cat_reg, ensemble_dir / "catboost_base_regressor.joblib")
     joblib.dump({'best_lambda': best_lambda, 'aligner': aligner, 'pca_cols': pca_cols, 'weights': ensemble.weights}, ensemble_dir / "model_metadata.joblib")
     
+    # Save a GLOBAL Aligner (fitted on all data) for visualization in the Explorer
+    global_aligner = DomainAligner(method='centroid') # or 'coral' if preferred
+    global_aligner.fit(X[pca_cols].values, media_types)
+    joblib.dump(global_aligner, config.BASE_DIR / "models" / "coral_alignment.joblib")
+    print(f"🌍 Global aligner saved for Latent Space Explorer.")
+
     # Update state for inference
     state = joblib.load(config.UNIFIED_PREPROCESSOR_STATE)
     state['aligner'] = aligner

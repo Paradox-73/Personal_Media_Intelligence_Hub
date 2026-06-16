@@ -1,0 +1,151 @@
+{
+    "benchmarks": [
+        {
+            "Domain": "movie",
+            "N": 980,
+            "Model": "XGBoost",
+            "MAE": 0.5015306122448979,
+            "R2": 0.5238489566081483,
+            "Acc": 77.85714285714286
+        },
+        {
+            "Domain": "unified_rated",
+            "N": 1264,
+            "Model": "Mean Ensemble",
+            "MAE": 0.5415348101265823,
+            "R2": 0.4429449814309254,
+            "Acc": 75.55379746835443
+        },
+        {
+            "Domain": "unified_full",
+            "N": 4952,
+            "Model": "Mean Ensemble (+music pool)",
+            "MAE": 0.41109450726978997,
+            "R2": 0.49841460111009184,
+            "Acc": 80.43214862681745
+        },
+        {
+            "Domain": "tv",
+            "N": 159,
+            "Model": "Simplex-Stack",
+            "MAE": 0.8144654088050315,
+            "R2": 0.06298790754630368,
+            "Acc": 52.83018867924528
+        },
+        {
+            "Domain": "game",
+            "N": 55,
+            "Model": "Local SVR",
+            "MAE": 0.6363636363636364,
+            "R2": 0.36406249999999996,
+            "Acc": 61.81818181818181
+        },
+        {
+            "Domain": "book",
+            "N": 63,
+            "Model": "Local SVR",
+            "MAE": 0.5476190476190477,
+            "R2": 0.18224299065420546,
+            "Acc": 76.19047619047619
+        }
+    ],
+    "slices": [
+        {
+            "Domain": "movie",
+            "N": 980,
+            "MAE": 0.4826530612244898,
+            "R2": 0.5506238268742409,
+            "Acc": 79.59183673469387
+        },
+        {
+            "Domain": "tv",
+            "N": 159,
+            "MAE": 0.7075471698113207,
+            "R2": 0.17115669166794245,
+            "Acc": 59.74842767295597
+        },
+        {
+            "Domain": "game",
+            "N": 62,
+            "MAE": 1.0483870967741935,
+            "R2": 0.15607375271149682,
+            "Acc": 50.0
+        },
+        {
+            "Domain": "book",
+            "N": 63,
+            "MAE": 0.5396825396825397,
+            "R2": 0.18878504672897178,
+            "Acc": 77.77777777777779
+        }
+    ],
+    "ablation": [
+        {
+            "Protocol": "Base XGB (Aligned)",
+            "MAE": 0.5504746835443038,
+            "R2": 0.4225435942841682,
+            "EffectSize": "ref",
+            "p": "ref"
+        },
+        {
+            "Protocol": "Mean Ensemble (XGB+Cat)",
+            "MAE": 0.5439082278481012,
+            "R2": 0.4383595267960353,
+            "EffectSize": "d=0.084 (trivial)",
+            "p": "0.0000"
+        },
+        {
+            "Protocol": "Ridge Stack (removed \u2014 legacy 5-fold protocol)",
+            "MAE": 0.5609,
+            "R2": 0.3837,
+            "EffectSize": "n/a (legacy)",
+            "p": "n/a (legacy)"
+        },
+        {
+            "Protocol": "+Residual Heads (removed \u2014 legacy 5-fold protocol)",
+            "MAE": 0.6088,
+            "R2": 0.2688,
+            "EffectSize": "n/a (legacy)",
+            "p": "n/a (legacy)"
+        }
+    ],
+    "distillation": [
+        {
+            "Domain": "game",
+            "MAE_NoPrior": 0.6581818181818182,
+            "Skill_NoPrior": 0.2252918287937743,
+            "MAE_WithPrior": 0.6509090909090909,
+            "Skill_WithPrior": 0.23385214007782107,
+            "p_value": 0.2059032107320684,
+            "Verdict": "DROP"
+        },
+        {
+            "Domain": "book",
+            "MAE_NoPrior": 0.5476190476190477,
+            "Skill_NoPrior": 0.10775862068965503,
+            "MAE_WithPrior": 0.5587301587301587,
+            "Skill_WithPrior": 0.08965517241379306,
+            "p_value": 0.17793172526825463,
+            "Verdict": "DROP"
+        }
+    ],
+    "params": {
+        "lambda": 0.000429,
+        "lambda_note": "temporal decay applied in the evaluated Mean Ensemble (half-life ~1,615 days)",
+        "alpha_hi": null,
+        "alpha_lo": null,
+        "alpha_note": "AsymmetricEdgePenalty alphas are tuned by the advanced trainer but NOT applied in the frozen-fold Mean Ensemble evaluation"
+    },
+    "notes": {
+        "dedup": "per-item: raw predictions averaged across 5 CV repeats, then rounded to 0.5",
+        "standalone_models": {
+            "movie": "XGBoost",
+            "tv": "Simplex-Stack",
+            "game": "Local SVR (no prior)",
+            "book": "Local SVR (no prior)"
+        },
+        "unified_full": "trained on rated + 3,688 music PU pseudo-labels and evaluated INCLUDING music via RepeatedKFold(5x1), XGB proxy; not a frozen-fold / actual-taste metric -- secondary line only"
+    },
+    "generated_at": "2026-06-12T12:47:09",
+    "git_hash": "20f066a2551108630d9397d53d4d2b5154e15b8b"
+}

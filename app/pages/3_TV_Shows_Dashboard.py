@@ -103,6 +103,42 @@ def parse_list_col(x):
         return ast.literal_eval(str(x))
     except: return [str(x)]
 
+# Canonicalize language labels so ISO codes and full names collapse together
+# (e.g. "en"/"English", "hi"/"Hindi", "ja"/"Japanese" all map to one label).
+LANGUAGE_MAP = {
+    'en': 'English', 'eng': 'English', 'english': 'English',
+    'hi': 'Hindi', 'hin': 'Hindi', 'hindi': 'Hindi',
+    'ja': 'Japanese', 'jpn': 'Japanese', 'japanese': 'Japanese',
+    'ko': 'Korean', 'kor': 'Korean', 'korean': 'Korean',
+    'fr': 'French', 'fra': 'French', 'french': 'French',
+    'es': 'Spanish', 'spa': 'Spanish', 'spanish': 'Spanish',
+    'de': 'German', 'ger': 'German', 'deu': 'German', 'german': 'German',
+    'it': 'Italian', 'ita': 'Italian', 'italian': 'Italian',
+    'ru': 'Russian', 'rus': 'Russian', 'russian': 'Russian',
+    'pt': 'Portuguese', 'por': 'Portuguese', 'portuguese': 'Portuguese',
+    'nl': 'Dutch', 'dut': 'Dutch', 'dutch': 'Dutch',
+    'zh': 'Chinese', 'cn': 'Chinese', 'zho': 'Chinese', 'chinese': 'Chinese',
+    'mandarin': 'Chinese', 'cantonese': 'Chinese',
+    'pa': 'Punjabi', 'punjabi': 'Punjabi',
+    'bn': 'Bengali', 'ben': 'Bengali', 'bengali': 'Bengali',
+    'ta': 'Tamil', 'tamil': 'Tamil',
+    'te': 'Telugu', 'telugu': 'Telugu',
+    'mr': 'Marathi', 'marathi': 'Marathi',
+    'sv': 'Swedish', 'swedish': 'Swedish',
+    'no': 'Norwegian', 'nb': 'Norwegian', 'norwegian': 'Norwegian',
+    'th': 'Thai', 'thai': 'Thai',
+    'uk': 'Ukrainian', 'ukrainian': 'Ukrainian',
+    'la': 'Latin', 'latin': 'Latin',
+}
+
+def normalize_language(val):
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return val
+    key = str(val).strip().lower()
+    if key in ('', 'nan', 'none', 'unknown'):
+        return str(val).strip()
+    return LANGUAGE_MAP.get(key, str(val).strip().title())
+
 def get_frequent_items_with_avg(df, col_name, top_n=10):
     df_exp = df.explode(col_name)
     df_exp = df_exp[~df_exp[col_name].isin(['Unknown', 'nan', np.nan, ''])]
@@ -171,7 +207,11 @@ def load_data():
         list_cols = ['genres', 'created_by', 'actors', 'production_companies', 'country', 'writer']
         for c in list_cols:
             if c in df.columns: df[f'{c}_list'] = df[c].apply(parse_list_col)
-            
+
+        # Collapse equivalent language labels (en == English, ja == Japanese, etc.)
+        if 'language' in df.columns:
+            df['language'] = df['language'].apply(normalize_language)
+
         df['decade'] = (df['year'] // 10) * 10
         
         # Handle is_liked
@@ -319,20 +359,49 @@ st.subheader("📈 Scores & Consensus Alignment")
 t1, t2 = st.tabs(["Critic Alignment", "Global Stats"])
 
 with t1:
-    st.markdown("#### Do you agree with IMDb & TMDB?")
-    c_imdb, c_tmdb = st.columns(2)
+    st.markdown("#### How often do you agree with IMDb & TMDB?")
+    st.caption("Each source is rescaled to your 0–5 scale, then compared show-by-show. "
+               "**Same** = within 0.5★ · **Close** = within 1★ · **Far** = more than 1★ apart.")
+
+    critic_specs = []
     if 'imdb_rating' in df.columns:
-        df['imdb_bin'] = pd.cut(df['imdb_rating'], bins=[0, 4, 6, 7, 8, 10], labels=['<4.0', '4.0-6.0', '6.0-7.0', '7.0-8.0', '>8.0'])
-        imdb_agg = df.groupby('imdb_bin', observed=True)['user_rating'].mean().reset_index()
-        with c_imdb:
-            fig = px.bar(imdb_agg, x='imdb_bin', y='user_rating', title="Avg Rating by IMDb", range_y=[0, 5], color_discrete_sequence=[HUB_PALETTE[1]])
-            st.plotly_chart(fig, use_container_width=True)
+        critic_specs.append(('IMDb', df['imdb_rating'] / 2.0))     # 0-10 -> 0-5
     if 'vote_average' in df.columns:
-        df['tmdb_bin'] = pd.cut(df['vote_average'], bins=[0, 4, 6, 7, 8, 10], labels=['<4.0', '4.0-6.0', '6.0-7.0', '7.0-8.0', '>8.0'])
-        tmdb_agg = df.groupby('tmdb_bin', observed=True)['user_rating'].mean().reset_index()
-        with c_tmdb:
-            fig = px.bar(tmdb_agg, x='tmdb_bin', y='user_rating', title="Avg Rating by TMDB", range_y=[0, 5], color_discrete_sequence=[HUB_PALETTE[0]])
-            st.plotly_chart(fig, use_container_width=True)
+        critic_specs.append(('TMDB', df['vote_average'] / 2.0))    # 0-10 -> 0-5
+
+    rows, summary = [], []
+    for label, norm in critic_specs:
+        comp = pd.DataFrame({'user': df['user_rating'], 'critic': pd.to_numeric(norm, errors='coerce')})
+        comp = comp[comp['critic'] > 0].dropna()
+        if comp.empty:
+            continue
+        d = (comp['user'] - comp['critic']).abs()
+        same = int((d <= 0.5).sum())
+        close = int(((d > 0.5) & (d <= 1.0)).sum())
+        far = int((d > 1.0).sum())
+        rows += [{'Critic': label, 'Agreement': 'Same', 'Count': same},
+                 {'Critic': label, 'Agreement': 'Close', 'Count': close},
+                 {'Critic': label, 'Agreement': 'Far', 'Count': far}]
+        mode_bucket = max([('Same', same), ('Close', close), ('Far', far)], key=lambda x: x[1])[0]
+        summary.append({'Critic': label, '% Same': round(100 * same / len(comp), 1),
+                        'Avg |diff|': round(float(d.mean()), 2), 'Most common': mode_bucket, 'Shows': len(comp)})
+
+    if rows:
+        agg_df = pd.DataFrame(rows)
+        order = [s['Critic'] for s in sorted(summary, key=lambda s: (-s['% Same'], s['Avg |diff|']))]
+        fig = px.bar(agg_df, x='Critic', y='Count', color='Agreement', barmode='group',
+                     title="Agreement Breakdown by Source",
+                     category_orders={'Critic': order, 'Agreement': ['Same', 'Close', 'Far']},
+                     color_discrete_map={'Same': HUB_PALETTE[1], 'Close': HUB_PALETTE[2], 'Far': HUB_PALETTE[0]})
+        st.plotly_chart(fig, use_container_width=True)
+
+        sdf = pd.DataFrame(summary).sort_values(['% Same', 'Avg |diff|'], ascending=[False, True]).reset_index(drop=True)
+        sdf.index += 1
+        sdf.index.name = 'Rank'
+        st.markdown("**Who you agree with most** — ranked by % Same, then smallest average difference:")
+        st.dataframe(sdf, use_container_width=True)
+    else:
+        st.info("No critic scores available to compare.")
 
 with t2:
     c_ctry, c_lang = st.columns(2)
@@ -354,7 +423,18 @@ st.caption("Dominant plot themes extracted from Overview + Tagline.")
 
 if 'overview' in df.columns:
     df['vibe_text'] = df['overview'].fillna('') + " " + df['tagline'].fillna('')
-    stops = set(['the', 'a', 'an', 'and', 'or', 'but', 'if', 'because', 'as', 'what', 'where', 'when', 'how', 'who', 'which', 'this', 'that', 'these', 'those', 'show', 'series', 'life', 'world', 'story', 'new', 'one', 'two', 'years', 'year', 'into', 'from', 'with'])
+    # Same stopword set as the Movies Plot Vibe Check (with TV-specific terms added).
+    stops = set([
+        'the', 'a', 'an', 'and', 'or', 'but', 'if', 'because', 'as', 'what', 'where', 'when', 'how', 'who', 'which', 'this', 'that', 'these', 'those',
+        'am', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'having', 'do', 'does', 'did', 'doing',
+        'at', 'by', 'for', 'from', 'in', 'into', 'of', 'off', 'on', 'onto', 'out', 'over', 'up', 'down', 'to', 'with', 'within', 'without',
+        'he', 'him', 'his', 'she', 'her', 'hers', 'it', 'its', 'they', 'them', 'their', 'theirs',
+        'i', 'me', 'my', 'mine', 'you', 'your', 'yours', 'we', 'us', 'our', 'ours',
+        'after', 'before', 'while', 'during', 'since', 'until', 'through', 'about', 'against', 'between',
+        'movie', 'film', 'story', 'plot', 'character', 'life', 'world', 'find', 'finds', 'one', 'two',
+        'back', 'new', 'must', 'will', 'only', 'other', 'city', 'years', 'year', 'himself', 'high', 'most', 'just', 'more', 'there', 'soon',
+        'show', 'series', 'episode', 'episodes', 'season', 'seasons',
+    ])
     word_ratings = {}
     for _, row in df.dropna(subset=['vibe_text', 'user_rating']).iterrows():
         words = set([w.lower() for w in re.findall(r'\w+', str(row['vibe_text'])) if len(w) > 3 and w.lower() not in stops])
