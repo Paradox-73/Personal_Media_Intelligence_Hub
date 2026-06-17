@@ -250,6 +250,10 @@ def train_advanced_models():
     stack_preds = stacking_regressor.predict(X_test)
     print_performance_report("🚀 FUSED STACKING ENSEMBLE 🚀", y_reg_test, stack_preds)
 
+    # Ordinal expected-value predictions (used in the diagnostic plots below).
+    # Previously referenced but never computed -> NameError that aborted the run.
+    ord_ev_preds = ord_wrapper.predict(X_test)
+
     # --- 6. Visualizations (Advanced Ensemble) ---
     print("\n--- Generating Ensemble Visualizations ---")
     results_dir = config.BASE_DIR / "results" / "movies" / "advanced"

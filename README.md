@@ -19,8 +19,8 @@ The **Personal Media Intelligence Hub** is a sophisticated "Global Taste Engine"
 
 A crucial part of this project involved recognizing and correcting inflated metrics in data-sparse domains (Games and Books, N ≈ 60). Initially, a single validation split suggested a promising R² of ~0.45. However, this was a statistical artifact. 
 
-By migrating to a rigorous **10-fold × 5-repeat Cross-Validation** protocol, the true signal emerged: an R² near 0.0. While superficially disappointing, this was a critical finding:
-1.  **Metric Treachery:** In domains where ratings cluster tightly (e.g., 3.0 to 4.5), variance is tiny. R² becomes highly sensitive to noise, hovering near zero even when the Mean Absolute Error (MAE) is genuinely useful.
+By migrating to a rigorous **10-fold × 5-repeat Cross-Validation** protocol, that inflated number deflated to a **modest and unstable** R² (Games ≈ 0.36, Books ≈ 0.18 on the frozen folds — and *near-zero or negative* under stricter pooled estimators or for the unified slice). That spread is itself the lesson: R² is not a reliable yardstick here. This was a critical finding:
+1.  **Metric Treachery:** In domains where ratings cluster tightly (e.g., 3.0 to 4.5), variance is tiny, so R² becomes hypersensitive to a few noisy items — swinging from ~0.36 to near-zero depending on the estimator — even when the Mean Absolute Error (MAE) is stable and genuinely useful.
 2.  **The Distillation Prior — tested and dropped:** We hypothesized the unified model could anchor these sparse domains as a prior feature. A paired Wilcoxon ablation on the frozen folds said otherwise (p = 0.21 Games / 0.18 Books, both ≥ 0.05): the prior was removed. What *did* emerge once it was gone were positive **skill scores** (Games 0.225, Books 0.108) — the local models beat the mean-rating baseline, the first evidence of genuine local signal at N ≈ 60 even with R² ≈ 0.
 3.  **The Pivot to Skill Score:** We reframed the evaluation metric from R² to **Skill Score** (`1 - MAE_model / MAE_baseline`), focusing on whether the system adds value over a simple historical average. 
 4.  **Uncertainty & Acquisition:** We shifted the focus for these domains from raw accuracy to active learning. By surfacing **split-conformal prediction intervals** (e.g., "3.5 ± 1.3"), the Oracle now explicitly quantifies its uncertainty, guiding the user to deliberately rate the most informative backlog items to efficiently bridge the data gap.
@@ -32,9 +32,9 @@ Reviewers see inflated metrics daily; accurately deflating them and extracting a
 
 The project's central question. Two sub-stories:
 
-**1. The reporting-spine bug that flipped a conclusion.** The benchmark table once published the *unified model's per-domain OOF slice* as if it were the standalone local models — with N inflated 5× (OOF rows counted as items) and the local-model names glued on top. Repairing the writer (`assert benchmarks != slices`, per-item dedup, `assert N == n_unique_items`) didn't just fix labels: it forced standalone and unified to be measured with the **same estimator on the same folds**. The result *reversed* the tempting "naive pooling loses in every domain" reading — on a like-for-like MAE comparison the unified model is competitive with or better than the local model in **movies, TV and books**, and clearly worse only in **Games**. The earlier impression was an artifact of comparing a pooled-OOF slice against standalone numbers from a more generous estimator. The bug, and its fix, *changed the scientific conclusion* — which is exactly why the single-source-of-truth renderer exists.
+**1. Two measurement bugs, two flipped conclusions.** The benchmark table once published the *unified model's per-domain OOF slice* as if it were the standalone local models — with N inflated 5× (OOF rows counted as items) and the local-model names glued on top. Repairing the writer (`assert benchmarks != slices`, per-item dedup, `assert N == n_unique_items`) forced standalone and unified to be measured with the **same estimator on the same folds**. But a second, subtler bug remained: the "local" benchmarks were *weakened proxies* (Movies = a plain 200-tree XGB, not the deployed tuned edge-penalty stacking ensemble), which flattered the unified model. Replacing the proxies with the **production local models** (measured honestly as 50-fold registry OOF) gives the final, type-split verdict: the **local model wins in Movies and Games** — the domains with rich domain-specific features (target-encodings, Metacritic) — while the **unified model wins in TV and ties on Books**, the semantic-only domains. Cross-domain pooling earns its keep *only where a domain has little local signal beyond vibe* — not "everywhere but Games," as the proxy comparison had suggested. Two bugs, each of which *changed the scientific conclusion* — exactly why the single-source-of-truth renderer exists.
 
-**2. The pre-registered transfer grid.** We then asked the sharper question — not "does the pooled model win on average" but *which specific source-domain combinations* transfer into which targets, zero-shot and augmented, in the shared feature space. The decision rules were **pre-registered before any result was seen** (positive finding ⇔ augmented lift > 0, paired p < 0.05, at ≥ 2 target fractions). <!-- TRANSFER_VERDICT:BEGIN -->**Realized verdict (pilot): NULL.** No source combination cleared the bar (augmented lift > 0 *and* paired p < 0.05 at ≥ 2 fractions) for any target — so in the shared feature space, no domain blend beats the local model. There *are* suggestive, non-significant signals worth the full grid: positive zero-shot skill from movies into TV (0.19) and Games (0.16), and an augmented lift of +0.20 into Games from *movies+TV+books* — none significant under the reduced-power pilot (6 folds). Aligned-space domain distance does **not** predict transfer (Spearman ≈ −0.10, n=12). The honest reading: cross-domain taste signal, if it exists, is **item-level, not feature-level pooling** — which is exactly what the entity-bridge experiment probes. Full results in the **Transfer Atlas** page and `reports/transfer_grid_summary.json`.<!-- TRANSFER_VERDICT:END --> Designing and pre-registering a paired-significance transfer study — and reporting whatever it returns, positive or null — is the stronger result either way.
+**2. The pre-registered transfer grid.** We then asked the sharper question — not "does the pooled model win on average" but *which specific source-domain combinations* transfer into which targets, zero-shot and augmented, in the shared feature space. The decision rules were **pre-registered before any result was seen** (positive finding ⇔ augmented lift > 0, paired p < 0.05, at ≥ 2 target fractions). <!-- TRANSFER_VERDICT:BEGIN -->**Realized verdict (full 50-fold grid, domain-blind, triple-controlled): TASTE TRANSFERS — into Games, robustly from `movie + book`.** A model trained only on movie/book ratings, **having never seen a game**, predicts game ratings better than the games-only model (zero-shot +0.175 skill, p=0.0004; +0.121 at 100%). This **reverses the earlier pilot NULL** (the 6-fold pilot was underpowered) and survives **three stress controls**: (1) the [domain-identity-leak fix](#engineering-highlights); (2) a *prior-vs-transfer* control — `movie+book→game` beats every featureless constant baseline (MAE 1.08 vs ~1.23) and rank-tracks true ratings at Spearman +0.37, so it is content, not a better prior for games' noisy N=55 mean; and (3) an *embedding text-normalization* control — re-embedding all domains with length-matched text (fixing the [text-shape artifact](#engineering-highlights)) keeps `movie+book→game` significant. The *broader* set of source configs (tv, movie+tv, …) cleared the bar on the raw space but **weakened under text-normalization**, so part of the wide result was a text artifact and the robust claim narrows to `movie+book`. Reconciliation with the benchmark table: Games' rating has a *domain-specific* part (Metacritic/platforms — only the local SVR sees it) and a *genre/vibe* part that lives in the shared space and transfers from movies/books. Aligned-space distance does not predict transfer (Spearman ≈ −0.18); *target data-starvation* does. Full results in the **Transfer Atlas** page and `reports/transfer_grid_summary.json`.<!-- TRANSFER_VERDICT:END --> Pre-registering the rule *before* running, reporting the reversal when the full grid crossed the bar, then stress-testing it three ways before finalizing — that discipline is the point.
 
 ## Architecture
 
@@ -56,65 +56,90 @@ graph TD
     end
     
     subgraph Models
-    E1[Movies CatBoost]
+    E1[Movies Edge-Penalty Stack]
     E2[TV Shows Simplex-Stack]
     E3[Music PU-Affinity]
-    E4[Niche Local SVR]
+    E4[Games/Books Local SVR]
     end
 ```
 
 ## Dataset Schemas
 
-The system orchestrates a multi-domain data lake with strictly enforced schema contracts. Each domain is enriched from specialized APIs before being projected into a **397-feature** shared latent space (aligned via CORAL).
+The system orchestrates a multi-domain data lake with strictly enforced schema contracts. Every domain moves through **two schema layers**, and both are documented below because they answer different questions:
 
-### 🎬 Movies (TMDB/OMDB)
-| Category | Features |
+1. **Ingested schema** — the raw fields each external API returns, persisted to `data/processed/<domain>/enriched_data.csv`. This is what is *collected*.
+2. **Training schema** — the engineered numeric feature matrix actually fed to the models, persisted to `data/processed/<domain>/training_features.csv` (and `…/unified/training_features.csv`). This is what is *learned from*.
+
+The per-domain models train on their own engineered matrix; the **Unified Model** re-projects every domain into a single **397-feature** shared latent space (vibe PCA aligned via CORAL). Column counts below are the live widths of the on-disk training matrices.
+
+> **Convention.** `target_reg` is the 0.5★-grid user rating (the regression label); `target_ordinal` is its 10-bucket integer encoding (0.5★→0 … 5.0★→9); `target_class` is a coarse low/med/high bin kept for legacy dashboards. These label columns are excluded from every feature count quoted below.
+
+### 🎬 Movies (TMDB + OMDb)
+**Ingested** (`enriched_data.csv`, 36 raw fields): `tmdb_id, imdb_id, letterboxd_name/uri, year, title, rated, released, runtime, genre, director, writer, actors, plot, overview, tagline, language, country, awards, imdb_rating, imdb_votes, metascore, rotten_tomatoes_rating, box_office, production, popularity, vote_average, vote_count, user_rating, is_liked, …` (+ poster/backdrop art, processing status).
+
+**Training** (`training_features.csv`, **66 features**):
+| Category | Engineered features |
 | :--- | :--- |
-| **Numerical** | Year, Runtime, IMDb Rating/Votes, Metascore, RT%, Box Office (Log), Popularity, Awards (Wins/Noms) |
-| **Categorical** | Language, Genres (Multi-hot), MPAA Rating (Adult/Teen/General) |
-| **Relational** | Target-encoded Directors, Actors, and Director-Genre interactions |
-| **Vibe (NLP)** | 384-d MiniLM-L6-v2 Embeddings reduced to 10 PCA components from Plot + Cast + Director |
+| **Numerical (12)** | Year, Runtime, IMDb Rating, IMDb Votes, Metascore, RT%, `box_office_log` (log1p), Popularity, Vote Average, Awards `total_wins`/`total_nominations` (regex-parsed), `critic_avg_5` (blended IMDb/Metascore/RT/TMDB on a 5★ scale) |
+| **Categorical** | Language one-hot (top-3 + Other), Genres multi-hot (`MultiLabelBinarizer`), MPAA bucket (`rated_Adult/Teen/General`) |
+| **Relational (3)** | Leakage-safe **target encodings** — Director, Actors, Director×Genre — Bayesian-smoothed (m=10) over 5-fold out-of-fold splits |
+| **Vibe (NLP)** | 384-d MiniLM-L6-v2 embedding of *Title + Director + Plot* → **25 PCA components** |
 
 ### 📺 TV Shows (TMDB)
-| Category | Features |
-| :--- | :--- |
-| **Numerical** | Year, Vote Average, Vote Count (Log), Season Count |
-| **Categorical** | Network (Top 10), Genres (Freq-gated), Age Rating (is_adult) |
-| **Vibe (NLP)** | 384-d MiniLM-L6-v2 Embeddings (15 PCA components) on Show Overviews |
+**Ingested** (`enriched_data.csv`, 35 raw fields): `tmdb_id, tvmaze_id, name, year, overview, tagline, created_by, genres, vote_average, vote_count, imdb_rating, imdb_votes, number_of_episodes, number_of_seasons, status, network, language, runtime, first_air_date, last_air_date, age_rating, awards, actors, writer, country, production_companies, user_rating, watch_count, …`.
 
-### 🎵 Music (MusicBrainz/ReccoBeats)
-| Category | Features |
+**Training** (`training_features.csv`, **38 features**):
+| Category | Engineered features |
 | :--- | :--- |
-| **Numerical** | Release Year, Popularity, PU-calibrated Affinity Rating |
-| **Categorical** | Artist Genres (Multi-hot), Artist Name |
-| **Metadata** | Track ID, Album Name, MB-Tags |
+| **Numerical (5)** | Year, Vote Average, `vote_count_log` (log1p), Season Count, `is_adult` |
+| **Categorical** | Network one-hot (top-10 + Other, `net_`), Genres multi-hot frequency-gated at ≥5% of N (`g_`) |
+| **Vibe (NLP)** | 384-d MiniLM-L6-v2 embedding of *Title + Network + Overview* → **15 PCA components** |
 
 ### 🎮 Games (RAWG)
-| Category | Features |
+**Ingested** (`enriched_data.csv`, 16 raw fields): `name, my_rating, platform_from_text, released, age_rating, genres, developers, publishers, metacritic, rating, ratings_count, reviews_count, tags, description_raw, playtime, cover`. Ratings include the sentinel **`'I'` (Incomplete)** → mapped to NaN (kept for ranking, excluded from supervised scoring).
+
+**Training** (`training_features.csv`, **55 features**):
+| Category | Engineered features |
 | :--- | :--- |
-| **Numerical** | Year, Metacritic Score, Global Rating, Ratings/Reviews Count |
-| **Categorical** | Platforms, Genres, Developers (Multi-hot, Freq >= 2) |
-| **Vibe (NLP)** | MiniLM-L6-v2 Embeddings (15 PCA components) from Name + Tags + Description |
+| **Numerical (5)** | Year, Metacritic, Global Rating, Ratings Count, Reviews Count |
+| **Categorical** | Platform one-hot (`plat_`), Genres multi-hot (`gen_`), Developers multi-hot frequency-gated at ≥2 (`dev_`) |
+| **Vibe (NLP)** | 384-d MiniLM-L6-v2 embedding of *Name + Genres + Tags + Description* → up to **15 PCA components** (`min(15, N−1)`) |
 
 ### 📚 Books (Google Books)
-| Category | Features |
+**Ingested** (`enriched_data.csv`, 13 raw fields): `title, isbn, my_rating, authors, publisher, publishedDate, pageCount, categories, averageRating, ratingsCount, description, thumbnail, infoLink`.
+
+**Training** (`training_features.csv`, **19 features**):
+| Category | Engineered features |
 | :--- | :--- |
-| **Numerical** | Year, Page Count, Average Rating, Ratings Count |
-| **Categorical** | Authors, Categories (Multi-hot, Freq >= 2) |
-| **Vibe (NLP)** | MiniLM-L6-v2 Embeddings (15 PCA components) from Title + Authors + Description |
+| **Numerical (4)** | Year, Page Count, Average Rating, Ratings Count |
+| **Categorical** | Authors multi-hot frequency-gated at ≥2 (`aut_`), Categories multi-hot (`cat_`) |
+| **Vibe (NLP)** | 384-d MiniLM-L6-v2 embedding of *Title + Authors + Categories + Description* → up to **15 PCA components** (`min(15, N−1)`) |
+
+### 🎵 Music (Spotify + ReccoBeats + MusicBrainz + Genius)
+Music has **no ground-truth star ratings**; its label is a PU-classifier-calibrated *affinity* (see [PU Learning](#engineering-highlights)). Features land in `music_features.npz` (StandardScaler-normalized numerics).
+
+**Ingested**: Spotify library/playlists (`track_id, name, primary_artist, album, popularity, artist_followers, …`), ReccoBeats **9 audio features** (`acousticness, danceability, energy, instrumentalness, liveness, loudness, speechiness, tempo, valence`), MusicBrainz (`mb_genres, mb_tags, mb_length_ms`), Genius (`lyrics`, VADER sentiment).
+
+**Training** (engineered matrix):
+| Category | Engineered features |
+| :--- | :--- |
+| **Numerical** | Duration, Release Year, Track Age, Popularity, Artist Popularity/Followers (log), Album/Track position, Explicit |
+| **Audio (ReccoBeats)** | The 9 audio features above, each median-imputed **+ a `_missing` flag** |
+| **Lyrical** | Word/line counts, unique-word ratio, VADER sentiment (`pos/neu/neg/compound`), `lyrics_found` |
+| **Categorical** | Genres/Tags multi-hot (top-60, `g_`), Artists multi-hot (top-40, `a_`) |
+| **Vibe (NLP)** | MiniLM-L6-v2 embedding of *Name + Genres + MB-Tags + Lyric snippet* → **32 PCA components** (`emb_`) |
 
 ### 📺 YouTube (YouTube Data API v3)
-| Category | Features |
-| :--- | :--- |
-| **Video** | Video ID, Duration, Tags, Description, Views, Likes, Comment Count |
-| **Channel** | Channel ID, Title, Subscriber Count, Video Count |
+Ingestion-only (no rating model). **Video:** Video ID, Duration, Tags, Description, Views, Likes, Comment Count. **Channel:** Channel ID, Title, Subscriber Count, Video Count.
 
-### 🌐 Unified Schema (Cross-Domain)
-The **Unified Model** aligns all domains by mapping heterogeneous fields to a common backbone:
-- **Identity:** `media_type` indicator + `has_{domain}_feats` binary masks.
-- **Narrative:** Shared 10-d PCA Vibe space from unified text content.
-- **Commercial:** Log-normalized Box Office / Budget / Popularity proxies.
-- **Quality:** Critic-average-5 (blended normalization of IMDb, RT, Metascore, and RAWG/Google ratings).
+### 🌐 Unified Schema (Cross-Domain, 397 features)
+The Unified Model concatenates every domain into one row-space (`data/processed/unified/training_features.csv`, **402 columns = 397 features + 5 bookkeeping** [`target_reg, target_ordinal, rating_date, source_id, media_type`]). Heterogeneous fields are mapped onto a common backbone:
+- **Identity:** `is_tv_show/is_game/is_book/is_music` indicators + `has_{movie,tv,game,book,music}_feats` multi-modal missingness masks (so the model can tell an absent feature from a real zero).
+- **Narrative:** A single **10-d PCA vibe space** over unified text (*Title + Lead + Overview*), with **CORAL/centroid alignment fit per training fold** (no leakage) so "vibe" geometry is comparable across domains.
+- **Genre/Rating:** Cross-domain genre multi-hot (`gen_`, with `Sci-Fi & Fantasy`/`Action & Adventure` split into atomic genres), language one-hot, MPAA bucket.
+- **Commercial:** Log-normalized Box Office / Popularity proxies.
+- **Quality:** `critic_avg_5` — blended, scale-normalized average of IMDb, RT, Metascore, and RAWG/Google ratings.
+- **Cross-domain audio:** Gated music-affinity features (active only where the transfer matrix licenses them).
 
 ## Key Features
 - **Consolidated Library:** A single-pipeline architecture managing over **1,250 rated items** across four domains and **3,600+ music tracks**.
@@ -139,14 +164,14 @@ The **Unified Model** aligns all domains by mapping heterogeneous fields to a co
 <!-- BENCHMARKS:BEGIN -->
 | Domain | N | Model | R² (CV mean) | MAE | ±0.5★ Accuracy |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Movies** | 980 | XGBoost | **0.524** | 0.502 | 77.9% |
+| **Movies** | 980 | Prod Stacking (edge+Cat+SVR+Ord) | **0.558** | 0.478 | 79.1% |
 | **Unified (rated)** | 1,264 | Mean Ensemble | **0.443** | 0.542 | 75.6% |
 | **Unified (full pool)**† | 4,952 | Mean Ensemble (+music pool) | **0.498** | 0.411 | 80.4% |
-| **TV Shows** | 159 | Simplex-Stack | **0.063** | 0.814 | 52.8% |
+| **TV Shows** | 159 | Prod Simplex-Stack (edge+Cat+SVR) | **0.052** | 0.827 | 53.5% |
 | **Games** | 55 | Local SVR | **0.364** | 0.636 | 61.8% |
 | **Books** | 63 | Local SVR | **0.182** | 0.548 | 76.2% |
 
-*The four domain rows are the **standalone local models** on the frozen registry folds (one row per item, N = unique items). The two Unified rows are the cross-domain Mean Ensemble; **the rated row (N=1,264) is the headline taste metric**.*
+*The four domain rows are the **production local models** on the frozen registry folds (one row per item, N = unique items): **Movies and TV are the deployed tuned ensembles** (Optuna edge-penalty XGB + CatBoost + SVR + ordinal-EV, fused) — not the earlier plain-XGB / manual-simplex proxies — and **Games and Books are the deployed SVR**. The two Unified rows are the cross-domain Mean Ensemble; **the rated row (N=1,264) is the headline taste metric**.*
 
 *†Unified (full pool) is trained on the rated items **plus 3,688 music PU pseudo-labels** and evaluated including music via a separate RepeatedKFold(5×1) — music has no frozen registry. It is **not an actual-taste metric** and is shown only for transparency; never cite it as the unified result.*
 <!-- BENCHMARKS:END -->

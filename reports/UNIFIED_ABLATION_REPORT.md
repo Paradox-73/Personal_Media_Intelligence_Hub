@@ -7,4 +7,4 @@
 | Ridge Stack (removed — legacy 5-fold protocol)     | 0.5609   | 0.3837   | n/a (legacy)      | n/a (legacy) |
 | +Residual Heads (removed — legacy 5-fold protocol) | 0.6088   | 0.2688   | n/a (legacy)      | n/a (legacy) |
 
-*Results generated on 2026-06-12 18:17:09*
+*Results generated on 2026-06-17 17:25:25*

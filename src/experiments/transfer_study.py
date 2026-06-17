@@ -44,15 +44,22 @@ SEED = 42
 
 
 def shared_space_columns(cols):
-    """Shared cross-domain features only; domain-specific blocks excluded."""
+    """Shared cross-domain features only; domain-specific blocks excluded.
+
+    DOMAIN-BLIND (fix, err.txt check #4): the `has_{domain}_feats` masks and the
+    `is_{domain}` indicators are *domain-identity* labels — leaving them in lets a
+    transfer model split on the domain itself instead of transferring content, which
+    biases Protocol C (augmented) and makes the grid "can't transfer by construction."
+    A transfer study must be blind to which domain a row came from, so they are now
+    excluded. (The vibe geometry is handled separately by CORAL alignment.)
+    """
     keep = []
     for c in cols:
         if c.startswith("pca_") or c.startswith("gen_") or c.startswith("g_"):
             keep.append(c)
-        elif c.startswith("has_") and c.endswith("_feats"):
-            keep.append(c)
         elif c in {"year", "popularity", "critic_avg_5"}:
             keep.append(c)
+        # NOTE: has_*_feats / is_* domain-identity columns are deliberately NOT kept.
     return keep
 
 
@@ -199,6 +206,10 @@ def run_grid(repeats_per_cell=1, fractions=(0.0, 0.25, 0.5, 1.0),
                                          skill=skill_score(y_te, predC, train_mean),
                                          spearman=_safe_spearman(y_te, predC)))
         print(f"  target={target}: cumulative rows={len(rows)}")
+        # Checkpoint: flush partial results after each target so a crash mid-grid
+        # doesn't lose completed targets (the full grid is a long/overnight run).
+        pd.DataFrame(rows).to_csv(Path("reports/transfer_grid_results.csv"), index=False)
+        print(f"  [checkpoint] wrote {len(rows)} rows after target={target}")
 
     res = pd.DataFrame(rows)
     out_csv = Path("reports/transfer_grid_results.csv")

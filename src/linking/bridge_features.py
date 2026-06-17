@@ -33,7 +33,14 @@ LINKS = config.PROCESSED_DIR / "entity_links.csv"
 SEED = 42
 
 
-def build():
+def build(restrict_link_type=None):
+    """Paired bridge evaluation on the linked subset.
+
+    restrict_link_type: if set (e.g. "adaptation"), restrict BOTH the linked subset
+    and the bridge features to that single link type, so the high-confidence
+    adaptation signal is reported on its own rather than diluted by the ~1000
+    same-franchise links. Output is written to a type-suffixed JSON.
+    """
     if not LINKS.exists():
         print(f"❌ {LINKS} missing -- run build_entity_links.py first.")
         return None
@@ -41,6 +48,13 @@ def build():
     if links.empty:
         print("No links found; bridge evaluation skipped (report as: no cross-domain links surfaced).")
         return None
+    tag = restrict_link_type or "all"
+    if restrict_link_type is not None:
+        links = links[links.link_type == restrict_link_type].copy()
+        print(f"[{tag}] restricting to link_type == {restrict_link_type}: {len(links)} links")
+        if links.empty:
+            print(f"No {restrict_link_type} links; skipped.")
+            return None
 
     uni = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
     uni = uni[uni.media_type != "music"].copy()
@@ -109,6 +123,7 @@ def build():
     ci = (float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5)))
 
     result = {
+        "link_type": tag,
         "n_linked": int(len(sub)),
         "mae_without_bridge": round(float(mae_base), 4),
         "mae_with_bridge": round(float(mae_bridge), 4),
@@ -118,7 +133,8 @@ def build():
         "verdict": ("bridges help (significant)" if (delta > 0 and p < 0.05)
                     else "no significant bridge effect at this N (pilot)"),
     }
-    out = config.BASE_DIR / "reports" / "entity_bridge_results.json"
+    suffix = "" if restrict_link_type is None else f"_{restrict_link_type}"
+    out = config.BASE_DIR / "reports" / f"entity_bridge_results{suffix}.json"
     out.write_text(json.dumps(result, indent=2))
     print(json.dumps(result, indent=2))
     print(f"✅ -> {out}")
@@ -126,4 +142,11 @@ def build():
 
 
 if __name__ == "__main__":
-    build()
+    mode = sys.argv[1] if len(sys.argv) > 1 else "all"
+    if mode == "all":
+        # Pooled (all link types) + adaptation-only, reported separately.
+        build()
+        print("\n" + "=" * 60 + "\n[adaptation-only pass]")
+        build(restrict_link_type="adaptation")
+    else:
+        build(restrict_link_type=mode)

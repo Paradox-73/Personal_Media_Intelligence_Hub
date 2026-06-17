@@ -199,18 +199,31 @@ def run_master_evaluation():
     print("📊 Unified (full pool incl. music pseudo-labels) -- secondary CV...")
     met_full, n_full = full_pool_with_music(df, registry)
 
-    # 3) Standalone per-domain benchmarks on registry folds (genuine local models)
+    # 3) Standalone per-domain benchmarks on registry folds (genuine local models).
+    #    NOTE: these are honest for Games/Books (SVR = the deployed model) but are
+    #    SIMPLIFIED PROXIES for Movies (plain XGB) and TV (manual simplex). Kept for
+    #    the assertions below and the Games/Books rows.
     print("📊 Standalone per-domain benchmarks (registry folds)...")
     standalone_bms, _ = generate_standalone_oof(df, registry, use_cache=True)
     standalone_by_domain = {b['Domain']: b for b in standalone_bms}
 
-    # 4) Assemble benchmarks (standalone locals + dual unified headline)
+    # 3b) Production-grade Movies & TV on the SAME registry folds (Task 1). The
+    #     deployed architecture (Optuna-tuned asymmetric edge-penalty XGB + CatBoost
+    #     + SVR + ordinal-EV, fused) is far stronger than the proxies above; this is
+    #     the honest local model the unified ensemble must be compared against.
+    from src.reporting.production_benchmarks import generate_production_oof
+    print("📊 Production Movies & TV benchmarks (registry folds)...")
+    prod_bms, _ = generate_production_oof(df, registry, domains=('movie', 'tv'), use_cache=True)
+    prod_by_domain = {b['Domain']: b for b in prod_bms}
+
+    # 4) Assemble benchmarks (production Movies/TV + production-equiv Games/Books SVR
+    #    + dual unified headline). Movies/TV now use the real ensemble, not the proxy.
     benchmarks = [
-        standalone_by_domain['movie'],
+        prod_by_domain['movie'],
         {"Domain": "unified_rated", "N": int(n_rated), "Model": "Mean Ensemble", **met_rated},
         {"Domain": "unified_full", "N": int(n_full),
          "Model": "Mean Ensemble (+music pool)", **met_full},
-        standalone_by_domain['tv'],
+        prod_by_domain['tv'],
         standalone_by_domain['game'],
         standalone_by_domain['book'],
     ]

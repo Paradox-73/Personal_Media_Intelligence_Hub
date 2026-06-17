@@ -40,9 +40,12 @@ def format_benchmarks_table(data):
             f"**{b.get('R2', 0):.3f}** | {b.get('MAE', 0):.3f} | {b.get('Acc', 0):.1f}% |"
         )
     lines.append(
-        "\n*The four domain rows are the **standalone local models** on the frozen registry "
-        "folds (one row per item, N = unique items). The two Unified rows are the cross-domain "
-        "Mean Ensemble; **the rated row (N=1,264) is the headline taste metric**.*"
+        "\n*The four domain rows are the **production local models** on the frozen registry "
+        "folds (one row per item, N = unique items): **Movies and TV are the deployed tuned "
+        "ensembles** (Optuna edge-penalty XGB + CatBoost + SVR + ordinal-EV, fused) — not the "
+        "earlier plain-XGB / manual-simplex proxies — and **Games and Books are the deployed SVR**. "
+        "The two Unified rows are the cross-domain Mean Ensemble; **the rated row (N=1,264) is the "
+        "headline taste metric**.*"
     )
     lines.append(
         "\n*†Unified (full pool) is trained on the rated items **plus 3,688 music PU "
@@ -70,15 +73,17 @@ def format_slices_table(data):
             f"{s.get('R2', 0):.3f} | {s.get('MAE', 0):.3f} | {s.get('Acc', 0):.1f}% |"
         )
     lines.append(
-        "\n*Read against the standalone benchmarks above — **both now measured with the identical "
-        "pooled per-item OOF estimator on the frozen folds, on the same items.** On a like-for-like "
-        "MAE comparison the unified model is competitive with or better than the local model in "
-        "**movies, TV and books**, and clearly worse only in **Games** (where the tiny N=55 local SVR "
-        "with rich domain-specific features wins). The earlier impression that pooling 'loses "
-        "everywhere' was an artifact of comparing the unified slice against standalone figures from a "
-        "different, more favorable R² estimator (mean-of-per-fold `cross_val_score`); the corrected "
-        "comparison reverses it. Cross-domain pooling does carry per-domain signal — Games is the "
-        "exception, not the rule.*"
+        "\n*Read against the **production benchmarks** above — both measured with the identical "
+        "pooled per-item OOF estimator on the frozen folds, on the same items. With the **real local "
+        "models** (Movies = the deployed tuned edge-penalty stacking ensemble, not the old plain-XGB "
+        "proxy), the like-for-like MAE comparison splits cleanly by domain type: the **local model wins "
+        "in Movies and Games** — the domains with rich domain-specific features the shared space "
+        "discards (Movies' director/actor target-encodings, Games' Metacritic/platforms) — while the "
+        "**unified model wins in TV and is level on Books**, the semantic-only domains where pooling "
+        "across domains adds data without losing signal. So cross-domain pooling earns its keep **only "
+        "where a domain has little local-specific signal beyond vibe**. The earlier 'unified is "
+        "competitive or better in movies/TV/books' reading was an artifact of benchmarking against a "
+        "**weakened Movies proxy**; with the production model the Movies verdict flips to local.*"
     )
     return "\n".join(lines)
 
