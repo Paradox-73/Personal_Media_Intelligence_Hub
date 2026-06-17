@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
-from sklearn.model_selection import train_test_split, cross_val_predict, RepeatedKFold
+from sklearn.model_selection import train_test_split, cross_val_predict, KFold
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, accuracy_score
 from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
@@ -92,9 +92,11 @@ def train_models():
     svr_pipe.fit(X_train, y_train)
     
     # --- CONFORMAL PREDICTION (Uncertainty) ---
-    print("   Computing conformal intervals via 5x2 repeated CV residuals...")
-    rkf = RepeatedKFold(n_splits=5, n_repeats=2, random_state=42)
-    oof_preds = cross_val_predict(svr_pipe, X_train_full, y_reg_train_full, cv=rkf)
+    print("   Computing conformal intervals via 5-fold OOF residuals...")
+    # cross_val_predict needs a clean partition (each item tested once); RepeatedKFold
+    # reuses test items across repeats and raises "only works for partitions".
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    oof_preds = cross_val_predict(svr_pipe, X_train_full, y_reg_train_full, cv=kf)
     abs_residuals = np.abs(y_reg_train_full - oof_preds)
     
     # 80% coverage interval width

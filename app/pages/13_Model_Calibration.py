@@ -27,17 +27,30 @@ def load_prediction_data():
 
 df = load_prediction_data()
 
+# The unified prediction file exposes several model columns; prefer the headline
+# Mean Ensemble, then fall back to whatever prediction column is present.
+PREFERRED_PRED_COLS = ['pred_MeanEnsemble', 'pred_Stacking', 'pred_XGB_Base',
+                       'pred_CatBoost_Base', 'pred_Ordinal_EV']
+
+def pick_pred_col(frame):
+    for c in PREFERRED_PRED_COLS:
+        if c in frame.columns:
+            return c
+    fallbacks = [c for c in frame.columns if c.startswith('pred_')]
+    return fallbacks[0] if fallbacks else None
+
 if df is not None:
-    # Use 'pred_Stacking' and 'user_rating'
-    if 'pred_Stacking' in df.columns and 'user_rating' in df.columns:
-        eval_df = df.dropna(subset=['user_rating', 'pred_Stacking']).copy()
+    pred_col = pick_pred_col(df)
+    if pred_col and 'user_rating' in df.columns:
+        st.caption(f"Calibrating on **`{pred_col}`** (the deployed unified model).")
+        eval_df = df.dropna(subset=['user_rating', pred_col]).copy()
         eval_df['user_rating'] = pd.to_numeric(eval_df['user_rating'], errors='coerce')
         eval_df = eval_df.dropna(subset=['user_rating'])
-        
+
         # Calibration Curve
         # Bin predictions
         bins = np.arange(0.25, 5.75, 0.5)
-        eval_df['pred_bin'] = pd.cut(eval_df['pred_Stacking'], bins=bins, labels=np.arange(0.5, 5.5, 0.5))
+        eval_df['pred_bin'] = pd.cut(eval_df[pred_col], bins=bins, labels=np.arange(0.5, 5.5, 0.5))
         
         calibration = eval_df.groupby('pred_bin')['user_rating'].agg(['mean', 'std', 'count']).reset_index()
         calibration['pred_bin'] = calibration['pred_bin'].astype(float)
@@ -75,10 +88,11 @@ if df is not None:
         
         # Distribution of predictions
         st.subheader("Prediction Frequency")
-        fig_hist = go.Figure(data=[go.Histogram(x=eval_df['pred_Stacking'], xbins=dict(start=0.25, end=5.25, size=0.5))])
+        fig_hist = go.Figure(data=[go.Histogram(x=eval_df[pred_col], xbins=dict(start=0.25, end=5.25, size=0.5))])
         fig_hist.update_layout(title="Histogram of Predicted Ratings", xaxis_title="Rating Bucket", yaxis_title="Count")
         st.plotly_chart(fig_hist, use_container_width=True)
     else:
-        st.warning("Prediction columns not found in unified_predictions_ensemble.csv")
+        st.warning(f"No usable prediction/`user_rating` columns in unified_predictions_ensemble.csv "
+                   f"(found: {', '.join(df.columns[:8])}…)")
 else:
     st.error("Unified predictions data not found. Please run the Unified Prediction script first.")

@@ -35,13 +35,21 @@ with tab1:
     st.subheader("Predict Your Affinity")
     st.markdown("Select a track from your library to see what the Oracle thinks of it.")
     
-    # Let user select a track from library
+    # Let user select a track from library. Build a robust id->label map: any NaN
+    # name/artist would otherwise make format_func return a float and crash the
+    # selectbox ("bad argument type for built-in operation").
     track_options = oracle.df[['track_id', 'name', 'artists']].copy()
+    track_options['track_id'] = track_options['track_id'].astype(str)
+    track_options['name'] = track_options['name'].fillna('Unknown').astype(str)
+    track_options['artists'] = track_options['artists'].fillna('Unknown').astype(str)
     track_options['display'] = track_options['name'] + " — " + track_options['artists']
-    
-    selected_track_id = st.selectbox("Select a Track", 
-                                     options=track_options['track_id'].tolist(),
-                                     format_func=lambda x: track_options[track_options['track_id'] == x]['display'].values[0])
+    track_options = track_options.drop_duplicates(subset='track_id')
+    track_ids = track_options['track_id'].tolist()
+    label_map = dict(zip(track_options['track_id'], track_options['display']))
+
+    selected_track_id = st.selectbox("Select a Track",
+                                     options=track_ids,
+                                     format_func=lambda x: label_map.get(str(x), str(x)))
     
     if st.button("Consult the Oracle for Prediction"):
         with st.spinner("Analyzing..."):
@@ -63,9 +71,9 @@ with tab1:
 with tab2:
     st.subheader("Similar Tracks in Your Library")
     
-    selected_track_id_sim = st.selectbox("Select a Seed Track", 
-                                         options=track_options['track_id'].tolist(),
-                                         format_func=lambda x: track_options[track_options['track_id'] == x]['display'].values[0],
+    selected_track_id_sim = st.selectbox("Select a Seed Track",
+                                         options=track_ids,
+                                         format_func=lambda x: label_map.get(str(x), str(x)),
                                          key="sim_select")
     
     n_sim = st.slider("Number of similar tracks", 5, 20, 10)

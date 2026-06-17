@@ -127,5 +127,166 @@ def process_features():
     joblib.dump(state, config.BOOKS_PREPROCESSOR_STATE)
     print(f"✅ Features processed. Shape: {X_final.shape}")
 
+# --------------------------------------------------------------------------- #
+# Oracle helpers (single-item inference + similarity)
+# --------------------------------------------------------------------------- #
+_ST_MODEL = None
+def _get_transformer():
+    global _ST_MODEL
+    if _ST_MODEL is None:
+        _ST_MODEL = SentenceTransformer('all-MiniLM-L6-v2')
+    return _ST_MODEL
+
+
+def _join(val):
+    """Render authors/categories (list or string) as a comma string."""
+    if isinstance(val, list):
+        return ", ".join(str(v) for v in val)
+    return str(val or '')
+
+
+def _book_text(raw):
+    """Reproduce the exact training text_content string for one book."""
+    title = raw.get('title') or ''
+    authors = _join(raw.get('authors') or raw.get('author'))
+    cats = _join(raw.get('categories') or raw.get('genre'))
+    desc = raw.get('description') or ''
+    return f"Title: {title}. Authors: {authors}. Categories: {cats}. Description: {desc}"
+
+
+def transform_single_book(raw_data, state):
+    """Turn one raw book dict into a model-ready 1-row frame aligned to training_columns."""
+    cols = state['training_columns']
+    X = pd.DataFrame(0.0, index=[0], columns=cols)
+    medians = state.get('median_values', {})
+
+    def num(key):
+        try:
+            v = float(raw_data.get(key))
+            return v if not np.isnan(v) else medians.get(key, 0)
+        except (TypeError, ValueError):
+            return medians.get(key, 0)
+
+    year = clean_year(raw_data.get('year') or raw_data.get('publishedDate')) or medians.get('year', 0)
+    numeric_vals = {'year': year, 'pageCount': num('pageCount'),
+                    'averageRating': num('averageRating'), 'ratingsCount': num('ratingsCount')}
+    for k, v in numeric_vals.items():
+        if k in X.columns:
+            X.at[0, k] = v
+
+    # Authors multi-hot (frequency-gated indices)
+    authors = raw_data.get('author') or raw_data.get('authors') or []
+    authors = authors if isinstance(authors, list) else parse_list(authors)
+    mlb_author = state.get('mlb_author')
+    valid = state.get('valid_author_indices', [])
+    if mlb_author is not None:
+        try:
+            av = mlb_author.transform([authors])[0]
+            for i in valid:
+                col = sanitize_col(f"aut_{mlb_author.classes_[i]}")
+                if col in X.columns:
+                    X.at[0, col] = av[i]
+        except Exception:
+            pass
+
+    # Categories multi-hot
+    cats = raw_data.get('genre') or raw_data.get('categories') or []
+    cats = cats if isinstance(cats, list) else parse_list(cats)
+    mlb_cat = state.get('mlb_cat')
+    if mlb_cat is not None:
+        try:
+            cv = mlb_cat.transform([cats])[0]
+            for i, c in enumerate(mlb_cat.classes_):
+                col = sanitize_col(f"cat_{c}")
+                if col in X.columns:
+                    X.at[0, col] = cv[i]
+        except Exception:
+            pass
+
+    # Text embedding -> PCA
+    try:
+        emb = _get_transformer().encode([_book_text(raw_data)])
+        pcav = state['pca'].transform(emb)[0]
+        for i in range(len(pcav)):
+            col = f"pca_{i}"
+            if col in X.columns:
+                X.at[0, col] = pcav[i]
+    except Exception:
+        pass
+
+    return X
+
+
+def _load_enriched_books():
+    try:
+        return pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH)
+    except Exception:
+        try:
+            return pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH, encoding='latin1')
+        except Exception:
+            return pd.DataFrame()
+
+
+def find_similar_books(raw_data, input_df, state, n=3):
+    """Cosine similarity in the shared text-embedding space against your rated library."""
+    lib = _load_enriched_books()
+    if lib.empty:
+        return []
+
+    model = _get_transformer()
+    target_text = _book_text(raw_data)
+
+    lib = lib.copy()
+    lib['_text'] = ("Title: " + lib['title'].fillna('') +
+                    ". Authors: " + lib.get('authors', pd.Series('', index=lib.index)).fillna('') +
+                    ". Categories: " + lib.get('categories', pd.Series('', index=lib.index)).fillna('') +
+                    ". Description: " + lib.get('description', pd.Series('', index=lib.index)).fillna(''))
+
+    embs = model.encode([target_text] + lib['_text'].tolist())
+    target_vec, lib_vecs = embs[0], embs[1:]
+    sims = lib_vecs @ target_vec / (
+        (np.linalg.norm(lib_vecs, axis=1) * np.linalg.norm(target_vec)) + 1e-9)
+
+    target_title = str(raw_data.get('title', '')).lower().strip()
+    out = []
+    for idx in np.argsort(sims)[::-1]:
+        row = lib.iloc[idx]
+        if str(row.get('title', '')).lower().strip() == target_title:
+            continue
+        out.append({
+            'title': row.get('title', 'Unknown'),
+            'author': row.get('authors', 'Unknown'),
+            'year': clean_year(row.get('publishedDate')),
+            'similarity': float(sims[idx]),
+            'raw_data': row.to_dict(),
+        })
+        if len(out) >= n:
+            break
+    return out
+
+
+def explain_similarity_books(raw_data, other_raw, state):
+    """Human-readable reason two books are alike (shared categories / author)."""
+    def to_set(val):
+        if isinstance(val, list):
+            return {str(v).strip().lower() for v in val}
+        return {g.strip().lower() for g in str(val or '').replace('[', '').replace(']', '').split(',') if g.strip()}
+
+    c1 = to_set(raw_data.get('genre') or raw_data.get('categories'))
+    c2 = to_set(other_raw.get('categories'))
+    shared_c = c1 & c2
+
+    a1 = to_set(raw_data.get('author') or raw_data.get('authors'))
+    a2 = to_set(other_raw.get('authors'))
+    shared_a = a1 & a2
+
+    bits = []
+    if shared_a:
+        bits.append(f"same author: {', '.join(sorted(shared_a))}")
+    if shared_c:
+        bits.append(f"shared categories: {', '.join(sorted(shared_c))}")
+    return "Matched on " + "; ".join(bits) if bits else "Matched on overall semantic vibe."
+
+
 if __name__ == "__main__":
     process_features()

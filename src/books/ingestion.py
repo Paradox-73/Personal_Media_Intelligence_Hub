@@ -118,6 +118,100 @@ def _coalesce(*vals):
     return vals[-1] if vals else ""
 
 
+OPENLIBRARY_SEARCH_URL = "https://openlibrary.org/search.json"
+
+
+def search_books_by_query(query, max_results=5):
+    """Live Open Library search for the Oracle (keyless). Returns lightweight dicts."""
+    if not query:
+        return []
+    try:
+        resp = requests.get(OPENLIBRARY_SEARCH_URL, params={
+            "q": query, "limit": max_results,
+            "fields": "key,title,author_name,first_publish_year,isbn,cover_i,subject",
+        }, timeout=12)
+        docs = resp.json().get("docs", [])
+    except Exception as e:
+        print(f"  ⚠️ Open Library search error: {e}")
+        return []
+
+    out = []
+    for d in docs[:max_results]:
+        isbns = d.get("isbn") or []
+        cover_i = d.get("cover_i")
+        out.append({
+            # Prefer an ISBN as the id (enables rich Hardcover/OL detail fetch);
+            # fall back to the OL work key.
+            "id": isbns[0] if isbns else d.get("key", ""),
+            "title": d.get("title", "Unknown"),
+            "author": ", ".join(d.get("author_name", [])[:2]) or "Unknown",
+            "year": d.get("first_publish_year", ""),
+            "subjects": d.get("subject", [])[:8],
+            "poster_path": f"https://covers.openlibrary.org/b/id/{cover_i}-M.jpg" if cover_i else None,
+        })
+    return out
+
+
+def fetch_book_details_by_id(book_id, fallback=None):
+    """Fetch full detail for a selected book, shaped for the Oracle transform.
+
+    `book_id` is an ISBN (preferred) or an Open Library work key. `fallback` is the
+    search-result dict, used to backfill fields the detail APIs omit.
+    """
+    fallback = fallback or {}
+    data = {}
+
+    looks_like_isbn = str(book_id).replace("-", "").isdigit()
+    if looks_like_isbn:
+        hc = fetch_hardcover(book_id) or {}
+        ol = fetch_openlibrary(book_id) or {}
+        data = {
+            "title": _coalesce(hc.get("title"), ol.get("title"), fallback.get("title")),
+            "authors": _coalesce(hc.get("authors"), ol.get("authors"), fallback.get("author"), ""),
+            "categories": _coalesce(hc.get("categories"), ol.get("categories"),
+                                    ", ".join(fallback.get("subjects", [])), ""),
+            "description": _coalesce(hc.get("description"), ""),
+            "pageCount": _coalesce(hc.get("pageCount"), ol.get("pageCount"), 0),
+            "averageRating": _coalesce(hc.get("averageRating"), 0.0),
+            "ratingsCount": _coalesce(hc.get("ratingsCount"), 0),
+            "publishedDate": _coalesce(hc.get("publishedDate"), ol.get("publishedDate"),
+                                       str(fallback.get("year", ""))),
+            "thumbnail": _coalesce(ol.get("thumbnail"), fallback.get("poster_path"), ""),
+            "infoLink": _coalesce(hc.get("infoLink"), ol.get("infoLink"), ""),
+        }
+    else:
+        # Open Library work key -> work JSON (description + subjects only)
+        try:
+            resp = requests.get(f"https://openlibrary.org{book_id}.json", timeout=12)
+            w = resp.json()
+            desc = w.get("description")
+            if isinstance(desc, dict):
+                desc = desc.get("value", "")
+            data = {
+                "title": _coalesce(w.get("title"), fallback.get("title")),
+                "authors": fallback.get("author", ""),
+                "categories": ", ".join(w.get("subjects", fallback.get("subjects", []))[:8]),
+                "description": desc or "",
+                "pageCount": 0,
+                "averageRating": 0.0,
+                "ratingsCount": 0,
+                "publishedDate": str(fallback.get("year", "")),
+                "thumbnail": fallback.get("poster_path", ""),
+                "infoLink": f"https://openlibrary.org{book_id}",
+            }
+        except Exception as e:
+            print(f"  ⚠️ Open Library work fetch error: {e}")
+            return None
+
+    if not data.get("title"):
+        return None
+    data["year"] = data.get("publishedDate")
+    data["genre"] = [c.strip() for c in str(data.get("categories", "")).split(",") if c.strip()]
+    data["author"] = data.get("authors")
+    data["processing_status"] = "success"
+    return data
+
+
 def process_books_from_txt():
     print("📚 Starting Book Ingestion (Hardcover + Open Library)...")
     if not HARDCOVER_TOKEN:

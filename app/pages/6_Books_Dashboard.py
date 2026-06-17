@@ -69,15 +69,19 @@ if df is None:
 
 st.title("📚 Book Intelligence Dashboard")
 
+# --- Derived helpers ---
+df['pub_year'] = pd.to_numeric(df['publishedDate'].astype(str).str.extract(r'(\d{4})')[0], errors='coerce')
+df['n_authors'] = df['authors'].fillna('').apply(lambda s: len([a for a in str(s).split(',') if a.strip()]))
+n_unique_authors = (
+    df['authors'].fillna('').str.split(',').explode().str.strip().replace('', np.nan).dropna().nunique()
+)
+
 # Metrics
 c1, c2, c3, c4 = st.columns(4)
 with c1: st.metric("Total Books", len(df))
 with c2: st.metric("Avg My Rating", f"{df['my_rating'].mean():.2f}")
 with c3: st.metric("Avg Hardcover Rating", f"{df['averageRating'].dropna().mean():.1f}")
-with c4: 
-    if 'predicted_rating' in df.columns:
-        mae = (df['my_rating'] - df['predicted_rating']).abs().mean()
-        st.metric("Model MAE", f"{mae:.3f}")
+with c4: st.metric("Unique Authors", int(n_unique_authors))
 
 # Layout
 col_left, col_right = st.columns([1, 1])
@@ -86,7 +90,7 @@ with col_left:
     st.subheader("⭐ My Rating Distribution")
     rating_counts = df['my_rating'].value_counts().reset_index()
     rating_counts.columns = ['Rating', 'Count']
-    fig = px.bar(rating_counts.sort_values('Rating'), x='Rating', y='Count', 
+    fig = px.bar(rating_counts.sort_values('Rating'), x='Rating', y='Count',
                  color_discrete_sequence=[HUB_PALETTE[2]])
     st.plotly_chart(fig, use_container_width=True)
 
@@ -99,7 +103,8 @@ with col_right:
 st.divider()
 
 # Detailed Analysis Tabs
-tab1, tab2, tab3, tab4 = st.tabs(["Categories", "Authors", "Predictions", "Full List"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["Categories", "Authors", "Taste vs Critics", "Reading Profile", "Full List"])
 
 with tab1:
     st.subheader("🏷️ Top Categories")
@@ -121,15 +126,73 @@ with tab2:
     st.plotly_chart(fig, use_container_width=True)
 
 with tab3:
-    st.subheader("🔮 Model Accuracy: Actual vs Predicted")
-    if 'predicted_rating' in df.columns:
-        fig = px.scatter(df, x='my_rating', y='predicted_rating', hover_data=['title'], 
-                         trendline="ols", color='my_rating', color_continuous_scale='RdYlGn')
-        st.plotly_chart(fig, use_container_width=True)
+    st.subheader("🆚 You vs. the Crowd")
+    st.caption("How your ratings compare to Hardcover's community average — are you harsher or kinder than the crowd?")
+    crit = df.dropna(subset=['my_rating', 'averageRating']).copy()
+    crit = crit[crit['averageRating'] > 0]
+    if not crit.empty:
+        # Hardcover ratings are on a ~5 scale already; align defensively
+        crit['critic_5'] = crit['averageRating'].where(crit['averageRating'] <= 5, crit['averageRating'] / 2)
+        crit['delta'] = crit['my_rating'] - crit['critic_5']
+
+        cc1, cc2 = st.columns([2, 1])
+        with cc1:
+            fig = px.scatter(crit, x='critic_5', y='my_rating', hover_data=['title'],
+                             color='delta', color_continuous_scale='RdYlGn',
+                             labels={'critic_5': 'Hardcover Avg (5★)', 'my_rating': 'My Rating'})
+            fig.add_shape(type='line', x0=0.5, y0=0.5, x1=5, y1=5,
+                          line=dict(color=HUB_PALETTE[3], dash='dash'))
+            st.plotly_chart(fig, use_container_width=True)
+        with cc2:
+            st.metric("Avg agreement gap", f"{crit['delta'].mean():+.2f}★",
+                      help="Positive = you rate higher than the crowd on average.")
+            st.markdown("**🔥 Most over-rated (vs crowd)**")
+            for _, r in crit.nlargest(3, 'delta')[['title', 'delta']].iterrows():
+                st.caption(f"{r['title']} ({r['delta']:+.1f})")
+            st.markdown("**❄️ Most under-rated (vs crowd)**")
+            for _, r in crit.nsmallest(3, 'delta')[['title', 'delta']].iterrows():
+                st.caption(f"{r['title']} ({r['delta']:+.1f})")
     else:
-        st.info("Run `python src/books/predict_ratings.py` to see model performance.")
+        st.info("Not enough overlapping Hardcover ratings to compare.")
 
 with tab4:
+    st.subheader("📚 Reading Profile")
+    p1, p2 = st.columns(2)
+    with p1:
+        st.markdown("#### 📅 Books by Publication Decade")
+        dec = df.dropna(subset=['pub_year']).copy()
+        if not dec.empty:
+            dec['decade'] = (dec['pub_year'] // 10 * 10).astype(int).astype(str) + "s"
+            decade_counts = dec['decade'].value_counts().reset_index()
+            decade_counts.columns = ['Decade', 'Count']
+            fig = px.bar(decade_counts.sort_values('Decade'), x='Decade', y='Count',
+                         color_discrete_sequence=[HUB_PALETTE[1]])
+            st.plotly_chart(fig, use_container_width=True)
+    with p2:
+        st.markdown("#### 📏 Do you rate longer books higher?")
+        sc = df.dropna(subset=['pageCount', 'my_rating'])
+        sc = sc[sc['pageCount'] > 0]
+        if not sc.empty:
+            fig = px.scatter(sc, x='pageCount', y='my_rating', hover_data=['title'],
+                             trendline="ols", color_discrete_sequence=[HUB_PALETTE[2]],
+                             labels={'pageCount': 'Pages', 'my_rating': 'My Rating'})
+            st.plotly_chart(fig, use_container_width=True)
+            corr = sc['pageCount'].corr(sc['my_rating'])
+            st.caption(f"Page-count ↔ rating correlation: **{corr:+.2f}**")
+
+    st.markdown("#### ⭐ Average Rating by Top Category")
+    df['cat_list2'] = df['categories'].fillna('').str.split(', ')
+    cat_rt = df.explode('cat_list2')
+    cat_rt = cat_rt[cat_rt['cat_list2'].str.strip() != '']
+    top_cats = cat_rt['cat_list2'].value_counts().head(10).index
+    cat_rt = cat_rt[cat_rt['cat_list2'].isin(top_cats)]
+    agg = cat_rt.groupby('cat_list2')['my_rating'].agg(['mean', 'count']).reset_index()
+    agg.columns = ['Category', 'Avg Rating', 'Count']
+    fig = px.bar(agg.sort_values('Avg Rating'), x='Avg Rating', y='Category', orientation='h',
+                 color='Avg Rating', color_continuous_scale='RdYlGn', hover_data=['Count'])
+    st.plotly_chart(fig, use_container_width=True)
+
+with tab5:
     st.subheader("📋 All Books")
     display_cols = ['title', 'authors', 'publishedDate', 'my_rating', 'pageCount', 'categories']
     if 'predicted_rating' in df.columns:

@@ -115,12 +115,14 @@ def transform_single_media(meta, state, media_type='movie'):
     txt = f"Title: {meta.get('title', '')}. Lead: {meta.get('director', '') or meta.get('authors', '')}. {meta.get('overview', '') or meta.get('description', '')}"
     transformer = SentenceTransformer(state['sentence_transformer'])
     emb = transformer.encode([txt], normalize_embeddings=True)
-    
-    # Centroid Alignment (if state has aligner)
+
+    # PCA first (384 -> 10), THEN domain alignment: the aligner was fit on the
+    # PCA components (pca_cols) in the trainer, so it operates in PCA space.
+    pca_vec = state['pca'].transform(emb)
     if 'aligner' in state and state['aligner'] is not None:
-        emb = state['aligner'].transform(emb, [media_type])
-        
-    X_text = pd.DataFrame(state['pca'].transform(emb), columns=[f'pca_{i}' for i in range(10)])
+        pca_vec = state['aligner'].transform(pca_vec, [media_type])
+
+    X_text = pd.DataFrame(pca_vec, columns=[f'pca_{i}' for i in range(10)])
     
     # Languages & Genres
     lang = next((l.strip() for l in str(meta.get('language', 'English')).split(',') if l.strip() in state['top_languages']), 'Other')
@@ -134,21 +136,25 @@ def transform_single_media(meta, state, media_type='movie'):
     X_mpaa = pd.DataFrame(0, index=[0], columns=['rated_Adult', 'rated_Teen', 'rated_General'])
     X_mpaa[f'rated_{mpaa}'] = 1
     
-    # Music Affinity
+    # Music Affinity (gated to zero for non-music items, so a failure here is
+    # harmless for movie/tv/game/book — those columns just stay 0 via alignment).
+    X_music = pd.DataFrame()
     profile_path = config.MUSIC_MODEL_DIR / "profile.joblib"
     bundle_path = config.MUSIC_MODEL_DIR / "preprocessors.joblib"
     if profile_path.exists() and bundle_path.exists():
-        profile = joblib.load(profile_path)
-        bundle = joblib.load(bundle_path)
-        X_music = get_music_affinity_features([txt], profile, bundle)
-        gate = get_music_gate_mask(media_type)
-        X_music = X_music * gate
-    else:
-        X_music = pd.DataFrame()
+        try:
+            profile = joblib.load(profile_path)
+            bundle = joblib.load(bundle_path)
+            X_music = get_music_affinity_features([txt], profile, bundle)
+            X_music = X_music * get_music_gate_mask(media_type)
+        except Exception:
+            X_music = pd.DataFrame()
 
-    # Final concat
-    X_meta = pd.DataFrame([data])
-    X_final = pd.concat([X_meta.reset_index(drop=True), X_lang.reset_index(drop=True), 
+    # Final concat. Coerce the numeric backbone to floats: missing fields (e.g. a
+    # manually-entered book with no page count) arrive as None and would otherwise
+    # leave an object-dtype column that XGBoost/CatBoost reject.
+    X_meta = pd.DataFrame([data]).apply(pd.to_numeric, errors='coerce')
+    X_final = pd.concat([X_meta.reset_index(drop=True), X_lang.reset_index(drop=True),
                          X_genre.reset_index(drop=True), X_mpaa.reset_index(drop=True), 
                          X_text.reset_index(drop=True), X_music.reset_index(drop=True)], axis=1)
     

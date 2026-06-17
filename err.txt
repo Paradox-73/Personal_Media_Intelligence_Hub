@@ -1,204 +1,33 @@
-# PROJECT COMPLETION PLAN — Personal Media Intelligence Hub
-**Goal:** Finish the project in 4 phases (~3–4 weeks of part-time work). Every task below has a concrete deliverable and an acceptance criterion. When the Definition of Done at the bottom is fully checked, the project is complete — regardless of whether the transfer results come back positive or null.
-
-**Standing rules for all phases:**
-- No new architecture. Movies, TV, Games/Books, and the unified Mean Ensemble are FROZEN. Only the experiments below run.
-- Every experiment uses `fold_registry.json`. Any number not produced on registry folds does not enter the docs.
-- Both docs render from `latest_metrics.json` via one script. Hand-edited metrics are banned.
-
----
-
-## PHASE 0 — Repair the reporting spine (1–2 days)
-
-### Task 0.1 — Fix the metrics JSON writer
-- In the script that writes `reports/latest_metrics.json`: cast numpy types (`json.dump(obj, f, default=lambda x: x.item() if hasattr(x, "item") else float(x))`), write to a temp file, `json.load` it back as a round-trip check, then atomically rename.
-- **Accept when:** `python -c "import json; json.load(open('reports/latest_metrics.json'))"` passes and the file contains: overall metrics, per-domain slices, ablation rows, transfer matrix, λ, α_hi/α_lo, and a `generated_at` timestamp + git hash.
-
-### Task 0.2 — Single doc renderer
-- New script `src/reporting/render_docs.py`: reads `latest_metrics.json`, regenerates the Performance Benchmarks table in README.md and all metric blocks in FINAL_ML_TECHNICAL_REPORT.md between `<!-- METRICS:BEGIN -->` / `<!-- METRICS:END -->` markers. Exits non-zero if JSON is missing/unparseable.
-- **Accept when:** running the renderer twice is idempotent, and grep finds zero hand-written metric numbers outside marker blocks.
-
-### Task 0.3 — Dual unified headline
-- Benchmarks table gets two unified rows: `Unified (rated, N=1,264)` — the headline — and `Unified (full pool incl. PU pseudo-labels, N=4,952)` — secondary, footnoted. All thesis claims reference the rated row only.
-- **Accept when:** both docs show both rows and no pooled-with-music number is presented as the primary unified result.
-
-### Task 0.4 — Re-run the 4-row ablation on RATED-ONLY frozen folds
-- Rows: Base XGB / Mean Ensemble / Ridge Stack (quarantined code, run once for the record) / +Residual Heads (same). Report MAE, R², effect size, paired Wilcoxon p for each vs Base.
-- **Accept when:** UNIFIED_ABLATION_REPORT.md has 4 rows on N=1,264 registry folds, with the removed paths labeled "removed — kept for record," and p-values accompanied by effect sizes (state explicitly when an effect is significant-but-trivial).
-
-### Task 0.5 — Doc consistency sweep
-- Remove "Ridge-based Stacking Regressor" from README Key Features; reconcile the 93-feature claim vs the 402-d explorer claim (state both: 93 aligned model features, 402 incl. expanded blocks — or whatever is true); note TV's vibe path migration (Task 1.3).
-- **Accept when:** README and FINAL_ML_TECHNICAL_REPORT.md contain no claims contradicted by current code.
-
----
-
-## PHASE 1 — Gatekeeper experiments (2–3 days)
-
-### Task 1.1 — Distillation-prior ablation (Games & Books)
-- On registry folds: local SVR **with** vs **without** the unified-prior feature. Metrics: MAE, skill score. Paired Wilcoxon per domain.
-- **Decision rule:** prior not significantly helpful (p ≥ 0.05 or negative effect) → remove it from that domain, record the null. This decides whether the unified model has any production role.
-- **Accept when:** a table in the technical report states keep/drop per domain with p and effect size.
-
-### Task 1.2 — Conformal interval audit
-- Determine what the Oracle's per-item intervals actually are. If ensemble-std-scaled: either rename them ("heuristic uncertainty band") or implement **normalized split-conformal** (residual / local difficulty estimate, conformalized). Then measure empirical coverage on OOF: target 80% or 95%, pick one, state it everywhere.
-- **Accept when:** stated coverage and measured OOF coverage agree within ±5 points, and the queue/Oracle label matches the method.
-
-### Task 1.3 — TV vibe migration to MiniLM
-- Replace TV's TF-IDF(30) with the shared MiniLM→PCA path used by every other domain (15 components, same preprocessor pattern). Re-run TV on registry folds; update metrics via the renderer.
-- **Why mandatory:** the grid's shared semantic space must actually be shared; TV is currently in a different text space.
-- **Accept when:** TV metrics regenerated post-migration (expect ±0.05 R² change; record whatever happens) and the schema table updated.
-
----
-
-## PHASE 2 — THE TRANSFER GRID (the centerpiece, ~1 week)
-
-### Task 2.1 — Build `src/experiments/transfer_study.py`
-One harness, config-driven:
-- **Targets:** movies, tv, games, books. **Sources:** all 15 non-empty subsets of the other three domains, each run with and without music (pseudo-labeled, sample_weight 0.3–0.5) → 30 source configs per target.
-- **Features:** shared-space only (aligned vibe PCA, unified genre encoding, critic-average, year, log-popularity) + missingness masks. Domain-specific blocks excluded. CORAL fit on training folds only.
-- **Protocols per (S, T) cell:**
-  - **A (baseline):** train on T only — registry folds. Already have these numbers; load, don't recompute.
-  - **B (zero-shot):** train on S, evaluate on all of T's registry test folds.
-  - **C (augmented):** train on S + {0%, 25%, 50%, 100%} of T's training folds, evaluate on T's test folds. Target-fraction subsampling must be deterministic (seed from registry).
-- **Model:** the frozen Mean Ensemble (XGB+Cat), default unified hyperparameters. No per-cell tuning — that would be 120 tuning runs of overfit.
-- **Metrics per cell:** MAE, skill score (vs T's training-fold mean), Spearman ρ, paired Wilcoxon vs Protocol A on identical test items.
-- **Output:** `reports/transfer_grid_results.csv` (one row per cell × protocol × fraction × repeat) + `transfer_grid_summary.json` for the renderer.
-- **Accept when:** the full grid runs end-to-end from one command and is reproducible (rerun → identical numbers).
-
-### Task 2.2 — Analysis & verdict
-- **Affinity heatmap:** zero-shot skill score, single-source → target (4×4 + music row).
-- **Best-subset table:** per target, the source combo with highest significant augmented lift at the 100% fraction; mark "none" where nothing beats Protocol A.
-- **Learning curves:** per target, skill vs target-fraction for (best S) vs (T alone). The crossover point — if any — is the headline figure.
-- **Similarity↔transfer correlation:** compute pairwise domain MMD + centroid distance in the aligned space; Spearman-correlate with zero-shot skill. This is the "relations between domains" deliverable.
-- **Decision rules (pre-registered, write them in the report BEFORE looking at results):**
-  - Cell is a *positive transfer finding* iff augmented lift > 0, p < 0.05 paired, at ≥2 target fractions.
-  - Project verdict "taste transfers" iff ≥1 target has a positive finding; otherwise verdict is the null: "in the shared feature space, no domain combination beats local models — transfer must be item-level."
-- **Accept when:** heatmap + curves render in a new Streamlit page (`15_Transfer_Atlas.py`) and the verdict paragraph (whichever it is) is in both docs.
-
----
-
-## PHASE 3 — Entity bridges (~1 week, runs even if the grid is null — *especially* if null)
-
-### Task 3.1 — Cross-domain link table
-- `src/linking/build_entity_links.py`: for each library item, query Wikidata (P144 "based on", P4969 "derivative work", P50 author, P57 director, P86 composer) + TMDB keywords; emit `data/processed/entity_links.csv` with columns `source_id_a, source_id_b, link_type (adaptation|same_franchise|shared_creator), confidence`.
-- Manual pass: eyeball and correct the adaptation links (expect 15–40 pairs at your library size — small enough to verify all of them).
-- **Accept when:** link table exists, manually verified, with counts per link type reported.
-
-### Task 3.2 — Bridge features + paired evaluation
-- Features per item: `linked_item_rating` (your rating of the linked item, OOF-safe: only links whose partner is in the training fold), `has_link`, `franchise_mean_rating`, `shared_creator_te` (creator target-encoding across domains, K-fold).
-- Evaluate **only on the linked subset**: prediction error with vs without bridge features, paired Wilcoxon. Small N — report effect size + CI, and frame as a pilot.
-- **Accept when:** a "Does knowing I loved the book predict I'll love the show?" subsection exists in the technical report with the paired result, whatever it says.
-
----
-
-## PHASE 4 — Close-out (~1 week)
-
-### Task 4.1 — Dashboards final pass
-- New: `15_Transfer_Atlas.py` (heatmap, learning curves, similarity-vs-lift scatter). Verify: Latent Space Explorer aligned-view screenshot + separability ratio before/after CORAL; calibration page consistent with Task 1.2's chosen coverage.
-
-### Task 4.2 — Backlog enrichment for active learning
-- Run movie/show backlog through enrichment so the queue stops being games-only. Low effort, makes the AL story complete.
-
-### Task 4.3 — Final write-up
-- README gets three case studies: (1) the evaluation deflation (exists), (2) ablation discipline / killing residual heads (exists), (3) **the transfer verdict** — grid + entity-bridge results, positive or null, with the per-domain-slice finding ("naive pooling loses to local models everywhere") as its opening.
-- Update resume bullets with the real findings; if the verdict is null, the bullet is about *designing and pre-registering a 120-cell transfer study with paired significance testing* — that is the stronger bullet anyway.
-- Record limitations: aleatoric ceiling, N<100 domains, PU pseudo-label caveats, single-user dataset.
-
-### Definition of Done (check all)
-- [ ] `latest_metrics.json` valid; both docs render from it; CI-style renderer check passes
-- [ ] Dual unified headline; 4-row ablation on rated-only registry folds
-- [ ] Distillation-prior keep/drop decided per domain with stats
-- [ ] Conformal coverage measured and consistent with its label
-- [ ] TV on MiniLM path
-- [ ] Transfer grid run, reproducible, verdict written under pre-registered rules
-- [ ] Similarity↔transfer correlation reported
-- [ ] Entity-bridge pilot reported
-- [ ] Transfer Atlas page live; explorer aligned view verified
-- [ ] Three case studies + limitations in README; resume bullets updated
-- [ ] Final tag `v1.0` with docs and metrics in agreement
-
-**Explicitly out of scope (do not reopen):** new ensemble architectures, deep models, further Movies R² chasing, per-cell hyperparameter tuning in the grid, YouTube modeling, multi-user generalization.
-
-
-
-The per-domain slice finally landed and it's the most important table the project has produced — but this cycle also quietly changed what "Unified" means, and that needs to be unwound before any number from it can be trusted. In order of importance:
-
-## 1. The Unified headline switched populations mid-comparison
-
-Last cycle: Unified = 1,264 rated items, R² 0.444. This cycle: Unified = 4,952 items, R² 0.503 — because 3,688 music tracks with **PU pseudo-labels** entered the evaluation pool. That 0.444 → 0.503 "improvement" is not a model improvement; it's a population swap. Worse, 74% of the eval set now consists of the model predicting *another model's output* — the PU classifier's calibrated affinities — and if any PU-derived affinity features sit in the input vector, there's partial circularity: the model is being graded on reconstructing a label its own features encode. The 0.281 music R² suggests the circularity isn't total, but the pooled headline is now a blend of "predicting your actual ratings" and "predicting a pseudo-label," weighted 1:3 toward the latter.
-
-Fix: report **two unified rows, permanently** — `Unified (rated, N=1,264)` as the headline for your actual-taste claim, and `Unified (full pool incl. PU pseudo-labels, N=4,952)` as a secondary line. The README footnote gestures at this but the benchmark table presents 0.503 as *the* number, which a careful reviewer will correctly read as metric inflation — the exact sin your case study brags about avoiding. Also: the same swap silently invalidated the ablation comparison, see §3.
-
-## 2. The per-domain slice is a verdict — read it as one
-
-Put the slice next to the standalone models:
-
-Movies 0.549 unified vs 0.612 standalone. Shows 0.173 vs 0.325. Games MAE **1.097** unified vs 0.773 standalone. Books 0.012/0.611 vs −0.002/0.576. 
-
-**The unified model is worse than the local model in every single domain.** Pooled 0.503 is held up entirely by movie volume and music pseudo-labels. This is the "movies + passengers" outcome I flagged as the thing the slice would test, and it tested positive. Three consequences:
-
-- The unified model's *only* legitimate production role right now is as the **distillation prior** for Games/Books — and even that is now suspect, because a prior whose own Games MAE is 1.097 may be anchoring the local SVR badly. Run the missing ablation: Games/Books local SVR *with* vs *without* the unified-prior feature, paired Wilcoxon on the frozen folds. If the prior isn't significantly helping, the unified model currently helps nothing, and that's essential to know before the grid.
-- This is not a project failure — it's the precise empirical motivation for the transfer grid. The question was never "does one pooled model beat local models" (answer: no); it's "which *source combinations* transfer into which targets, zero-shot and augmented." The slice proves naive pooling isn't the mechanism. The grid tests whether any mechanism exists.
-- For the docs: this finding deserves its own subsection, stated plainly. "Naive cross-domain pooling underperforms local models in all four domains" is an honest, interesting result — burying it under a pooled 0.503 headline reverses the story.
-
-## 3. The ablation report regressed from 4 rows to 2 — and its baseline teleported
-
-Old ablation: Base 0.361 → Mean 0.406 → Ridge 0.384 → +Residuals 0.269, on the rated pool. New ablation: Base 0.503 → Mean 0.505, two rows, on the 4,952 pool. So the "re-run on registry folds" also swapped datasets, which means the residual-head/Ridge destruction claim (−0.09 R²) was never re-verified on frozen folds — the rows documenting it were simply deleted. Keep all four rows in the report (mark the removed paths as such), and run the ablation on the **rated-only** frozen folds so the table answers the question the architecture decision was about.
-
-Also, calibrate the language on the ensemble win: +0.0024 R² at p≈0.0000 is the textbook "significant but trivial" result — with ~5,000 paired samples, microscopic effects reach significance. Keep the mean ensemble (it's free), but report the effect size alongside p, and don't let the report imply the ensemble matters. The simplex converging to [0.45, 0.55] ≈ equal weights is itself the evidence that neither member dominates.
-
-## 4. `latest_metrics.json` is truncated
-
-The uploaded file dies mid-stream: `{"overall": {...}, "slices": [{"Domain": "movie", "N": ` — either the writer crashed or serialization broke (a common culprit: numpy `int64`/`float64` values without a default encoder). Since this file is supposed to be the single source of truth that renders both docs, it's currently a broken keystone. Symptom of exactly that: README Key Features still advertises a "Ridge-based Stacking Regressor" you deleted this cycle, and the schema section still says 93 features while the explorer says 402. Fix the writer (`json.dump(..., default=float)` or cast via `.item()`), add a `json.load` round-trip check at the end of the script, and have the doc renderer fail loudly if the JSON is unparseable.
-
-## 5. Active learning queue: healthy, with one calibration question
-
-The queue is finally functional — continuous priority scores, no ties, predictions in-distribution, intervals restored. One technical question: the intervals vary per item (±0.31 to ±1.63), but **vanilla split-conformal produces a constant width per domain**. So either you've implemented normalized/locally-weighted conformal (fine — say so in the report), or these are ensemble-std-scaled intervals being *labeled* 95% conformal without the calibration guarantee (not fine — rename or recalibrate). Which is it? Also the column header says 95% but the earlier implementation was 80% coverage — pick one and verify empirical coverage on OOF. The games-only composition is explained by backlog enrichment coverage, which is a reasonable known limitation; enriching the movie/show backlog is low-priority plumbing.
-
-## Next cycle, concretely
-
-1. Dual unified headline (rated vs full-pool) + 4-row ablation on rated-only frozen folds + fix the JSON writer. (~1 day)
-2. **Distillation-prior ablation** for Games/Books — does the unified prior actually help the local SVRs? This is now the load-bearing question for whether the unified model earns its keep. (~half day)
-3. **Run the grid.** Nothing blocks it anymore — registry, CORAL, shared-space masks, Wilcoxon plumbing, per-domain slicing all exist, and §2 just gave you the null hypothesis it needs to beat: "no source combination transfers better than the local model alone." That's a sharper, more falsifiable framing than when we designed it.
-
-The slice answered the question I'd been asking for three cycles, and the answer reframes the project: the shared feature space, as built, carries no per-domain advantage — so whatever cross-domain signal exists must be found by the grid (combinatorial, in the shared space) or by entity bridges (item-level, outside it). Those are the two experiments left, and they're the two the project was always about.
-
-
-Phase 1's science is good — the distillation verdict is clean and the conformal audit did exactly the right thing. But Phase 0's renderer has a wiring bug that just corrupted the benchmark table in both docs, and it's visible directly in the numbers. Catch this before anything else, because the renderer is now the single source of truth and it's currently telling a wrong story with perfect consistency.
-
-## 1. The renderer is publishing unified slices as standalone domain models — with 5× inflated N
-
-Look at the N column: Movies 4,900, TV 795, Games 310, Books 315. Those are exactly **980×5, 159×5, 62×5, 63×5** — item count × 5 CV repeats. The writer is counting OOF prediction *rows* (one per item per repeat) as N. And the smoking gun is that the "benchmarks" array and the "slices" array in `latest_metrics.json` are *identical, row for row*: Movie benchmark MAE 0.48387755… = movie slice MAE 0.48387755…. The per-domain benchmark rows aren't the standalone models at all — they're the **unified model's per-domain OOF slice**, with the old model labels ("CatBoost-Stack", "Simplex-Stack", "Distilled SVR") glued on top.
-
-Consequences in the published docs right now: README claims Movies R² 0.541 — your real standalone Movies model is 0.612. TV shows 0.167 instead of 0.325. Games MAE 1.116 instead of 0.773. Every standalone number got silently replaced by the (weaker, as we established) unified slice, while keeping the standalone models' names. This is precisely the failure the renderer was built to prevent, except now it's one bug in one script instead of scattered hand-edits — which is the system working, in a way: it's findable and fixable in one place.
-
-Fix: the writer must pull standalone metrics from each domain pipeline's own OOF output, deduplicate to per-item before computing N (and aggregate the 5 repeats per item — mean prediction or mean error, pick one and document it), and keep `slices` as a separate section explicitly labeled "unified model, by domain." Acceptance check to add: `assert benchmarks != slices` and `assert N == n_unique_items`.
-
-## 2. The "kept for record" ablation rows are corrupted
-
-Ridge Stack: MAE 0.384, R² 0.384. Residual Heads: MAE 0.269, R² 0.269. Identical pairs — those are the *old R² values* (0.3837, 0.2688) pasted into both columns. The historical MAEs were 0.5609 and 0.6088. Also note the record rows came from the old 5-fold ad-hoc run, not registry folds, so they're not strictly comparable to rows 1–2 anyway — either re-run them once on registry folds (they're quarantined but runnable, ~minutes) or footnote them as "legacy protocol, directionally indicative." And label the effect size: 0.0836 isn't the MAE delta (that's 0.0066), so presumably rank-biserial or Cohen's d — say which, or the column is noise.
-
-Minor same-family item: `params` says alpha_hi 0.2 / alpha_lo 0.1, but the earlier tuned values were 0.178/0.057 — defaults overwriting tuned values in the writer, or a retune? Verify which is deployed.
-
-## 3. The DROP verdict is right — now propagate it
-
-p=0.157 and p=0.857, effect direction *negative* in both domains (the prior made MAE marginally worse). Clean kill, correctly recorded. But the docs haven't caught up with their own finding:
-
-- README Engineering Highlights still advertises "**Transfer Learning via Distillation**" as a live feature, and the case study's point 2 still describes the prior as load-bearing. Both now contradict your own ablation table. Rewrite as past tense: tested, found non-significant, removed — that's the third entry for the ablation-discipline story, and it's a better story than the feature was.
-- The model label "Distilled SVR" in the benchmarks table is now doubly wrong (it's neither distilled anymore nor the source of those numbers — see §1). After the fix: "Local SVR."
-- Architecture diagram still shows "Niche Distillation SVR."
-
-And notice what the ablation *also* revealed, quietly: **skill scores of 0.225 (Games) and 0.108 (Books)** — the local models beat the mean-rating baseline by 22% and 11% on MAE. That's the first positive evidence these domains have *any* learnable local signal, exactly the "R²≈0 but skill>0" possibility the case study predicted. Worth a sentence in the docs. One provenance question though: the ablation's Games MAE is 0.658 vs the old standalone benchmark 0.773 — different feature set, different N (the 0.658181… decimal suggests N=55, not 62 — did the 'Incomplete' items get excluded here?), or genuinely improved? Pin that down so the *corrected* benchmark table and this ablation agree on what the Games local model scores.
-
-## 4. What's genuinely done
-
-Conformal audit: vanilla split-conformal, honest 80% label, per-domain constants (±0.78 movies → ±1.23 games — the width ordering itself is a nice one-line credibility check, it matches the per-domain difficulty ordering exactly). TV on MiniLM. Distillation decided. The unified-rated headline (0.440) matching the rated ablation's Mean Ensemble row (0.438) is the internal consistency the spine was built for — so the spine *works*; it's just pointed at one wrong data source.
-
-## Order of operations
-
-1. Fix the writer: standalone-vs-slice separation, per-item dedup, N assertion, record-row values, effect-size label, alpha check. (Half a day — it's all one script.)
-2. Re-render, eyeball the table against known-good numbers (Movies 0.612 is the canary), commit.
-3. Propagate the DROP: highlights, case study, diagram, model labels.
-4. **Then Phase 2.** Nothing in the grid depends on the renderer, but do not start producing 120 cells of results into a reporting pipeline that's currently mislabeling its inputs — fix the spine first, then let the grid write into it.
-
-You're one half-day bugfix away from the centerpiece.
+ValueError: Feature shape mismatch, expected: 167, got 127
+
+File "E:\Personal_Media_Intelligence_Hub\app\pages\8_Music_Oracle.py", line 56, in <module>
+    pred = oracle.predict_rating(selected_track_id)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "E:\Personal_Media_Intelligence_Hub\src\music\model_training.py", line 128, in predict_rating
+    pred = float(np.clip(self.model.predict(self.X[i:i + 1])[0], 1.0, 5.0))
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\sklearn\ensemble\_stacking.py", line 1134, in predict
+    y_pred = super().predict(X, **routed_params.final_estimator_["predict"])
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\sklearn\ensemble\_stacking.py", line 373, in predict
+    return self.final_estimator_.predict(self.transform(X), **predict_params)
+                                         ^^^^^^^^^^^^^^^^^
+File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\sklearn\utils\_set_output.py", line 316, in wrapped
+    data_to_wrap = f(self, X, *args, **kwargs)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\sklearn\ensemble\_stacking.py", line 1059, in transform
+    return self._transform(X)
+           ^^^^^^^^^^^^^^^^^^
+File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\sklearn\ensemble\_stacking.py", line 296, in _transform
+    getattr(est, meth)(X)
+File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\xgboost\core.py", line 751, in inner_f
+    return func(**kwargs)
+           ^^^^^^^^^^^^^^
+File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\xgboost\sklearn.py", line 1446, in predict
+    predts = self.get_booster().inplace_predict(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\xgboost\core.py", line 751, in inner_f
+    return func(**kwargs)
+           ^^^^^^^^^^^^^^
+File "E:\Personal_Media_Intelligence_Hub\content_rec\Lib\site-packages\xgboost\core.py", line 2865, in inplace_predict
+    raise ValueError(

@@ -64,6 +64,71 @@ def fetch_rawg_data(game_name, platform=None):
         print(f"Error fetching from RAWG: {e}")
     return None
 
+def search_games_by_query(query, max_results=5):
+    """Live RAWG search for the Oracle. Returns lightweight result dicts."""
+    if not RAWG_KEY or not query:
+        return []
+    url = f"https://api.rawg.io/api/games?key={RAWG_KEY}&search={query}&page_size={max_results}"
+    try:
+        results = requests.get(url, timeout=10).json().get('results', [])
+    except Exception as e:
+        print(f"RAWG search error: {e}")
+        return []
+
+    out = []
+    for g in results[:max_results]:
+        plats = g.get('platforms') or []
+        platform = plats[0]['platform']['name'] if plats else 'Unknown'
+        out.append({
+            'id': g.get('id'),
+            'title': g.get('name', 'Unknown'),
+            'platform': platform,
+            'year': (str(g.get('released')) or '')[:4],
+            'poster_path': g.get('background_image'),
+        })
+    return out
+
+
+def fetch_game_details_by_id(game_id):
+    """Fetch full RAWG detail for a selected game, shaped for the Oracle transform."""
+    if not RAWG_KEY or not game_id:
+        return None
+    try:
+        g = requests.get(f"https://api.rawg.io/api/games/{game_id}?key={RAWG_KEY}", timeout=10).json()
+    except Exception as e:
+        print(f"RAWG details error: {e}")
+        return None
+    if not g or not g.get('name'):
+        return None
+
+    plats = g.get('platforms') or []
+    platform = plats[0]['platform']['name'] if plats else 'Unknown'
+    genres = [x['name'] for x in g.get('genres', [])]
+    developers = [x['name'] for x in g.get('developers', [])]
+    tags = [x['name'] for x in (g.get('tags') or [])[:15]]
+
+    return {
+        'title': g.get('name'),
+        'name': g.get('name'),
+        'platform': platform,
+        'year': (str(g.get('released')) or '')[:4],
+        'released': g.get('released'),
+        'genre': genres,
+        'genres': ", ".join(genres),
+        'developer': developers,
+        'developers': ", ".join(developers),
+        'tags': ", ".join(tags),
+        'description_raw': g.get('description_raw') or '',
+        'metacritic': g.get('metacritic'),
+        'rating': g.get('rating'),
+        'ratings_count': g.get('ratings_count'),
+        'reviews_count': g.get('reviews_count'),
+        'cover': g.get('background_image'),
+        'poster_path': g.get('background_image'),
+        'processing_status': 'success',
+    }
+
+
 def enrich_game_data():
     print("🎮 Starting Game Data Enrichment...")
     

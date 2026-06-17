@@ -37,7 +37,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.svm import SVR
 from xgboost import XGBRegressor
 
-import config
+from src.music import config
 
 MODEL_PATH = config.MODELS_DIR / "model.joblib"
 

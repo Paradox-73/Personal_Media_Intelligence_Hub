@@ -214,6 +214,11 @@ def train_shows_model():
     gbr_baseline.fit(X_train, y_reg_train)
     joblib.dump(gbr_baseline, config.TV_SHOWS_MODEL_REGRESSOR)
     
+    # evaluate_robustly only cross-validates (fits internal clones); fit the base
+    # estimators themselves before persisting so they are usable standalone.
+    svr_pipe.fit(X_train, y_reg_train)
+    cat_reg.fit(X_train, y_reg_train)
+
     joblib.dump(xgb_reg, ensemble_dir / "xgb_base_regressor.joblib")
     joblib.dump(svr_pipe, ensemble_dir / "svr_base_regressor.joblib")
     joblib.dump(cat_reg, ensemble_dir / "catboost_base_regressor.joblib")

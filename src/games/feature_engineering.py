@@ -137,5 +137,175 @@ def process_features():
     joblib.dump(state, config.GAMES_MODEL_PREPROCESSOR_STATE)
     print(f"✅ Features processed. Shape: {X_final.shape}")
 
+# --------------------------------------------------------------------------- #
+# Oracle helpers (single-item inference + similarity)
+# --------------------------------------------------------------------------- #
+_ST_MODEL = None
+def _get_transformer():
+    """Lazy-load the sentence transformer once (heavy import)."""
+    global _ST_MODEL
+    if _ST_MODEL is None:
+        _ST_MODEL = SentenceTransformer('all-MiniLM-L6-v2')
+    return _ST_MODEL
+
+
+def _game_text(raw):
+    """Reproduce the exact training text_content string for one game."""
+    genres = raw.get('genres')
+    if not isinstance(genres, str):
+        genres = ", ".join(raw.get('genre') or [])
+    tags = raw.get('tags') if isinstance(raw.get('tags'), str) else ""
+    desc = raw.get('description_raw') or raw.get('description') or ""
+    name = raw.get('name') or raw.get('title') or ""
+    return f"Name: {name}. Genres: {genres}. Tags: {tags}. Description: {desc}"
+
+
+def transform_single_game(raw_data, state):
+    """Turn one raw game dict into a model-ready 1-row frame aligned to training_columns."""
+    cols = state['training_columns']
+    X = pd.DataFrame(0.0, index=[0], columns=cols)
+    medians = state.get('median_values', {})
+
+    # Numerics (fall back to training medians when missing)
+    def num(key):
+        try:
+            v = float(raw_data.get(key))
+            return v if not np.isnan(v) else medians.get(key, 0)
+        except (TypeError, ValueError):
+            return medians.get(key, 0)
+
+    year = clean_year(raw_data.get('year') or raw_data.get('released')) or medians.get('year', 0)
+    numeric_vals = {'year': year, 'metacritic': num('metacritic'), 'rating': num('rating'),
+                    'ratings_count': num('ratings_count'), 'reviews_count': num('reviews_count')}
+    for k, v in numeric_vals.items():
+        if k in X.columns:
+            X.at[0, k] = v
+
+    # Platform one-hot
+    plat = raw_data.get('platform')
+    if isinstance(plat, list):
+        plat = plat[0] if plat else ''
+    pcol = sanitize_col(f"plat_{plat}")
+    if pcol in X.columns:
+        X.at[0, pcol] = 1
+
+    # Genres multi-hot
+    genres = raw_data.get('genre') or raw_data.get('genres') or []
+    genres = genres if isinstance(genres, list) else parse_list(genres)
+    mlb_genre = state.get('mlb_genre')
+    if mlb_genre is not None:
+        try:
+            gv = mlb_genre.transform([genres])[0]
+            for i, c in enumerate(mlb_genre.classes_):
+                col = sanitize_col(f"gen_{c}")
+                if col in X.columns:
+                    X.at[0, col] = gv[i]
+        except Exception:
+            pass
+
+    # Developers multi-hot (frequency-gated indices)
+    devs = raw_data.get('developer') or raw_data.get('developers') or []
+    devs = devs if isinstance(devs, list) else parse_list(devs)
+    mlb_dev = state.get('mlb_dev')
+    valid = state.get('valid_dev_indices', [])
+    if mlb_dev is not None:
+        try:
+            dv = mlb_dev.transform([devs])[0]
+            for i in valid:
+                col = sanitize_col(f"dev_{mlb_dev.classes_[i]}")
+                if col in X.columns:
+                    X.at[0, col] = dv[i]
+        except Exception:
+            pass
+
+    # Text embedding -> PCA
+    try:
+        emb = _get_transformer().encode([_game_text(raw_data)])
+        pcav = state['pca'].transform(emb)[0]
+        for i in range(len(pcav)):
+            col = f"pca_{i}"
+            if col in X.columns:
+                X.at[0, col] = pcav[i]
+    except Exception:
+        pass
+
+    return X
+
+
+def _load_enriched_games():
+    try:
+        return pd.read_csv(config.GAMES_ENRICHED_DATA_PATH)
+    except Exception:
+        try:
+            return pd.read_csv(config.GAMES_ENRICHED_DATA_PATH, encoding='latin1')
+        except Exception:
+            return pd.DataFrame()
+
+
+def find_similar_games(raw_data, input_df, state, n=3):
+    """Cosine similarity in the shared text-embedding space against your rated library."""
+    lib = _load_enriched_games()
+    if lib.empty:
+        return []
+
+    model = _get_transformer()
+    target_text = _game_text(raw_data)
+
+    lib = lib.copy()
+    lib['_text'] = ("Name: " + lib['name'].fillna('') +
+                    ". Genres: " + lib.get('genres', pd.Series('', index=lib.index)).fillna('') +
+                    ". Tags: " + lib.get('tags', pd.Series('', index=lib.index)).fillna('') +
+                    ". Description: " + lib.get('description_raw', pd.Series('', index=lib.index)).fillna(''))
+
+    embs = model.encode([target_text] + lib['_text'].tolist())
+    target_vec, lib_vecs = embs[0], embs[1:]
+    sims = lib_vecs @ target_vec / (
+        (np.linalg.norm(lib_vecs, axis=1) * np.linalg.norm(target_vec)) + 1e-9)
+
+    target_name = (raw_data.get('name') or raw_data.get('title') or '').lower().strip()
+    out = []
+    for idx in np.argsort(sims)[::-1]:
+        row = lib.iloc[idx]
+        if str(row.get('name', '')).lower().strip() == target_name:
+            continue  # skip self
+        out.append({
+            'title': row.get('name', 'Unknown'),
+            'platform': row.get('platform_from_text', 'Unknown'),
+            'year': clean_year(row.get('released')),
+            'similarity': float(sims[idx]),
+            'raw_data': row.to_dict(),
+        })
+        if len(out) >= n:
+            break
+    return out
+
+
+def explain_similarity_games(raw_data, other_raw, state):
+    """Human-readable reason two games are alike (shared genres / dev / platform)."""
+    def to_set(val):
+        if isinstance(val, list):
+            return {str(v).strip().lower() for v in val}
+        return {g.strip().lower() for g in str(val or '').replace('[', '').replace(']', '').split(',') if g.strip()}
+
+    g1 = to_set(raw_data.get('genre') or raw_data.get('genres'))
+    g2 = to_set(other_raw.get('genres'))
+    shared_g = g1 & g2
+
+    d1 = to_set(raw_data.get('developer') or raw_data.get('developers'))
+    d2 = to_set(other_raw.get('developers'))
+    shared_d = d1 & d2
+
+    bits = []
+    if shared_g:
+        bits.append(f"shared genres: {', '.join(sorted(shared_g))}")
+    if shared_d:
+        bits.append(f"same developer: {', '.join(sorted(shared_d))}")
+    p1 = str(raw_data.get('platform', '')).lower()
+    p2 = str(other_raw.get('platform_from_text', '')).lower()
+    if p1 and p1 == p2:
+        bits.append(f"same platform ({raw_data.get('platform')})")
+    return "Matched on " + "; ".join(bits) if bits else "Matched on overall semantic vibe."
+
+
 if __name__ == "__main__":
     process_features()

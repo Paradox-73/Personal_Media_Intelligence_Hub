@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.books.ingestion import search_books_by_query, fetch_book_details_by_id
 from src.books.feature_engineering import transform_single_book, find_similar_books, explain_similarity_books
+from src.unified_model.unified_oracle import predict_unified
 
 st.set_page_config(page_title="Books Oracle", page_icon="🔮")
 
@@ -78,12 +79,25 @@ with search_col:
             with col_button:
                 if st.button("Select", key=f"select_book_{book_item['id']}_{st.session_state['search_query_input_book'].replace(' ', '_')}"):
                     st.session_state['selected_book_id'] = book_item['id']
+                    st.session_state['selected_book_doc'] = book_item
                     st.session_state['search_results_book'] = []
                     st.rerun()
-    else:
-        st.info("Book search functionality is currently a placeholder. Please input data via CSV.")
+    elif search_term:
+        st.info("No results — try another title, or enter details manually below.")
 
-# Process selected book - for now, we simulate selection or expect manual input for oracle
+# Fetch full details for the selected search result (Open Library / Hardcover)
+if st.session_state['selected_book_id'] and not st.session_state['selected_book_raw_data']:
+    with st.spinner("Fetching book details..."):
+        details = fetch_book_details_by_id(
+            st.session_state['selected_book_id'],
+            fallback=st.session_state.get('selected_book_doc'))
+        if details:
+            st.session_state['selected_book_raw_data'] = details
+        else:
+            st.error("Could not fetch details for that book.")
+            st.session_state['selected_book_id'] = None
+
+# Process selected book - allow manual entry as a fallback
 if not st.session_state['selected_book_raw_data']:
     st.subheader("Or Enter Manually:")
     manual_title = st.text_input("Title", key="book_manual_title")
@@ -136,6 +150,13 @@ if st.session_state['selected_book_raw_data']:
                 
             c2.metric("Verdict", verdict)
             c3.metric("Confidence", f"{confidence:.1f}%")
+
+            # Unified cross-domain model (separate, 397-feature shared space)
+            u = predict_unified(raw_data, 'book')
+            if u is not None:
+                st.metric("🌐 Unified Model (cross-domain)", f"⭐ {np.round(u * 2) / 2:.1f}",
+                          help="Independent prediction from the 397-feature Unified Model trained across "
+                               "all domains — a cross-domain sanity check against the local Books SVR above.")
 
             import shap
             import matplotlib.pyplot as plt

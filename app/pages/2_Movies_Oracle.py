@@ -13,6 +13,7 @@ from src import config
 # Import ingestion & engineering tools
 from src.movies.ingestion import search_movies_by_query, get_movie_metadata
 from src.movies.feature_engineering import find_similar_movies, explain_similarity
+from src.unified_model.unified_oracle import predict_unified
 from sentence_transformers import SentenceTransformer
 import re
 
@@ -267,6 +268,14 @@ if st.session_state['selected_movie_raw_data']:
                 if v_ordinal_ev is not None:
                     c_ord.metric(label="Ordinal (EV)", value=f"⭐ {v_ordinal_ev:.1f}", help="Expected Value from the probability distribution.")
                 c_tier.metric(label="Classifier Tier", value=verdict, help="0: Skip | 1: Watchable | 2: Masterpiece")
+
+                # Unified cross-domain model (separate, 397-feature shared space)
+                u = predict_unified(raw_data, 'movie')
+                if u is not None:
+                    st.metric("🌐 Unified Model (cross-domain)", f"⭐ {np.round(u * 2) / 2:.1f}",
+                              help="Independent prediction from the 397-feature Unified Model trained across "
+                                   "movies, TV, games, books & music — useful as a cross-domain sanity check "
+                                   "against the domain-specific stacking ensemble above.")
 
                 # SHAP Explainability
                 import shap

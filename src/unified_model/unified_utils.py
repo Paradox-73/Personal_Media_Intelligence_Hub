@@ -45,6 +45,9 @@ class DomainAligner(BaseEstimator, TransformerMixin):
 
     def transform(self, X, media_types):
         X_aligned = np.copy(X)
+        # Coerce to ndarray so a Python list/Series both yield a boolean mask
+        # (a raw list == str returns a scalar bool, breaking single-item inference).
+        media_types = np.asarray(media_types)
         for domain in np.unique(media_types):
             mask = (media_types == domain)
             if domain not in self.stats or not mask.any():

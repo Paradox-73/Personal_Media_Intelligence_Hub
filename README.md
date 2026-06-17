@@ -8,9 +8,11 @@
 - [Performance Benchmarks](#performance-benchmarks)
 - [Technology Stack](#technology-stack)
 - [Setup and Installation](#setup-and-installation)
+- [Running the Project](#running-the-project)
 - [Unified Media Intelligence](#unified-media-intelligence)
 - [Dashboards & Visualizations](#dashboards--visualizations)
 - [The Oracle (Explainable Recommendations)](#the-oracle-explainable-recommendations)
+- [Repository Structure](#repository-structure)
 
 ## Introduction
 The **Personal Media Intelligence Hub** is a sophisticated "Global Taste Engine" designed to map, analyze, and predict personal entertainment preferences across five distinct domains: Movies, TV Shows, Music, Games, and Books. By consolidating fragmented media consumption data and enriching it with high-fidelity metadata from external APIs, the system builds a unified semantic representation of "Taste" that allows for cross-domain discovery and explainable recommendations.
@@ -199,6 +201,274 @@ Honest constraints, stated plainly:
 - **PU pseudo-label caveat.** Music has no ground-truth ratings; its "ratings" are PU-classifier-calibrated affinities. Any pooled metric that scores music (the *Unified (full pool)* row) is the model partly predicting another model's output — reported only as a footnoted, secondary line.
 - **Single-user dataset.** Everything is one person's taste. Nothing here generalizes across users; multi-user generalization is explicitly out of scope.
 - **Transfer grid scope.** The shipped grid result is a documented **pilot** (subset of the 50 registry folds, 150-tree XGB proxy for the Mean Ensemble). The harness runs the full 50-fold/300-tree grid via `transfer_study.py full`; the verdict is reproducible either way.
+
+## Setup and Installation
+
+### 1. Prerequisites
+- **Python 3.12**
+- A few free API keys (see below). Every key is optional in the sense that you can run any single domain in isolation; you only need the keys for the domains you intend to (re)ingest.
+
+### 2. Install dependencies
+```bash
+# from the repository root
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+### 3. Configure API keys
+Create a `.env` file in the repository root:
+```env
+TMDB_API_KEY=...            # Movies + TV metadata
+OMDB_API_KEY=...            # Movies IMDb/RT/Metascore enrichment
+RAWG_API_KEY=...            # Games metadata
+GOOGLE_BOOKS_API_KEY=...    # Books metadata
+YOUTUBE_API_KEY=...         # YouTube Data API v3
+SPOTIPY_CLIENT_ID=...       # Music library
+SPOTIPY_CLIENT_SECRET=...
+SPOTIPY_REDIRECT_URI=http://localhost:8888/callback
+GENIUS_ACCESS_TOKEN=...     # Music lyrics
+MUSICBRAINZ_CONTACT=you@example.com   # required by MusicBrainz fair-use policy
+```
+
+> **Note.** `data/`, `models/`, and `.env` are git-ignored, so a fresh clone ships **without** the dataset or trained models. You regenerate them by running the pipelines below. All modules import shared paths from `src/config.py`, which auto-creates the `data/` and `models/` directory tree on first run.
+
+## Running the Project
+
+Every module imports configuration via `from src import config`, so **run everything from the repository root with the `-m` module syntax** (not `python src/.../file.py`). On Windows, prefix with `set PYTHONUTF8=1` (PowerShell: `$env:PYTHONUTF8=1`) to avoid console-encoding errors.
+
+### Quick start — just launch the app
+If the committed `data/` and `models/` are already present, you only need:
+```bash
+streamlit run app/main.py
+```
+This opens the multi-page Streamlit hub (dashboards, Oracles, Latent-Space Explorer, Transfer Atlas).
+
+### Full pipeline — rebuild everything from scratch
+Each domain follows the same four-stage pattern: **ingest → engineer features → train → predict.**
+
+**1. Per-domain pipelines (Movies / TV / Games / Books)**
+```bash
+# Movies
+python -m src.movies.ingestion                  # Letterboxd export + TMDB/OMDb -> enriched_data.csv
+python -m src.movies.feature_engineering        # -> training_features.csv (66 features)
+python -m src.movies.model_trainer              # baseline XGB regressor/classifier
+python -m src.movies.advanced_movie_model_trainer  # PRODUCTION edge-penalty stacking ensemble
+python -m src.movies.predict_ratings            # score the library
+
+# TV Shows
+python -m src.shows.ingestion
+python -m src.shows.feature_engineering
+python -m src.shows.model_trainer
+python -m src.shows.predict_ratings
+
+# Games
+python -m src.games.ingestion
+python -m src.games.feature_engineering
+python -m src.games.model_trainer
+python -m src.games.predict_ratings
+
+# Books
+python -m src.books.ingestion
+python -m src.books.feature_engineering
+python -m src.books.model_trainer
+python -m src.books.predict_ratings
+```
+
+**2. Music pipeline** (no star ratings — uses PU-affinity; see `src/music/readme.md`)
+```bash
+python -m src.music.ingestion                   # Spotify library + ReccoBeats audio features
+python -m src.music.musicbrainz_enrichment      # MusicBrainz genres/tags
+python -m src.music.genius_lyrics               # lyrics + VADER sentiment
+python -m src.music.background_pool             # unlabeled pool for PU learning
+python -m src.music.feature_engineering         # -> music_features.npz
+python -m src.music.model_training              # train PU-affinity model
+python -m src.music.profile_builder             # build taste profile (for the Music Oracle)
+```
+
+**3. YouTube ingestion** (no rating model)
+```bash
+python -m src.youtube.enrich_yt
+```
+
+**4. Unified cross-domain model**
+```bash
+python -m src.unified_model.unified_feature_engineering   # project all domains into the 397-feature shared space
+python -m src.unified_model.create_frozen_folds           # deterministic fold_registry.json
+python -m src.unified_model.advanced_unified_model_trainer  # train the unified Mean Ensemble
+python -m src.unified_model.predict_unified_ratings       # unified scoring of the full library
+```
+
+**5. Evaluation & report rendering** (regenerates the metrics shown in this README)
+```bash
+python -m src.reporting.production_benchmarks    # production local-model benchmarks
+python -m src.unified_model.comprehensive_evaluator  # writes reports/latest_metrics.json
+python -m src.reporting.render_docs              # injects metrics into README + technical report
+```
+
+**6. Research experiments** (the transfer study & ablations — optional, reproduces the case studies)
+```bash
+python -m src.experiments.distillation_ablation        # distillation-prior Wilcoxon ablation
+python -m src.experiments.latent_space_diagnostics     # 6-check wiring diagnostics
+python -m src.experiments.transfer_study full          # full 50-fold transfer grid ('pilot' for the quick version)
+python -m src.experiments.transfer_analysis            # aggregate grid -> verdict + summary.json
+python -m src.experiments.transfer_prior_control       # prior-vs-transfer stress control
+python -m src.experiments.text_norm_transfer_control   # text-normalization stress control
+python -m src.linking.build_entity_links full          # cross-domain Wikidata entity links
+python -m src.linking.bridge_features all              # entity-bridge feature evaluation
+python -m src.evaluation.active_learning_ranker        # rebuild the active-learning queue
+python -m src.evaluation.evaluate_movie_model_on_shows # cross-domain "movie model on shows" probe
+```
+
+**7. Launch the app**
+```bash
+streamlit run app/main.py
+```
+
+## Repository Structure
+
+> **Legend.** 🟢 tracked source / 📦 generated artifact / 🔒 git-ignored (local-only, see `.gitignore`). Directories marked 🔒 are produced or fetched at runtime and are intentionally kept out of version control.
+
+```text
+Personal_Media_Intelligence_Hub/
+│
+├── README.md                         # 🟢 This document — project overview, case studies, benchmarks (auto-rendered).
+├── requirements.txt                  # 🟢 Canonical Python dependency list for the project.
+├── .gitignore                        # 🟢 Excludes data/, models/, secrets, caches, and scratch logs from VCS.
+├── .env                              # 🔒 API keys (TMDB, OMDb, RAWG, Google Books, YouTube, Spotify, Genius).
+│
+├── app/                              # 🟢 Streamlit front-end (multi-page app).
+│   ├── main.py                       #    Landing page / app entry point and global layout + CSS.
+│   └── pages/                        #    One file per page; numeric prefix sets sidebar order.
+│       ├── 1_Movies_Dashboard.py     #    Movies analytics dashboard.
+│       ├── 2_Movies_Oracle.py        #    Movies rating predictor + SHAP "Verdict" explanations.
+│       ├── 3_TV_Shows_Dashboard.py   #    TV analytics dashboard.
+│       ├── 4_Music_Dashboard.py      #    Music analytics dashboard.
+│       ├── 5_Games_Dashboard.py      #    Games analytics dashboard.
+│       ├── 6_Books_Dashboard.py      #    Books analytics dashboard.
+│       ├── 7_TV_Shows_Oracle.py      #    TV rating predictor (Oracle).
+│       ├── 8_Music_Oracle.py         #    Music affinity / playlist recommender.
+│       ├── 9_Games_Oracle.py         #    Games rating predictor (Oracle).
+│       ├── 10_Books_Oracle.py        #    Books rating predictor (Oracle).
+│       ├── 11_YouTube_Dashboard.py   #    YouTube watch/engagement dashboard.
+│       ├── 12_Latent_Space_Explorer.py #  UMAP projection of the shared semantic ("vibe") space.
+│       ├── 13_Model_Calibration.py   #    Reliability diagrams / honest-metric calibration views.
+│       ├── 14_Taste_Drift.py         #    Rolling Shannon-entropy taste-drift timeline.
+│       └── 15_Transfer_Atlas.py      #    Cross-domain transfer study UI (heatmaps, learning curves).
+│
+├── src/                              # 🟢 All data-pipeline, ML, and analysis code.
+│   ├── config.py                     #    Global paths / shared configuration constants.
+│   │
+│   ├── movies/                       #    Movies domain pipeline.
+│   │   ├── ingestion.py              #      Pull & merge Letterboxd export + TMDB/OMDb enrichment.
+│   │   ├── feature_engineering.py    #      Build the 66-feature training matrix (incl. target encodings, vibe PCA).
+│   │   ├── model_trainer.py          #      Baseline XGB regressor/classifier trainer.
+│   │   ├── advanced_movie_model_trainer.py # Production edge-penalty stacking ensemble (Optuna-tuned).
+│   │   ├── custom_objectives.py      #      Asymmetric edge-penalty XGBoost loss.
+│   │   └── predict_ratings.py        #      Score the library / new titles with the trained models.
+│   │
+│   ├── shows/                        #    TV Shows domain (ingestion → features → trainer → predict).
+│   │   ├── ingestion.py
+│   │   ├── feature_engineering.py    #      38-feature matrix (network/genre multi-hot + 15-d vibe PCA).
+│   │   ├── model_trainer.py          #      Production simplex-stack ensemble.
+│   │   └── predict_ratings.py
+│   │
+│   ├── games/                        #    Games domain (RAWG). Local SVR pipeline.
+│   │   ├── ingestion.py
+│   │   ├── feature_engineering.py    #      55-feature matrix (platform/genre/dev multi-hot + vibe PCA).
+│   │   ├── model_trainer.py
+│   │   └── predict_ratings.py
+│   │
+│   ├── books/                        #    Books domain (Google Books). Local SVR pipeline.
+│   │   ├── ingestion.py
+│   │   ├── feature_engineering.py    #      19-feature matrix (author/category multi-hot + vibe PCA).
+│   │   ├── model_trainer.py
+│   │   └── predict_ratings.py
+│   │
+│   ├── music/                        #    Music domain (Spotify + ReccoBeats + MusicBrainz + Genius).
+│   │   ├── readme.md                 #      Music-subsystem-specific notes.
+│   │   ├── config.py                 #      Music-specific config.
+│   │   ├── schema.py                  #      Pydantic schema contracts for music records.
+│   │   ├── ingestion.py              #      Spotify library/playlist ingestion.
+│   │   ├── musicbrainz_enrichment.py #      MusicBrainz genre/tag/length enrichment.
+│   │   ├── genius_lyrics.py          #      Genius lyric fetch + VADER sentiment.
+│   │   ├── background_pool.py        #      Builds the unlabeled "pool" for PU learning.
+│   │   ├── feature_engineering.py    #      Audio + lyrical + vibe feature matrix → music_features.npz.
+│   │   ├── affinity.py               #      PU-affinity scoring.
+│   │   ├── model_training.py         #      Trains the PU affinity model.
+│   │   ├── profile_builder.py        #      Builds the user taste profile.
+│   │   ├── playlist_ranker.py        #      Ranks tracks/playlists for the Music Oracle.
+│   │   └── evaluation.py             #      Music model evaluation.
+│   │
+│   ├── youtube/                      #    YouTube ingestion (no rating model).
+│   │   └── enrich_yt.py
+│   │
+│   ├── unified_model/                #    Cross-domain "Global Taste Engine" (397-feature shared space).
+│   │   ├── unified_feature_engineering.py # Re-projects every domain into the shared CORAL-aligned space.
+│   │   ├── unified_utils.py          #      Shared helpers for the unified pipeline.
+│   │   ├── create_frozen_folds.py    #      Generates the deterministic fold_registry.json.
+│   │   ├── advanced_unified_model_trainer.py # Trains the unified Mean Ensemble (XGB/CatBoost/SVR/ordinal).
+│   │   ├── unified_repeated_cv.py    #      10×5 repeated CV evaluation on frozen folds.
+│   │   ├── comprehensive_evaluator.py #     Full evaluation / metrics aggregation.
+│   │   ├── cross_domain_transfer.py  #      Cross-domain transfer mechanics.
+│   │   └── predict_unified_ratings.py #     Unified scoring of the full library.
+│   │
+│   ├── linking/                      #    Cross-domain entity linking (the "entity bridge").
+│   │   ├── build_entity_links.py     #      Builds entity_links.csv across domains.
+│   │   └── bridge_features.py        #      Derives bridge features from linked entities.
+│   │
+│   ├── experiments/                  #    Pre-registered research experiments (transfer & ablations).
+│   │   ├── transfer_study.py         #      Main transfer-grid harness (`pilot` / `full` modes).
+│   │   ├── transfer_analysis.py      #      Analysis/aggregation of transfer-grid results.
+│   │   ├── transfer_prior_control.py #      Prior-vs-transfer stress control.
+│   │   ├── text_norm_transfer_control.py #  Text-normalization stress control.
+│   │   ├── distillation_ablation.py  #      Distillation-prior Wilcoxon ablation (verdict: DROP).
+│   │   └── latent_space_diagnostics.py #    Latent-space diagnostics for the shared embedding.
+│   │
+│   ├── evaluation/                   #    Standalone evaluation utilities.
+│   │   ├── active_learning_ranker.py #      Ranks backlog items by acquisition value (conformal intervals).
+│   │   └── evaluate_movie_model_on_shows.py # Cross-domain "movie model on shows" probe.
+│   │
+│   └── reporting/                    #    Single-source-of-truth metrics → docs renderer.
+│       ├── metrics_writer.py         #      Writes reports/latest_metrics.json (the canonical metrics file).
+│       ├── production_benchmarks.py  #      Computes production local-model benchmarks.
+│       ├── standalone_benchmarks.py  #      Computes standalone-model benchmarks.
+│       └── render_docs.py            #      Injects metrics into README between the <!-- ...:BEGIN/END --> markers.
+│
+├── reports/                          # 🟢 Generated reports & canonical metrics (committed for provenance).
+│   ├── latest_metrics.json           #    📦 Canonical metrics consumed by render_docs.py.
+│   ├── FINAL_ML_TECHNICAL_REPORT.md  #    Full technical write-up.
+│   ├── UNIFIED_ABLATION_REPORT.md    #    Unified-model ablation findings.
+│   ├── PIPELINE_RUN_LOG.md           #    Raw terminal output of every pipeline run.
+│   ├── RESUME_BULLETS.md             #    Résumé-ready summary bullets.
+│   ├── ACTIVE_LEARNING_QUEUE.md      #    Current active-learning acquisition queue.
+│   ├── transfer_grid_summary.json    #    📦 Transfer-grid verdict (rendered into the README).
+│   ├── transfer_grid_results.csv     #    📦 Full transfer-grid raw results.
+│   ├── distillation_ablation_results.json # 📦 Distillation ablation raw results.
+│   ├── entity_bridge_results.json    #    📦 Entity-bridge results.
+│   ├── entity_bridge_results_adaptation.json # 📦 Entity-bridge (adaptation variant).
+│   ├── oof_predictions.csv           #    📦 Out-of-fold predictions.
+│   ├── production_oof.csv            #    📦 Production-model OOF predictions.
+│   └── standalone_oof.csv            #    📦 Standalone-model OOF predictions.
+│
+├── results/                          # 📦 Per-domain prediction CSVs + distribution plots (movies/shows/games/books/unified).
+│
+├── data/                             # 🔒 Data lake (git-ignored). Created/populated by the ingestion pipelines.
+│   ├── raw/                          #    Untouched source exports (Letterboxd, RAWG, Google Books, Spotify, …).
+│   ├── processed/                    #    enriched_data.csv (ingested schema) + training_features.csv (training schema) per domain.
+│   ├── predictions/                  #    Model output CSVs and plots.
+│   └── cache/                        #    API response caches (Wikidata, lyrics, Spotify token, …).
+│
+├── models/                           # 🔒 Serialized trained models (git-ignored): per-domain .pkl/.joblib,
+│                                     #    unified/ ensemble, and the frozen fold_registry.json.
+│
+├── catboost_info/                    # 🔒 CatBoost training logs (auto-generated; git-ignored).
+└── content_rec/                      # 🔒 Local Python virtual environment (git-ignored — not part of the source).
+```
 
 ---
 *Created and maintained by the Personal Media Intelligence Hub Team.*

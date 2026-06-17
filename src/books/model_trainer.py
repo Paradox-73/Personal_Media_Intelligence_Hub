@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
-from sklearn.model_selection import train_test_split, cross_val_predict, RepeatedKFold
+from sklearn.model_selection import train_test_split, cross_val_predict, KFold
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, accuracy_score
 from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
@@ -53,30 +53,26 @@ def train_models():
         print("❌ Error: Training data not found.")
         return
 
+    # Train on the SAME engineered matrix that feature_engineering / predict_ratings
+    # and the Oracle transform use, so model, preprocessor_state and Oracle agree.
+    df = pd.read_csv(config.BOOKS_TRAINING_DATA_PATH)
     try:
-        df = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH)
-    except:
-        df = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH, encoding='latin1')
-        
-    df = df.dropna(subset=['my_rating']).copy()
+        df_enriched = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH)
+    except Exception:
+        df_enriched = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH, encoding='latin1')
+    df_enriched = df_enriched.dropna(subset=['my_rating']).reset_index(drop=True)
 
-    # 1. Distillation: Get Unified Model Predictions as a feature
-    unified_preds = get_unified_predictions(df, 'book')
-    
-    # Map features
-    df['target_reg'] = df['my_rating']
-    df['target_class'] = df['my_rating'].apply(lambda r: 2 if r >= 4.0 else (1 if r >= 2.5 else 0))
-    X = df.drop(columns=['target_reg', 'target_class', 'my_rating', 'title', 'authors', 'description', 'thumbnail', 'infoLink', 'categories', 'publisher', 'publishedDate', 'isbn'], errors='ignore')
-    
-    # Dummy encoding for numeric fallback
-    X = X.select_dtypes(include=[np.number]).fillna(0)
-    
+    # 1. Distillation prior (dropped by default; inert unless the unified predictions
+    #    file exposes a usable column — see the project's distillation DROP verdict).
+    unified_preds = get_unified_predictions(df_enriched, 'book')
+
+    X = df.drop(columns=['target_reg', 'target_class'], errors='ignore').fillna(0)
     if unified_preds is not None:
         print("   ✅ Fusing Unified Model Predictions as a feature.")
         X['unified_prior'] = unified_preds.values
-        
+
     y_reg = df['target_reg']
-    y_class = df['target_class']
+    y_class = df['target_class'].astype(int)
 
     # 80/20 Split
     X_train, X_test, y_train, y_test = train_test_split(
@@ -96,9 +92,11 @@ def train_models():
     svr_pipe.fit(X_train, y_train)
     
     # --- CONFORMAL PREDICTION (Uncertainty) ---
-    print("   Computing conformal intervals via 5x2 repeated CV residuals...")
-    rkf = RepeatedKFold(n_splits=5, n_repeats=2, random_state=42)
-    oof_preds = cross_val_predict(svr_pipe, X, y_reg, cv=rkf)
+    print("   Computing conformal intervals via 5-fold OOF residuals...")
+    # cross_val_predict needs a clean partition (each item tested once); RepeatedKFold
+    # reuses test items across repeats and raises "only works for partitions".
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    oof_preds = cross_val_predict(svr_pipe, X, y_reg, cv=kf)
     abs_residuals = np.abs(y_reg - oof_preds)
     
     # 80% coverage interval width
@@ -141,7 +139,7 @@ def train_models():
         n_estimators=50, learning_rate=0.05, max_depth=3,
         objective='multi:softmax', num_class=3, random_state=42
     )
-    y_class_train = y_class.iloc[X_train.index]
+    y_class_train = y_class.loc[X_train.index]
     classifier.fit(X_train, y_class_train)
     joblib.dump(classifier, config.BOOKS_MODEL_CLASSIFIER)
 
@@ -151,8 +149,8 @@ def train_models():
     results_dir.mkdir(parents=True, exist_ok=True)
     
     df_results = pd.DataFrame({
-        'title': df['title'],
-        'actual': y_reg,
+        'title': df_enriched['title'] if 'title' in df_enriched.columns else range(len(y_reg)),
+        'actual': y_reg.values,
         'predicted': preds_full
     })
     df_results.to_csv(results_dir / "book_predictions_full.csv", index=False)

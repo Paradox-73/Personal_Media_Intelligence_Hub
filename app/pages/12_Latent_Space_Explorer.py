@@ -197,10 +197,33 @@ else:
 c1, c2 = st.columns([4, 1])
 with c2:
     st.subheader("Map Controls")
+    with st.expander("ℹ️ What do these controls do?"):
+        st.markdown(
+            "- **Projection space** *(above the map)* — *Shared vibe* maps only the "
+            "semantic embedding components (cross-domain distance = taste similarity); "
+            "*Full feature* maps every model input (domains island by feature coverage — diagnostic only).\n"
+            "- **Apply domain alignment (CORAL)** — re-centers each media type's vibe cloud "
+            "on the shared global centroid, so a movie and a song that are *semantically* alike "
+            "sit together instead of being pushed apart by per-domain offset. Off = raw embeddings.\n"
+            "- **UMAP n_neighbors** — neighborhood size. *Low* (5–15) preserves fine local clusters; "
+            "*high* (30–60) emphasizes global structure. It trades local vs. global faithfulness.\n"
+            "- **UMAP min_dist** — how tightly points may pack. *0.0* = dense, clumpy clusters; "
+            "*0.9* = points spread evenly apart. Purely visual spacing, not distance.\n"
+            "- **Color By** — recolor points by media type, your rating (`target_reg`), or year.\n"
+            "- **Media Types** — show/hide whole domains.\n"
+            "- **Min rating / affinity** — hide items rated below the threshold "
+            "(music uses its PU-calibrated affinity pseudo-label).\n\n"
+            "UMAP layout is stochastic but seeded (`random_state=42`), so the same settings "
+            "reproduce the same map."
+        )
     align = st.checkbox("Apply domain alignment (CORAL)", value=True,
-                        disabled=not view.startswith("Shared"))
-    n_neighbors = st.slider("UMAP n_neighbors", 5, 60, 15)
-    min_dist = st.slider("UMAP min_dist", 0.0, 0.9, 0.1)
+                        disabled=not view.startswith("Shared"),
+                        help="Center each domain's vibe cloud on the shared centroid so "
+                             "cross-domain proximity reflects semantic content, not domain offset.")
+    n_neighbors = st.slider("UMAP n_neighbors", 5, 60, 15,
+                            help="Neighborhood size: low preserves local clusters, high emphasizes global structure.")
+    min_dist = st.slider("UMAP min_dist", 0.0, 0.9, 0.1,
+                         help="Minimum spacing between points: 0 = tight clumps, 0.9 = spread out.")
 
 df, err = compute_projection(view, align, n_neighbors, min_dist)
 

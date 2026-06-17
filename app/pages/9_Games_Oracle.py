@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.games.ingestion import search_games_by_query, fetch_game_details_by_id
 from src.games.feature_engineering import transform_single_game, find_similar_games, explain_similarity_games
+from src.unified_model.unified_oracle import predict_unified
 
 st.set_page_config(page_title="Games Oracle", page_icon="🔮")
 
@@ -80,10 +81,20 @@ with search_col:
                     st.session_state['selected_game_id'] = game_item['id']
                     st.session_state['search_results_game'] = []
                     st.rerun()
-    else:
-        st.info("Game search functionality is currently a placeholder. Please input data via CSV.")
+    elif search_term:
+        st.info("No results — try another title, or enter details manually below.")
 
-# Process selected game - for now, we simulate selection or expect manual input for oracle
+# Fetch full details for the selected search result (RAWG)
+if st.session_state['selected_game_id'] and not st.session_state['selected_game_raw_data']:
+    with st.spinner("Fetching game details from RAWG..."):
+        details = fetch_game_details_by_id(st.session_state['selected_game_id'])
+        if details:
+            st.session_state['selected_game_raw_data'] = details
+        else:
+            st.error("Could not fetch details for that game.")
+            st.session_state['selected_game_id'] = None
+
+# Process selected game - allow manual entry as a fallback
 if not st.session_state['selected_game_raw_data']:
     st.subheader("Or Enter Manually:")
     manual_title = st.text_input("Title", key="game_manual_title")
@@ -136,7 +147,14 @@ if st.session_state['selected_game_raw_data']:
             
             c2.metric("Verdict", verdict)
             c3.metric("Confidence", f"{confidence:.1f}%")
-            
+
+            # Unified cross-domain model (separate, 397-feature shared space)
+            u = predict_unified(raw_data, 'game')
+            if u is not None:
+                st.metric("🌐 Unified Model (cross-domain)", f"⭐ {np.round(u * 2) / 2:.1f}",
+                          help="Independent prediction from the 397-feature Unified Model trained across "
+                               "all domains — a cross-domain sanity check against the local Games SVR above.")
+
             import shap
             import matplotlib.pyplot as plt
             st.markdown("#### Why this prediction?")
