@@ -1,0 +1,107 @@
+{
+  "design": {
+    "domain": "movie",
+    "n_folds": 50,
+    "fold_registry": "models/unified/fold_registry.json",
+    "xgb_params": {
+      "n_estimators": 200,
+      "learning_rate": 0.03,
+      "max_depth": 6,
+      "subsample": 0.8,
+      "colsample_bytree": 0.8,
+      "random_state": 42
+    },
+    "alpha_hi": 0.0597,
+    "alpha_lo": 0.0788,
+    "alpha_source": "reports/PIPELINE_RUN_LOG.md (Optuna-tuned, movie)",
+    "edge_thresholds": {
+      "lo": 1.5,
+      "hi": 4.5
+    },
+    "arm_a": "objective=reg:squarederror",
+    "arm_b": "objective=AsymmetricEdgePenaltyObjective",
+    "note": "Identical hyperparameters and folds; no external sample weights; per-item OOF averaged across 5 repeats; predictions clipped to [0.5,5]."
+  },
+  "arm_a_standard": {
+    "n": 980,
+    "n_edge": 179,
+    "overall_mae": 0.48665443778038026,
+    "edge_mae": 0.8031796454051354,
+    "r2": 0.5815683685230438,
+    "acc_half": 80.0,
+    "pred_std": 0.7193341198931809,
+    "pred_min": 0.8277573704719543,
+    "pred_max": 4.669218921661377,
+    "exact_at_extremes_pct": 10.05586592178771,
+    "frac_pred_le_2": 7.857142857142857,
+    "frac_pred_ge_4": 13.36734693877551
+  },
+  "arm_b_edge": {
+    "n": 980,
+    "n_edge": 179,
+    "overall_mae": 0.4846553717340742,
+    "edge_mae": 0.7935105358422134,
+    "r2": 0.5851111478551738,
+    "acc_half": 79.89795918367348,
+    "pred_std": 0.7244226223013982,
+    "pred_min": 0.7875186443328858,
+    "pred_max": 4.600195980072021,
+    "exact_at_extremes_pct": 9.497206703910614,
+    "frac_pred_le_2": 7.040816326530612,
+    "frac_pred_ge_4": 12.346938775510203
+  },
+  "deltas_b_minus_a": {
+    "overall_mae": -0.001999066046306064,
+    "edge_mae": -0.009669109562921996,
+    "pred_std": 0.0050885024082173436,
+    "acc_half": -0.10204081632652162,
+    "exact_at_extremes_pct": -0.5586592178770964
+  },
+  "paired_wilcoxon": {
+    "all": {
+      "p": 0.2140220502128417,
+      "mae_a": 0.48665443778038026,
+      "mae_b": 0.4846553717340742,
+      "n": 980
+    },
+    "edge": {
+      "p": 0.27935404012336806,
+      "mae_a": 0.8031796454051354,
+      "mae_b": 0.7935105358422134,
+      "n": 179
+    }
+  },
+  "alpha_sweep": [
+    {
+      "alpha": 0.0,
+      "overall_mae": 0.48665443778038026,
+      "edge_mae": 0.8031796454051354,
+      "pred_std": 0.7193341198931809
+    },
+    {
+      "alpha": 0.0597,
+      "overall_mae": 0.4830641426967115,
+      "edge_mae": 0.7918108868865327,
+      "pred_std": 0.7233129828209208
+    },
+    {
+      "alpha": 0.3,
+      "overall_mae": 0.484592424704104,
+      "edge_mae": 0.7832271711786366,
+      "pred_std": 0.7303199929502908
+    },
+    {
+      "alpha": 0.6,
+      "overall_mae": 0.4860492105265053,
+      "edge_mae": 0.7749773766741407,
+      "pred_std": 0.7382241034888102
+    },
+    {
+      "alpha": 1.0,
+      "overall_mae": 0.4902499066566935,
+      "edge_mae": 0.7725875084626608,
+      "pred_std": 0.7477507240861274
+    }
+  ],
+  "sweep_note": "alpha=0.0 row is Arm A (squared error). Symmetric alpha_hi=alpha_lo."
+}

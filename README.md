@@ -51,10 +51,10 @@ graph TD
     F --> G
     
     subgraph Enrichment
-    C1[TMDB/OMDB]
+    C1[TMDB/OMDB/TVMaze]
     C2[MusicBrainz]
     C3[ReccoBeats]
-    C4[Google Books]
+    C4[Hardcover + Open Library]
     end
     
     subgraph Models
@@ -87,7 +87,7 @@ The per-domain models train on their own engineered matrix; the **Unified Model*
 | **Relational (3)** | Leakage-safe **target encodings** — Director, Actors, Director×Genre — Bayesian-smoothed (m=10) over 5-fold out-of-fold splits |
 | **Vibe (NLP)** | 384-d MiniLM-L6-v2 embedding of *Title + Director + Plot* → **25 PCA components** |
 
-### 📺 TV Shows (TMDB)
+### 📺 TV Shows (TMDB + TVMaze + OMDb)
 **Ingested** (`enriched_data.csv`, 35 raw fields): `tmdb_id, tvmaze_id, name, year, overview, tagline, created_by, genres, vote_average, vote_count, imdb_rating, imdb_votes, number_of_episodes, number_of_seasons, status, network, language, runtime, first_air_date, last_air_date, age_rating, awards, actors, writer, country, production_companies, user_rating, watch_count, …`.
 
 **Training** (`training_features.csv`, **38 features**):
@@ -107,7 +107,7 @@ The per-domain models train on their own engineered matrix; the **Unified Model*
 | **Categorical** | Platform one-hot (`plat_`), Genres multi-hot (`gen_`), Developers multi-hot frequency-gated at ≥2 (`dev_`) |
 | **Vibe (NLP)** | 384-d MiniLM-L6-v2 embedding of *Name + Genres + Tags + Description* → up to **15 PCA components** (`min(15, N−1)`) |
 
-### 📚 Books (Google Books)
+### 📚 Books (Hardcover + Open Library)
 **Ingested** (`enriched_data.csv`, 13 raw fields): `title, isbn, my_rating, authors, publisher, publishedDate, pageCount, categories, averageRating, ratingsCount, description, thumbnail, infoLink`.
 
 **Training** (`training_features.csv`, **19 features**):
@@ -185,7 +185,11 @@ The Unified Model concatenates every domain into one row-space (`data/processed/
 - **Core ML:** XGBoost, CatBoost, Scikit-Learn, Optuna, SHAP.
 - **NLP:** SentenceTransformers (`all-MiniLM-L6-v2`), UMAP.
 - **Data:** Pandas, Pydantic (Schema Contracts), Joblib.
-- **APIs:** TMDB, OMDb, RAWG, Google Books, YouTube Data API v3, ReccoBeats, MusicBrainz.
+- **APIs:** TMDB, OMDb, TVMaze, RAWG, Hardcover (GraphQL), Open Library, YouTube Data API v3, Spotify, ReccoBeats, MusicBrainz, Genius.
+
+> **Dependency note (code is the source of truth).** The list above is conceptual; the *imported* stack is pinned in `requirements.txt`. A few libraries were trialled and never wired in — `statsmodels`, `pandera`, `librosa`, `soundfile`, `omdb`, and `yt-dlp` are **not imported anywhere**. In particular: statistical tests use `scipy.stats` (not statsmodels); schema contracts use **Pydantic** only (not pandera); there is **no raw-audio DSP** — the 9 audio features come from the **ReccoBeats REST API** via `requests` (Spotify deprecated its audio-features endpoint for new apps on 2024-11-27); OMDb is a direct `requests` call; and YouTube uses the official **Data API v3** via `google-api-python-client`. These were pruned from `requirements.txt`.
+>
+> **Source provenance (verified against `src/<domain>/ingestion.py`).** Movies = TMDB + OMDb · TV = TMDB + TVMaze + OMDb · Games = RAWG · Books = **Hardcover (GraphQL) + Open Library** · Music = Spotify + ReccoBeats + MusicBrainz + Genius. Books requires `HARDCOVER_API_KEY` (a full `Bearer <jwt>` string); **TVMaze and Open Library are keyless**. (Earlier drafts mislabelled Books as "Google Books" and TV as "TMDB"-only — corrected throughout.)
 
 ## Dashboards & Visualizations
 - **Latent Space Explorer:** UMAP projection of the 384-d semantic space, clustering items by "vibe."
@@ -224,9 +228,10 @@ pip install -r requirements.txt
 Create a `.env` file in the repository root:
 ```env
 TMDB_API_KEY=...            # Movies + TV metadata
-OMDB_API_KEY=...            # Movies IMDb/RT/Metascore enrichment
+OMDB_API_KEY=...            # Movies + TV IMDb/RT/Metascore enrichment
 RAWG_API_KEY=...            # Games metadata
-GOOGLE_BOOKS_API_KEY=...    # Books metadata
+HARDCOVER_API_KEY=...       # Books metadata (Hardcover GraphQL — paste the full "Bearer <jwt>" string)
+# Books also query Open Library, and TV also queries TVMaze — both are keyless, no env var needed.
 YOUTUBE_API_KEY=...         # YouTube Data API v3
 SPOTIPY_CLIENT_ID=...       # Music library
 SPOTIPY_CLIENT_SECRET=...
@@ -339,7 +344,7 @@ Personal_Media_Intelligence_Hub/
 ├── README.md                         # 🟢 This document — project overview, case studies, benchmarks (auto-rendered).
 ├── requirements.txt                  # 🟢 Canonical Python dependency list for the project.
 ├── .gitignore                        # 🟢 Excludes data/, models/, secrets, caches, and scratch logs from VCS.
-├── .env                              # 🔒 API keys (TMDB, OMDb, RAWG, Google Books, YouTube, Spotify, Genius).
+├── .env                              # 🔒 API keys (TMDB, OMDb, RAWG, Hardcover, YouTube, Spotify, Genius).
 │
 ├── app/                              # 🟢 Streamlit front-end (multi-page app).
 │   ├── main.py                       #    Landing page / app entry point and global layout + CSS.
@@ -383,7 +388,7 @@ Personal_Media_Intelligence_Hub/
 │   │   ├── model_trainer.py
 │   │   └── predict_ratings.py
 │   │
-│   ├── books/                        #    Books domain (Google Books). Local SVR pipeline.
+│   ├── books/                        #    Books domain (Hardcover + Open Library). Local SVR pipeline.
 │   │   ├── ingestion.py
 │   │   ├── feature_engineering.py    #      19-feature matrix (author/category multi-hot + vibe PCA).
 │   │   ├── model_trainer.py
@@ -458,7 +463,7 @@ Personal_Media_Intelligence_Hub/
 ├── results/                          # 📦 Per-domain prediction CSVs + distribution plots (movies/shows/games/books/unified).
 │
 ├── data/                             # 🔒 Data lake (git-ignored). Created/populated by the ingestion pipelines.
-│   ├── raw/                          #    Untouched source exports (Letterboxd, RAWG, Google Books, Spotify, …).
+│   ├── raw/                          #    Untouched source exports (Letterboxd, RAWG, book ISBN list, Spotify, …).
 │   ├── processed/                    #    enriched_data.csv (ingested schema) + training_features.csv (training schema) per domain.
 │   ├── predictions/                  #    Model output CSVs and plots.
 │   └── cache/                        #    API response caches (Wikidata, lyrics, Spotify token, …).

@@ -8,6 +8,9 @@ models/
 log.txt
 srs.txt
 catboost_info/
-#err.txt
+err.txt
 req.txt
 src/movies/ratings.csv
+paper/
+paper.zip
+INTERVIEW_STUDY_GUIDE.md

@@ -1,47 +1,49 @@
+# Personal Media Intelligence Hub — Python dependencies.
+# This list reflects the ACTUAL imported surface of src/ and app/ (verified by
+# grepping every import), deduplicated. Stdlib modules (os, json, re, ast,
+# pathlib, argparse, dataclasses, typing, collections, itertools) are not listed.
+
+# --- App / UI ---
 streamlit
-pandas
-xgboost
-tmdbv3api
-omdb
-scikit-learn
 plotly
-tqdm
-numpy
-python-dotenv
-joblib
-statsmodels
-google-api-python-client
-isodate
 matplotlib
 seaborn
-vaderSentiment
-sentence-transformers
+
+# --- Data / numerics ---
+pandas
+numpy
+scipy                     # scipy.stats (Wilcoxon/Spearman) + scipy.optimize.minimize (simplex weights)
+joblib
+
+# --- Machine learning ---
+scikit-learn
+xgboost
 catboost
-spotipy
-lyricsgenius
-yt-dlp
-transformers
-librosa
-soundfile
 optuna
-pandera
-pydantic
 shap
+
+# --- NLP / embeddings ---
+sentence-transformers     # all-MiniLM-L6-v2; pulls in `transformers` + torch transitively
 umap-learn
-matplotlib
-seaborn
-scikit-learn
-pandas
-numpy
-joblib
-statsmodels
-google-api-python-client
-isodate
 vaderSentiment
-plotly
-tqdm
-python-dotenv
-streamlit
-xgboost
-tmdbv3api
-omdb
+
+# --- Data contracts ---
+pydantic
+
+# --- API clients / ingestion ---
+requests                  # raw REST: OMDb, MusicBrainz, ReccoBeats
+tmdbv3api                 # TMDB (movies + TV)
+spotipy                   # Spotify library + OAuth
+lyricsgenius              # Genius lyrics
+google-api-python-client  # YouTube Data API v3 + Google Books
+isodate                   # ISO-8601 duration parsing
+python-dotenv             # .env secret loading
+tqdm                      # progress bars
+
+# --- Removed (were listed but never imported anywhere in src/ or app/) ---
+# statsmodels  -> stats are scipy.stats, not statsmodels
+# pandera      -> schema contracts use pydantic only
+# librosa      -> no raw-audio DSP; audio features come from the ReccoBeats API
+# soundfile    -> ditto (no local audio I/O)
+# omdb         -> OMDb is called via raw requests, not this client lib
+# yt-dlp       -> YouTube uses the official Data API via google-api-python-client

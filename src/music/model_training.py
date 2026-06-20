@@ -116,6 +116,17 @@ class Oracle:
         self.df = pd.read_csv(config.MASTER_CSV)
         bundle = joblib.load(MODEL_PATH)
         self.model = bundle["model"]
+        # Fail loudly (and actionably) if the feature pipeline has drifted ahead
+        # of the saved model — e.g. the one-hot artist/genre vocabulary changed
+        # after the library was re-ingested. Otherwise this surfaces as a cryptic
+        # "Feature shape mismatch" from deep inside XGBoost at predict time.
+        expected = getattr(self.model, "n_features_in_", self.X.shape[1])
+        if self.X.shape[1] != expected:
+            raise ValueError(
+                f"Music model expects {expected} features but music_features.npz "
+                f"has {self.X.shape[1]}. The feature pipeline changed after the "
+                f"model was trained — retrain with: python -m src.music.model_training"
+            )
         # L2-normalise rows once so dot product == cosine similarity
         norms = np.linalg.norm(self.X, axis=1, keepdims=True)
         self._Xn = self.X / np.clip(norms, 1e-9, None)
