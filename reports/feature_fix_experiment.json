@@ -1,0 +1,76 @@
+{
+  "movies": {
+    "domain": "MOVIES + target encodings (director, actors)",
+    "old": {
+      "MAE": 0.5015306122448979,
+      "R2": 0.5238489566081483,
+      "Acc": 77.85714285714286,
+      "skill": 0.3443919356682801
+    },
+    "new": {
+      "MAE": 0.48418367346938773,
+      "R2": 0.5492436789223805,
+      "Acc": 78.6734693877551,
+      "skill": 0.36706810472960094
+    },
+    "wilcoxon_p": 0.006147694071335279,
+    "N": 980,
+    "added": "director_te, actors_te (OOF, m=10)"
+  },
+  "tv": {
+    "domain": "TV + showrunner/cast/writer/network TE + structural",
+    "old": {
+      "MAE": 0.8144654088050315,
+      "R2": 0.06298790754630368,
+      "Acc": 52.83018867924528,
+      "skill": 0.07761053621825031
+    },
+    "new": {
+      "MAE": 0.7012578616352201,
+      "R2": 0.23064952293484386,
+      "Acc": 61.0062893081761,
+      "skill": 0.20581911033463252
+    },
+    "wilcoxon_p": 4.573178477818414e-05,
+    "N": 159,
+    "added": "creator_te, actors_te, writer_te, network_te (OOF, m=20); +imdb_rating, episodes, runtime; +status one-hot"
+  },
+  "books": {
+    "domain-blind (transfer-style)": {
+      "domain": "BOOKS pooled slice [domain-blind (transfer-style)] + restored channels",
+      "old": {
+        "MAE": 0.5555555555555556,
+        "R2": 0.14953271028037374,
+        "Acc": 71.42857142857143,
+        "skill": 0.0948275862068968
+      },
+      "new": {
+        "MAE": 0.5555555555555556,
+        "R2": 0.04485981308411202,
+        "Acc": 74.60317460317461,
+        "skill": 0.0948275862068968
+      },
+      "wilcoxon_p": 0.9874068799001979,
+      "N": 63,
+      "added": "critic_avg_5\u2190averageRating, runtime\u2190pageCount, gen_*\u2190categories"
+    },
+    "identity-aware (production-style)": {
+      "domain": "BOOKS pooled slice [identity-aware (production-style)] + restored channels",
+      "old": {
+        "MAE": 0.5952380952380952,
+        "R2": 0.012149532710280186,
+        "Acc": 71.42857142857143,
+        "skill": 0.03017241379310376
+      },
+      "new": {
+        "MAE": 0.5793650793650794,
+        "R2": -0.0009345794392525697,
+        "Acc": 71.42857142857143,
+        "skill": 0.056034482758620885
+      },
+      "wilcoxon_p": 0.7422686377835703,
+      "N": 63,
+      "added": "critic_avg_5\u2190averageRating, runtime\u2190pageCount, gen_*\u2190categories"
+    }
+  }
+}
