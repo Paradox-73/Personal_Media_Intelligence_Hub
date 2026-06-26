@@ -98,7 +98,13 @@ def batch_predict_books():
             X_inf[col] = X_final[col]
     
     # Predict
-    preds = model.predict(X_inf)
+    preds = np.asarray(model.predict(X_inf), dtype=float)
+    # Deployment calibration: restamp onto the user's real rating distribution so the
+    # Oracle predicts the full range (incl. 5*) instead of regressing to the mode.
+    from src.utils.deployment_calibration import calibrate_to_ratings
+    _r = pd.to_numeric(df['my_rating'], errors='coerce')
+    _rated = (_r > 0).values
+    preds = calibrate_to_ratings(preds, preds[_rated], _r.values[_rated])
     df['predicted_rating'] = np.round(np.clip(preds, 0, 5) * 2) / 2
     
     # Save Results

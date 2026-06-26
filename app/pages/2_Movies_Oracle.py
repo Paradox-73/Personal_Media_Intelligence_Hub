@@ -17,6 +17,12 @@ from src.unified_model.unified_oracle import predict_unified
 from sentence_transformers import SentenceTransformer
 import re
 
+# Register the custom estimator under __main__ so joblib can unpickle the stacking /
+# ordinal models — they reference OrdinalExpectedValueRegressor under __main__ (the
+# trainer's entrypoint), which is app/main.py inside Streamlit.
+from src.movies.advanced_movie_model_trainer import OrdinalExpectedValueRegressor as _OEVR
+setattr(sys.modules['__main__'], 'OrdinalExpectedValueRegressor', _OEVR)
+
 st.set_page_config(page_title="The Oracle", page_icon="🔮", layout="wide")
 
 # --- PARITY TRANSFORMATION ---

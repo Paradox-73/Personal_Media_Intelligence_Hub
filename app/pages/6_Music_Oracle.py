@@ -8,6 +8,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src.music.model_training import Oracle
+from src.unified_model.unified_oracle import predict_unified
 import src.music.config as music_config
 
 st.set_page_config(page_title="Music Oracle", page_icon="🎧", layout="wide")
@@ -60,7 +61,17 @@ with tab1:
             c1, c2 = st.columns(2)
             c1.metric("Predicted Rating", f"{pred:.2f} / 5.0")
             c2.metric("Implicit Library Rating", f"{row['rating']:.2f} / 5.0")
-            
+
+            # Independent cross-domain prediction from the Unified Model, shown
+            # separately as a sanity check against the local music affinity model.
+            u = predict_unified(row.to_dict(), 'music')
+            if u is not None:
+                st.metric("🌐 Unified Model (cross-domain)", f"⭐ {np.round(u * 2) / 2:.1f}",
+                          help="Independent prediction from the 397-feature Unified Model trained "
+                               "across all domains — a cross-domain sanity check against the local "
+                               "music affinity model above. (For music the Unified slice is trained "
+                               "on PU pseudo-labels, so treat this as a curiosity, not a taste verdict.)")
+
             if pred > 4.5:
                 st.success("A masterpiece in your ears.")
             elif pred > 3.5:

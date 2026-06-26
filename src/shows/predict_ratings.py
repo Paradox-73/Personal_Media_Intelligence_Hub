@@ -59,13 +59,29 @@ def run_consolidated_predictions():
     
     # Feature Engineering
     df['vote_count_log'] = np.log1p(pd.to_numeric(df['vote_count'], errors='coerce').fillna(0))
-    df['vote_average'] = pd.to_numeric(df['vote_average'], errors='coerce').fillna(state['median_vote_avg'])
-    df['year'] = pd.to_numeric(df['year'], errors='coerce').fillna(state['median_year'])
+    _medians = state.get('median_values', {})
+    df['vote_average'] = pd.to_numeric(df['vote_average'], errors='coerce').fillna(_medians.get('vote_average'))
+    df['year'] = pd.to_numeric(df['year'], errors='coerce').fillna(_medians.get('year'))
     df['season_count'] = pd.to_numeric(df['number_of_seasons'], errors='coerce').fillna(1)
+    df['imdb_rating'] = pd.to_numeric(df['imdb_rating'], errors='coerce').fillna(_medians.get('imdb_rating'))
+    df['imdb_votes_log'] = np.log1p(pd.to_numeric(df['imdb_votes'], errors='coerce').fillna(0))
+    df['runtime'] = pd.to_numeric(df['runtime'], errors='coerce').fillna(_medians.get('runtime'))
+    df['episode_count'] = pd.to_numeric(df['number_of_episodes'], errors='coerce').fillna(_medians.get('episode_count'))
+    df['total_wins'] = df['awards'].astype(str).str.extract(r'(\d+)\s+win', flags=re.IGNORECASE)[0].astype(float).fillna(0)
+    df['total_nominations'] = df['awards'].astype(str).str.extract(r'(\d+)\s+nomination', flags=re.IGNORECASE)[0].astype(float).fillna(0)
     df['is_adult'] = df['age_rating'].apply(lambda x: 1 if str(x) in ['TV-MA', 'R', '18+'] else 0)
-    
+
     df['primary_network'] = df['network'].apply(get_primary_network)
     df['network_clean'] = df['primary_network'].apply(lambda x: x if x in state['top_networks'] else "Other")
+    # Country one-hots (mirror feature_engineering)
+    _top_ctry = state.get('top_countries', [])
+    df['primary_country'] = (df['country'].fillna('').astype(str)
+                             .str.replace(r"[\[\]'\"<>]", "", regex=True)
+                             .str.split(',').str[0].str.strip())
+    df['country_clean'] = df['primary_country'].apply(lambda x: x if x in _top_ctry else 'Other')
+    for _ctry in _top_ctry:
+        df[f"ctry_{_ctry}"] = (df['country_clean'] == _ctry).astype(int)
+    df["ctry_Other"] = (df['country_clean'] == "Other").astype(int)
     
     df['genres_list'] = df['genres'].apply(safe_eval)
     for col_name in state['kept_genres']:
@@ -77,7 +93,20 @@ def run_consolidated_predictions():
     if "net_Other" not in df.columns:
         df["net_Other"] = (df['network_clean'] == "Other").astype(int)
 
-    if 'tfidf_model' in state:
+    # Text features: mirror feature_engineering exactly (MiniLM embeddings -> fitted PCA).
+    if 'pca' in state and 'pca_cols' in state:
+        from sentence_transformers import SentenceTransformer
+        text_content = ("Title: " + df['name'].fillna('Unknown') +
+                        ". Network: " + df['primary_network'].fillna('Unknown') +
+                        ". Creator: " + df['created_by'].fillna('').astype(str).str.slice(0, 80) +
+                        ". Cast: " + df['actors'].fillna('').astype(str).str.slice(0, 120) +
+                        ". " + df['overview'].fillna(''))
+        _stm = SentenceTransformer(state.get('sentence_transformer', 'all-MiniLM-L6-v2'))
+        _emb = _stm.encode(text_content.tolist(), show_progress_bar=False)
+        _pca = state['pca'].transform(_emb)
+        pca_df = pd.DataFrame(_pca, columns=state['pca_cols'], index=df.index)
+        df = pd.concat([df, pca_df], axis=1)
+    elif 'tfidf_model' in state:  # legacy fallback
         df['overview'] = df['overview'].fillna('')
         tfidf_matrix = state['tfidf_model'].transform(df['overview'])
         tfidf_df = pd.DataFrame(tfidf_matrix.toarray(), columns=state['tfidf_cols'], index=df.index)

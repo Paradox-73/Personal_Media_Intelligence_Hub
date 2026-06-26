@@ -106,7 +106,7 @@ def run_active_learning_ranking():
         # Conformal Interval (Vanilla Split-Conformal 80% coverage)
         # Measured from OOF residuals
         conformal_widths = {
-            'book': 0.96,
+            'book': 1.01,  # retrained on Hardcover-library data (model_meta: 1.005)
             'game': 1.23,
             'movie': 0.78,
             'tv': 1.10,

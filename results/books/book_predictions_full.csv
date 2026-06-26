@@ -1,64 +1,89 @@
 title,actual,predicted
-The Last Straw,2.5,3.0
+The Lightning Thief,5.0,3.5
+The Last Straw,2.5,2.5
 The Ugly Truth,3.0,3.0
-Dog Days,3.0,3.0
-Hard Luck,2.5,3.0
-Rodrick Rules,3.0,3.0
-Diary Of Wimpy Kid,2.5,3.5
+Hard Luck,2.5,2.5
+Rodrick Rules,3.5,3.0
+Diary of a Wimpy Kid,3.0,3.0
 Night of the Living Dummy II,3.5,3.5
+Night of the Living Dummy III,3.0,3.0
 Welcome to Dead House,3.5,3.5
 The Haunted School,3.5,3.5
 One Day at Horrorland,3.0,3.5
-The Curse of Camp Cold Lake,3.0,3.0
-Night of the Living Dummy III,3.0,3.5
-Chamber of Secrets,3.0,3.5
-Prisoner of Azkaban,4.0,4.0
-Goblet of Fire,3.0,3.0
-Order of the Phoenix,4.0,3.5
-HalfBlood Prince,3.0,3.5
-Deathly Hallows,3.5,3.5
-Philosopher's Stone,3.5,3.5
-The Hidden Oracle,3.0,3.0
-The Dark Prophecy,3.0,3.0
-The Burning Maze,3.0,3.0
-The Tyrant's Tomb,3.0,3.0
-The Tower of Nero,3.0,3.0
-Scott Pilgrim Vol 2,4.5,4.5
-Dark Matter,3.5,3.0
-Chainsaw Man Vol 1,4.0,4.0
-Recursion,3.0,3.0
-Dune,3.0,3.0
+The Curse of Camp Cold Lake,3.5,3.5
+Project Hail Mary,5.0,3.5
+Call Me by Your Name,4.0,4.0
+Harry Potter and the Prisoner of Azkaban,4.0,4.0
+The Oath of the Vayuputras,3.5,3.5
+The Mark of Athena,4.5,4.0
+The Tower of Nero,2.5,3.0
+The Perks of Being a Wallflower,5.0,3.5
+The Red Pyramid,1.5,2.5
+The Sword of Summer,3.5,3.5
+Harry Potter and the Order of the Phoenix,3.5,3.5
+The Burning Maze,2.5,3.0
+The Tyrant's Tomb,2.5,3.0
+Raavan: Enemy of Aryavarta,3.5,3.5
+The Ship of the Dead,3.5,3.5
+Harry Potter and the Chamber of Secrets,3.0,3.5
+Dune,3.5,3.5
 Murder on the Orient Express,3.0,3.0
-Sita,3.0,3.0
-Scion of Ikshvaku,2.5,2.5
-Raavan,3.5,3.5
+Hitchhiker's Guide To The Galaxy: The Filming of the Douglas Adams Classic,4.0,4.0
+The Lost Hero,4.0,4.0
+The Hammer of Thor,3.5,3.5
+The House Of Hades,5.0,4.5
+Harry Potter and the Deathly Hallows,3.5,3.0
+The Blood Of Olympus,3.5,3.5
+The Hidden Oracle,3.0,3.0
+Harry Potter and the Philosopher's Stone,3.5,3.5
+Dark Matter,3.5,3.5
+The Titan's Curse,4.5,4.5
+The Battle of the Labyrinth,4.5,4.5
+The Serpent's Shadow,2.0,2.5
+The Dark Prophecy,3.0,3.0
+Scion of Ikshvaku,3.0,3.0
+The Secret of the Nagas,3.5,3.5
+The Complete Sherlock Holmes,3.5,3.5
+The Sea of Monsters,4.0,4.0
+Percy Jackson's Greek Heroes,5.0,3.5
+The Throne of Fire,1.5,2.5
+Harry Potter and the Half-Blood Prince,2.5,2.5
+"Chainsaw Man, Vol. 1: Dog and Chainsaw",4.0,4.0
+Scott Pilgrim Vol. 2: Scott Pilgrim vs. The World,4.5,4.0
+The Son of Neptune,4.0,4.0
+Recursion,3.0,3.0
+Sita: Warrior of Mithila,3.5,3.5
 The Immortals of Meluha,3.5,3.5
-The Secret of the Nagas,3.0,3.0
-The Oath of the Vayuputras,3.0,3.0
-perks of being a wallflower,5.0,3.5
-hitchhiker guide to galaxy,4.0,4.0
-sherlock holmes complete,3.5,3.5
-Geronimo stilton,2.0,3.0
-jungle book,3.5,3.5
-metamorphosis,4.0,4.0
-the stranger,4.0,4.0
-Percy Jackson and The Lightning Thief,4.5,4.5
-Percy Jackson and The Sea of Monsters,4.0,4.0
-Percy Jackson and the Titan's Curse,4.5,4.5
-Percy Jackson and the Battle of the Labyrinth,4.0,4.0
-Percy Jackson and the Last Olympian,5.0,5.0
-Percy Jackson and the Greek gods,5.0,5.0
-Percy Jackson and the Greek heroes,5.0,5.0
-The red pyramid,2.0,2.5
-throne of fire,2.0,2.5
-the serpents shadow,2.0,2.5
-the lost hero,4.0,4.0
-son of Neptune,4.0,4.0
-mark of athena,4.5,3.5
-house of hades,5.0,4.0
-blood of Olympus,3.5,3.5
-the sword of summer,3.5,3.5
-hammer of thor,3.5,3.5
-ship of the dead,3.5,3.5
-call me by your name,4.0,3.5
-project hail mary,5.0,4.0
+Dog Days,3.0,3.0
+The Metamorphosis,4.5,4.5
+Harry Potter and the Goblet of Fire,3.0,3.0
+Percy Jackson's Greek Gods,5.0,4.0
+The Last Olympian,5.0,4.0
+The Search for Treasure,2.5,2.5
+The Jungle Book,3.5,3.5
+"Bone, Vol. 5: Rock Jaw Master of the Eastern Border",3.5,3.5
+The Stranger,4.5,4.5
+Night of the Living Dummy,3.5,3.5
+I Have No Mouth and I Must Scream,4.5,3.5
+The Cask of Amontillado,4.5,4.0
+The Kingdom Of Fantasy,2.5,3.0
+"It's Halloween, You 'Fraidy Mouse!",2.5,3.0
+All Because of a Cup of Coffee,2.5,2.5
+The Quest for Paradise: The Return to the Kingdom of Fantasy,2.5,2.5
+The Amazing Voyage,2.5,2.5
+The Dragon Prophecy,2.5,2.5
+The Volcano of Fire,2.5,2.5
+The Mona Mousa Code,2.5,2.5
+The Secret of Cacklefur Castle,2.5,2.5
+The Karate Mouse,3.0,3.0
+The Temple of the Ruby of Fire,2.5,2.5
+The Giant Diamond Robbery,3.0,3.0
+A Very Merry Christmas,2.5,3.0
+The Race Across America,2.5,3.0
+The Race Against Time,3.0,3.0
+The Way of the Samurai,3.0,3.0
+The Hunt for the Golden Book,2.5,2.5
+Back in Time,3.0,3.0
+Geronimo Stilton Graphic Novels #5: The Great Ice Age,3.0,3.0
+The Secret of the Sphinx,2.5,2.5
+Thea Stilton And The Mystery In Paris,2.5,2.5

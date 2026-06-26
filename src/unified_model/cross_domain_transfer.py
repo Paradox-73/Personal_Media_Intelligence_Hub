@@ -168,10 +168,16 @@ def run_experiments():
     
     for domain in domains:
         print(f"\n>>> Analyzing Domain: {domain}")
-        idx = df_all['media_type'] == domain
-        df_domain = df_all[idx].copy()
-        df_text_domain = df_text_combined[idx].copy()
-        
+        # Filter each frame by its OWN media_type (avoids cross-object boolean
+        # misalignment when unified dropped a few rows), then align positionally.
+        df_domain = df_all[df_all['media_type'] == domain].reset_index(drop=True)
+        df_text_domain = df_text_combined[df_text_combined['media_type'] == domain].reset_index(drop=True)
+        n_align = min(len(df_domain), len(df_text_domain))
+        if len(df_domain) != len(df_text_domain):
+            print(f"   [{domain}] row-count mismatch {len(df_domain)} vs {len(df_text_domain)}; truncating to {n_align}")
+        df_domain = df_domain.iloc[:n_align].copy()
+        df_text_domain = df_text_domain.iloc[:n_align].copy()
+
         if len(df_domain) < 20:
             print(f"Skipping {domain} (too few samples: {len(df_domain)})")
             continue
@@ -182,7 +188,10 @@ def run_experiments():
         # Domain Features (X_domain)
         exclude = ['target_reg', 'target_ordinal', 'source_id', 'media_type', 'rating_date']
         X_domain = df_domain.drop(columns=[c for c in exclude if c in df_domain.columns])
-        
+        # The unified matrix already bakes in (gated) music_affinity_* columns; drop them
+        # so the domain-only baseline is clean and they don't duplicate X_music below.
+        X_domain = X_domain[[c for c in X_domain.columns if not str(c).startswith('music_affinity')]]
+
         # Real Music Affinity Features
         X_music = get_music_affinity_features(df_text_domain['text'].tolist(), profile, bundle)
         

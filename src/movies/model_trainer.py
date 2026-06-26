@@ -40,6 +40,11 @@ def train_models():
     # Calculate sample weights to handle imbalanced ratings
     weight_classes = (y_reg_train * 2).round() / 2 # Round to nearest 0.5
     sample_weights = compute_sample_weight(class_weight='balanced', y=weight_classes)
+    # Edge boost: extra weight on extreme ratings (<=1.5 / >=4.5) so the model predicts
+    # the full range instead of regressing to the 3.0-3.5 mode (trades a little MAE for
+    # edge calibration — matches the advanced trainer and production benchmark).
+    _edge = (weight_classes <= 1.5) | (weight_classes >= 4.5)
+    sample_weights = sample_weights * np.where(_edge, 5.0, 1.0)
 
     regressor = xgb.XGBRegressor(
         n_estimators=200,

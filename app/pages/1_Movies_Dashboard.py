@@ -12,7 +12,10 @@ from collections import Counter
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
 from src import config
+from geo_utils import aggregate_country_counts, make_world_map
+from milestones import render_milestones
 
 st.set_page_config(page_title="Analytics Dashboard", page_icon="📊", layout="wide")
 
@@ -285,7 +288,7 @@ df_diary_filtered = df_diary
 df_theatre = None
 if df_theatre_raw is not None:
     # Use URL as the primary key for joining
-    df_theatre = pd.merge(df_theatre_raw, df[['letterboxd_uri', 'user_rating', 'genre_list', 'poster',
+    df_theatre = pd.merge(df_theatre_raw, df[['letterboxd_uri', 'user_rating', 'genre_list', 'poster', 'title',
                                               'director_list', 'actors_list', 'writer_list', 'production_list',
                                               'runtime', 'overview', 'tagline', 'plot']],
                           left_on='URL', right_on='letterboxd_uri', how='left')
@@ -352,6 +355,50 @@ fig_ratings.update_layout(xaxis=dict(tickmode='linear', tick0=0.5, dtick=0.5))
 st.plotly_chart(fig_ratings, use_container_width=True)
 
 st.divider()
+
+# 1b. MILESTONE MOVIES (the 1st / 50th / 100th / 250th / … movie you logged)
+@st.cache_data
+def load_logged_movies():
+    """Movies in the order they were logged. Uses Letterboxd's watched.csv export
+    (oldest-first; the same-day backlog import keeps its file order within that day,
+    so the 1st watched film is the first row)."""
+    try:
+        r = pd.read_csv(config.MOVIES_RAW_DIR / "watched.csv")
+    except Exception:
+        return None
+    r['Date'] = pd.to_datetime(r.get('Date'), errors='coerce')
+    r['_orig'] = range(len(r))
+    return r.sort_values(['Date', '_orig'], kind='stable', na_position='last').reset_index(drop=True)
+
+
+def _date_sub(row, col):
+    d = row.get(col)
+    return d.strftime('%d %b %Y') if pd.notna(d) else None
+
+
+logged_movies = load_logged_movies()
+if logged_movies is not None and not logged_movies.empty:
+    lm = logged_movies.merge(df[['letterboxd_uri', 'poster', 'title']],
+                             left_on='Letterboxd URI', right_on='letterboxd_uri', how='left')
+    lm['disp_title'] = lm['title'].fillna(lm.get('Name'))
+    render_milestones(lm, 'disp_title', 'poster', "🏁 Milestone Movies (logged)",
+                      sub_fn=lambda r: _date_sub(r, 'Date'))
+    st.divider()
+
+# Theatre milestones — from your Letterboxd 'Theatre watch' list. The list is
+# exported newest-first (Position 1 = most recent), so sort by Position descending
+# to recover the order you actually watched them in (oldest = your 1st theatre film).
+if df_theatre is not None and not df_theatre.empty and 'Position' in df_theatre.columns:
+    th = df_theatre.copy()
+    th['Position'] = pd.to_numeric(th['Position'], errors='coerce')
+    th = th.sort_values('Position', ascending=False, kind='stable').reset_index(drop=True)
+    th['disp_title'] = th['title'].fillna(th.get('Name'))
+    render_milestones(th, 'disp_title', 'poster', "🍿 Milestone Theatre Watches",
+                      sub_fn=lambda r: (str(int(r['Year']))
+                                        if pd.notna(pd.to_numeric(r.get('Year'), errors='coerce'))
+                                        else None),
+                      empty_msg="No theatre-watch list found.")
+    st.divider()
 
 # 2. TIME, LENGTH & SEASONALITY
 st.subheader("⏳ Time & Duration")
@@ -572,6 +619,17 @@ with t2:
         st.info("Box Office data missing.")
 
 with t3:
+    st.markdown("#### 🌍 Your Cinematic World Map")
+    st.caption("Countries shaded by how many films you've watched from there (log-scaled so smaller countries stay visible). Hover for the exact count and your average rating.")
+    geo_agg, geo_unmapped = aggregate_country_counts(df, 'country_list', 'user_rating')
+    if not geo_agg.empty:
+        map_fig = make_world_map(geo_agg, low_color="#2C343F", high_color=HUB_PALETTE[0])
+        st.plotly_chart(map_fig, use_container_width=True)
+        if geo_unmapped:
+            st.caption(f"Not placed on the map (unrecognized region): {', '.join(geo_unmapped)}")
+    else:
+        st.info("No country data available to map.")
+
     c_ctry, c_lang = st.columns(2)
     with c_ctry:
         ctry_ent = calculate_entropy(df['country_list'])

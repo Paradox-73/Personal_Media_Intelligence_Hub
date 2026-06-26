@@ -79,7 +79,7 @@ def _fit_predict_xgb(X_tr, y_tr, X_te):
         objective="reg:absoluteerror", random_state=42,
     )
     m.fit(X_tr, y_tr, sample_weight=w)
-    return m.predict(X_te)
+    return _maybe_calibrate(m.predict(X_tr), y_tr, m.predict(X_te))
 
 
 def _fit_predict_svr(X_tr, y_tr, X_te):
@@ -87,8 +87,8 @@ def _fit_predict_svr(X_tr, y_tr, X_te):
         ("scaler", StandardScaler()),
         ("svr", SVR(kernel="rbf", C=1.0, gamma="scale", epsilon=0.1)),
     ])
-    m.fit(X_tr, y_tr)
-    return m.predict(X_te)
+    m.fit(X_tr, y_tr, svr__sample_weight=_balanced_weights(y_tr))
+    return _maybe_calibrate(m.predict(X_tr), y_tr, m.predict(X_te))
 
 
 def _fit_predict_simplex_stack(X_tr, y_tr, X_te):
@@ -122,13 +122,20 @@ def _fit_predict_simplex_stack(X_tr, y_tr, X_te):
     w0 = np.ones(len(base)) / len(base)
     weights = minimize(obj, w0, method="SLSQP", bounds=bounds, constraints=cons).x
 
-    # Refit base models on full train, blend test predictions
-    test_preds = []
+    # Refit base models on full train, blend train+test predictions
+    w_full = _balanced_weights(y_tr)
+    test_preds, train_preds = [], []
     for k, mk in base.items():
         mdl = mk()
-        mdl.fit(X_tr, y_tr)
+        if k == "svr":
+            mdl.fit(X_tr, y_tr, svr__sample_weight=w_full)
+        else:
+            mdl.fit(X_tr, y_tr, sample_weight=w_full)
         test_preds.append(mdl.predict(X_te))
-    return np.column_stack(test_preds) @ weights
+        train_preds.append(mdl.predict(X_tr))
+    blend_te = np.column_stack(test_preds) @ weights
+    blend_tr = np.column_stack(train_preds) @ weights
+    return _maybe_calibrate(blend_tr, y_tr, blend_te)
 
 
 DOMAIN_FIT = {
@@ -140,9 +147,31 @@ DOMAIN_FIT = {
 
 
 def _balanced_weights(y):
+    import os
     from sklearn.utils.class_weight import compute_sample_weight
     classes = (np.asarray(y) * 2).round() / 2
-    return compute_sample_weight(class_weight="balanced", y=classes)
+    w = compute_sample_weight(class_weight="balanced", y=classes)
+    # EDGE_BOOST (env, default 1.0 = OFF). Superseded by quantile calibration below; kept
+    # as a toggle for the edge-weight ablation only.
+    eb = float(os.getenv("EDGE_BOOST", "1.0"))
+    edge = (classes <= 1.5) | (classes >= 4.5)
+    return w * np.where(edge, eb, 1.0)
+
+
+def _maybe_calibrate(tr_pred, y_tr, te_pred):
+    """Leakage-safe rank/quantile calibration: map each test prediction's RANK (vs the
+    train predictions) onto the empirical train-rating distribution, so the output
+    distribution matches the real rating curve and the model can predict the full range
+    (incl. 5.0). Ranking-preserving, so it only helps where the model ranks well. The map
+    is fit on the TRAIN fold only -> no leakage. Toggle with CALIBRATE=0 for the baseline."""
+    import os
+    if os.getenv("CALIBRATE", "1") != "1":
+        return te_pred
+    sp = np.sort(np.asarray(tr_pred))
+    if len(sp) < 2:
+        return te_pred
+    q = np.interp(np.asarray(te_pred), sp, np.linspace(0.0, 1.0, len(sp)))
+    return np.quantile(np.asarray(y_tr), q)
 
 
 # ---- driver --------------------------------------------------------------------
@@ -202,7 +231,10 @@ def _generate_standalone_oof(uni_df, registry, oof_out_path="reports/standalone_
     """Run all four standalone models on registry folds; return (benchmarks, oof_df)."""
     benchmarks = []
     all_oof = []
+    import os
     for domain in ["movie", "tv", "game", "book"]:
+        # Per-domain calibration: skip CALIBRATE_SKIP domains (default "tv" — ranking too weak).
+        os.environ["CALIBRATE"] = "0" if domain in os.getenv("CALIBRATE_SKIP", "tv").split(",") else "1"
         print(f"   [standalone] {domain} ...", flush=True)
         loc = _load_domain(domain, uni_df, registry)
         feat_cols = [c for c in loc.columns if c not in DROP_COLS]

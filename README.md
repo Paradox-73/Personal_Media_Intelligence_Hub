@@ -19,11 +19,11 @@ The **Personal Media Intelligence Hub** is a sophisticated "Global Taste Engine"
 
 ## Case Study: When fixing the evaluation made the numbers worse
 
-A crucial part of this project involved recognizing and correcting inflated metrics in data-sparse domains (Games and Books, N ≈ 60). Initially, a single validation split suggested a promising R² of ~0.45. However, this was a statistical artifact. 
+A crucial part of this project involved recognizing and correcting inflated metrics in data-sparse domains (Games and Books, N ≈ 70–90). Initially, a single validation split suggested a promising R² of ~0.45. However, this was a statistical artifact. 
 
-By migrating to a rigorous **10-fold × 5-repeat Cross-Validation** protocol, that inflated number deflated to a **modest and unstable** R² (Games ≈ 0.36, Books ≈ 0.18 on the frozen folds — and *near-zero or negative* under stricter pooled estimators or for the unified slice). That spread is itself the lesson: R² is not a reliable yardstick here. This was a critical finding:
+By migrating to a rigorous **10-fold × 5-repeat Cross-Validation** protocol, that inflated number deflated to a **modest and unstable** R² (Games ≈ 0.35, Books ≈ 0.30 on the frozen folds — and *near-zero or negative* under stricter pooled estimators or for the unified slice). That spread is itself the lesson: R² is not a reliable yardstick here. This was a critical finding:
 1.  **Metric Treachery:** In domains where ratings cluster tightly (e.g., 3.0 to 4.5), variance is tiny, so R² becomes hypersensitive to a few noisy items — swinging from ~0.36 to near-zero depending on the estimator — even when the Mean Absolute Error (MAE) is stable and genuinely useful.
-2.  **The Distillation Prior — tested and dropped:** We hypothesized the unified model could anchor these sparse domains as a prior feature. A paired Wilcoxon ablation on the frozen folds said otherwise (p = 0.21 Games / 0.18 Books, both ≥ 0.05): the prior was removed. What *did* emerge once it was gone were positive **skill scores** (Games 0.225, Books 0.108) — the local models beat the mean-rating baseline, the first evidence of genuine local signal at N ≈ 60 even with R² ≈ 0.
+2.  **The Distillation Prior — tested and dropped:** We hypothesized the unified model could anchor these sparse domains as a prior feature. A paired Wilcoxon ablation on the frozen folds said otherwise (p = 0.06 Games / 0.71 Books, both ≥ 0.05): the prior was removed. What *did* emerge once it was gone were positive **skill scores** (Games 0.260, Books 0.301) — the local models beat the mean-rating baseline, the first evidence of genuine local signal at N ≈ 60 even with R² ≈ 0.
 3.  **The Pivot to Skill Score:** We reframed the evaluation metric from R² to **Skill Score** (`1 - MAE_model / MAE_baseline`), focusing on whether the system adds value over a simple historical average. 
 4.  **Uncertainty & Acquisition:** We shifted the focus for these domains from raw accuracy to active learning. By surfacing **split-conformal prediction intervals** (e.g., "3.5 ± 1.3"), the Oracle now explicitly quantifies its uncertainty, guiding the user to deliberately rate the most informative backlog items to efficiently bridge the data gap.
 5.  **Ablation Discipline:** We explicitly tested residual-head domain correction and Ridge-based stacking using paired Wilcoxon tests. Both were found to be actively destructive (destroying ~0.09 R²), leading to their removal in favor of a simpler, more robust Mean Ensemble.
@@ -34,9 +34,9 @@ Reviewers see inflated metrics daily; accurately deflating them and extracting a
 
 The project's central question. Two sub-stories:
 
-**1. Two measurement bugs, two flipped conclusions.** The benchmark table once published the *unified model's per-domain OOF slice* as if it were the standalone local models — with N inflated 5× (OOF rows counted as items) and the local-model names glued on top. Repairing the writer (`assert benchmarks != slices`, per-item dedup, `assert N == n_unique_items`) forced standalone and unified to be measured with the **same estimator on the same folds**. But a second, subtler bug remained: the "local" benchmarks were *weakened proxies* (Movies = a plain 200-tree XGB, not the deployed tuned edge-penalty stacking ensemble), which flattered the unified model. Replacing the proxies with the **production local models** (measured honestly as 50-fold registry OOF) gives the final, type-split verdict: the **local model wins in Movies and Games** — the domains with rich domain-specific features (target-encodings, Metacritic) — while the **unified model wins in TV and ties on Books**, the semantic-only domains. Cross-domain pooling earns its keep *only where a domain has little local signal beyond vibe* — not "everywhere but Games," as the proxy comparison had suggested. Two bugs, each of which *changed the scientific conclusion* — exactly why the single-source-of-truth renderer exists.
+**1. Two measurement bugs, two flipped conclusions.** The benchmark table once published the *unified model's per-domain OOF slice* as if it were the standalone local models — with N inflated 5× (OOF rows counted as items) and the local-model names glued on top. Repairing the writer (`assert benchmarks != slices`, per-item dedup, `assert N == n_unique_items`) forced standalone and unified to be measured with the **same estimator on the same folds**. But a second, subtler bug remained: the "local" benchmarks were *weakened proxies* (Movies = a plain 200-tree XGB, not the deployed tuned edge-penalty stacking ensemble), which flattered the unified model. Replacing the proxies with the **production local models** (measured honestly as 50-fold registry OOF) gives the final, type-split verdict: the **local model wins in Games and Books** — the domains with rich domain-specific features (Games' Metacritic/platforms; Books' author/genre multi-hots, available since the Hardcover-library refresh) — while the **unified model wins in TV**, and **Movies is a statistical tie** (0.464 local vs 0.465 pooled, within fold noise). Cross-domain pooling earns its keep *only where a domain has little local signal beyond vibe* — which, after the Books refresh, leaves TV as the clearest pooling win. Two bugs, each of which *changed the scientific conclusion* — exactly why the single-source-of-truth renderer exists.
 
-**2. The pre-registered transfer grid.** We then asked the sharper question — not "does the pooled model win on average" but *which specific source-domain combinations* transfer into which targets, zero-shot and augmented, in the shared feature space. The decision rules were **pre-registered before any result was seen** (positive finding ⇔ augmented lift > 0, paired p < 0.05, at ≥ 2 target fractions). <!-- TRANSFER_VERDICT:BEGIN -->**Realized verdict (full 50-fold grid, domain-blind, triple-controlled): TASTE TRANSFERS — into Games, robustly from `movie + book`.** A model trained only on movie/book ratings, **having never seen a game**, predicts game ratings better than the games-only model (zero-shot +0.175 skill, p=0.0004; +0.121 at 100%). This **reverses the earlier pilot NULL** (the 6-fold pilot was underpowered) and survives **three stress controls**: (1) the [domain-identity-leak fix](#engineering-highlights); (2) a *prior-vs-transfer* control — `movie+book→game` beats every featureless constant baseline (MAE 1.08 vs ~1.23) and rank-tracks true ratings at Spearman +0.37, so it is content, not a better prior for games' noisy N=55 mean; and (3) an *embedding text-normalization* control — re-embedding all domains with length-matched text (fixing the [text-shape artifact](#engineering-highlights)) keeps `movie+book→game` significant. The *broader* set of source configs (tv, movie+tv, …) cleared the bar on the raw space but **weakened under text-normalization**, so part of the wide result was a text artifact and the robust claim narrows to `movie+book`. Reconciliation with the benchmark table: Games' rating has a *domain-specific* part (Metacritic/platforms — only the local SVR sees it) and a *genre/vibe* part that lives in the shared space and transfers from movies/books. Aligned-space distance does not predict transfer (Spearman ≈ −0.18); *target data-starvation* does. Full results in the **Transfer Atlas** page and `reports/transfer_grid_summary.json`.<!-- TRANSFER_VERDICT:END --> Pre-registering the rule *before* running, reporting the reversal when the full grid crossed the bar, then stress-testing it three ways before finalizing — that discipline is the point.
+**2. The pre-registered transfer grid.** We then asked the sharper question — not "does the pooled model win on average" but *which specific source-domain combinations* transfer into which targets, zero-shot and augmented, in the shared feature space. The decision rules were **pre-registered before any result was seen** (positive finding ⇔ augmented lift > 0, paired p < 0.05, at ≥ 2 target fractions). <!-- TRANSFER_VERDICT:BEGIN -->**Realized verdict (full 50-fold grid, domain-blind, triple-controlled): TASTE TRANSFERS — into Games, robustly from `movie + book`.** A model trained only on movie/book ratings, **having never seen a game**, predicts game ratings better than the games-only model (`movie+book→game`: zero-shot +0.110 skill, p=0.001; +0.126 at 100%, p=0.0001 — significant at **4/4** target fractions; the best subset `movie+tv+book→game` reaches +0.155). This **reverses the earlier pilot NULL** (the 6-fold pilot was underpowered) and survives **three stress controls**: (1) the [domain-identity-leak fix](#engineering-highlights); (2) a *prior-vs-transfer* control — `movie+book→game` beats every featureless constant baseline (MAE 0.99 vs ~1.05–1.17) and rank-tracks true ratings at Spearman +0.47, so it is content, not a better prior; and (3) an *embedding text-length normalization* — **and this one was decisive.** The shared vibe space was distorted by text length (movie plots ~214 chars vs game descriptions ~1074); on the raw-length embeddings the transfer measured only +0.05 and was **not** significant. **Length-normalizing the production embeddings** (genre-templated, first-40-word descriptions) *unmasked* the effect — every Games-source config now clears 4/4, confirming genuine content transfer rather than a text-shape artifact. Reconciliation with the benchmark table: Games' rating has a *domain-specific* part (Metacritic/platforms — only the local SVR sees it) and a *genre/vibe* part that lives in the shared space and transfers from movies/books. Aligned-space distance does not predict transfer (Spearman ≈ −0.18); *target data-starvation* does. Full results in the **Transfer Atlas** page and `reports/transfer_grid_summary.json`.<!-- TRANSFER_VERDICT:END --> Pre-registering the rule *before* running, reporting the reversal when the full grid crossed the bar, then stress-testing it three ways before finalizing — that discipline is the point.
 
 ## Architecture
 
@@ -54,7 +54,7 @@ graph TD
     C1[TMDB/OMDB/TVMaze]
     C2[MusicBrainz]
     C3[ReccoBeats]
-    C4[Hardcover + Open Library]
+    C4[Hardcover Library API]
     end
     
     subgraph Models
@@ -107,10 +107,10 @@ The per-domain models train on their own engineered matrix; the **Unified Model*
 | **Categorical** | Platform one-hot (`plat_`), Genres multi-hot (`gen_`), Developers multi-hot frequency-gated at ≥2 (`dev_`) |
 | **Vibe (NLP)** | 384-d MiniLM-L6-v2 embedding of *Name + Genres + Tags + Description* → up to **15 PCA components** (`min(15, N−1)`) |
 
-### 📚 Books (Hardcover + Open Library)
-**Ingested** (`enriched_data.csv`, 13 raw fields): `title, isbn, my_rating, authors, publisher, publishedDate, pageCount, categories, averageRating, ratingsCount, description, thumbnail, infoLink`.
+### 📚 Books (Hardcover Library API)
+**Ingested** (`enriched_data.csv`, 13 raw fields): `title, isbn, my_rating, authors, publisher, publishedDate, pageCount, categories, averageRating, ratingsCount, description, thumbnail, infoLink`. The dataset is pulled **entirely from the authenticated user's Hardcover library** (`user_books` with a rating) via the GraphQL API — title, rating, authors, genres, page count and description all come from one library record, so there is no `book.txt`/CSV input and no fuzzy title/ISBN join. (The Books *Oracle* still queries Open Library live for arbitrary unrated books.)
 
-**Training** (`training_features.csv`, **19 features**):
+**Training** (`training_features.csv`, **133 features**):
 | Category | Engineered features |
 | :--- | :--- |
 | **Numerical (4)** | Year, Page Count, Average Rating, Ratings Count |
@@ -174,16 +174,17 @@ The Unified Model concatenates every domain into one row-space (`data/processed/
 | **Numeric (5)** | `metacritic, rating` (RAWG global), `ratings_count, reviews_count, year`. |
 | **Categorical** | `plat_*` platform one-hot, `gen_*` genre multi-hot, `dev_*` developer multi-hot (gated at ≥2). |
 | **Vibe (15)** | `pca_0…14` — MiniLM embedding of *Name + Genres + Tags + Description*. |
-| **What drives it (SHAP)** | `ratings_count` (0.267), `rating` (0.200), `metacritic` (0.113), then `year` and embeddings. **These RAWG community-signal columns are the entire reason Games needs a *local* model** — they live *outside* the shared cross-domain space, so the unified model can't see them. (This is why the local Games model massively outperforms the unified slice, and why the local learning curve is still climbing — see diagnostics.) |
+| **What drives it (SHAP)** | `ratings_count` (0.196), `rating` (0.169), `metacritic` (0.075), then embeddings and `year`. **These RAWG community-signal columns are the entire reason Games needs a *local* model** — they live *outside* the shared cross-domain space, so the unified model can't see them. (This is why the local Games model massively outperforms the unified slice, and why the local learning curve is still climbing — see diagnostics.) |
 
-### 📚 Books — 19 features *(the thinnest, and the biggest lever)*
+### 📚 Books — 133 features *(feature-starvation fixed by the Hardcover library API)*
 | Feature group | Fields & how they're used |
 | :--- | :--- |
 | **Numeric (4)** | `year, pageCount, averageRating, ratingsCount`. |
+| **Categorical** | `aut_*` author multi-hot (8, gated at ≥2), `cat_*` category/genre multi-hot (106, ungated). |
 | **Vibe (15)** | `pca_0…14` — MiniLM embedding of *Title + Authors + Categories + Description*. |
-| **What drives it (SHAP)** | **Almost entirely embeddings** — `pca_0` (0.198), `pca_2` (0.142), `pca_10` (0.112); the four numerics barely register. |
+| **What drives it (SHAP)** | Still embedding-led, but the author/genre multi-hots now contribute real local signal — the books-only SVR's skill over the mean baseline is **+0.301** (vs the unified slice's near-zero), and the local model now beats the unified slice on MAE (0.466 vs 0.483). |
 
-> ⚠️ **Books is feature-starved (confirmed, the #1 accuracy lever).** Note what's **missing** from the 19 columns: there are **no author (`aut_`) or category/genre (`cat_`) multi-hot columns at all** — at N=63 the ≥2 frequency gate eliminated every one. So locally, Books runs on 4 weak numerics + vibe. **In the *unified* space it's even worse** — the coverage check shows Books has `critic_avg_5 = 0.00`, `runtime = 0.00`, **and** `gen_* = 0.00` (vs ~1.00 for every other domain): three whole signal channels are dead, so unified-Books predicts on `year + popularity + embeddings` only. Fixing the Books→unified field mapping (its `averageRating` never reaches `critic_avg_5`; its categories never reach `gen_*`) is the single highest-value engineering fix available.
+> ✅ **Books is no longer feature-starved — this was the documented "#1 accuracy lever," and migrating ingestion to the Hardcover *library* API closed it.** The old Open-Library-enriched file left Books with **zero** author/category multi-hots (sparse, non-standard subjects died at the ≥2 gate) and three **dead unified channels** (`critic_avg_5 = 0.00`, `runtime = 0.00`, `gen_* = 0.00`). Pulling each book straight from one Hardcover library record fixes both: locally Books now carries **8 author + 106 standardized-genre columns**, and in the *unified* space the same three channels are now **~100% populated** (`gen_* 0.98`, `critic_avg_5 1.00`, `runtime 1.00`). The downstream effect is visible in the benchmark table — the **local Books model now wins** (it has real local features to exploit), where the old data had the unified slice marginally ahead.
 
 ### 🎵 Music — 127 features (implicit label)
 Music has no star ratings; the label is a synthesized implicit rating (`2.5 + 1.5·saved + 0.4·playlists(cap 1.0) + 2.0·(1−rank/99) + 0.5·popularity`), and affinity is PU-calibrated.
@@ -201,7 +202,7 @@ Every domain is re-projected onto one backbone so a single model can score anyth
 - **Identity & missingness:** `is_{tv,game,book,music}` + `has_{domain}_feats` masks so the model can tell an absent feature from a real zero. *(These are deliberately dropped in the transfer grid — see below.)*
 - **Shared vibe:** a single **10-d** PCA over unified text, **CORAL/centroid-aligned per training fold** so "vibe" geometry is comparable across domains (leakage-safe).
 - **Shared genre / quality / commercial:** cross-domain `gen_*` multi-hot, `critic_avg_5` (scale-normalized IMDb/RT/Metascore/RAWG blend), `box_office_log`/`popularity`.
-- **Coverage reality (measured):** the shared channels are dense for movie/tv/game but **Books is blind on critic/runtime/genre** (see the Books warning above) — pooling can only help a domain on the channels it actually populates.
+- **Coverage reality (measured):** the shared channels are now dense for **all four rated domains** — the previously-dead Books channels (`critic_avg_5`, `runtime`, `gen_*`) are populated at ~100% since Books moved to the Hardcover library API (see the Books note above). Pooling can only help a domain on the channels it actually populates, and Books now populates all of them.
 
 ### 🔀 Transfer-learning features
 The transfer grid (`transfer_study.py`) operates in a **domain-blind** subset of the unified space: it keeps `pca_*` (CORAL-aligned), `gen_*`, `critic_avg_5`, `year`, `popularity`, and **deliberately drops** the `is_*`/`has_*_feats` identity columns — otherwise a "transfer" model could cheat by splitting on domain identity instead of learning shared content. Genres are capped to the top-40 most frequent. This is why **taste transfer is measured only on shared content** (vibe + genre + critic + year), and why Games — whose real signal is the *local* RAWG columns the shared space excludes — both transfers *in* well (its shared-space self-signal is weak) yet still needs its local model for production.
@@ -227,8 +228,9 @@ Are the ensembles complementary or is one member dead weight? (`feature_diagnost
 - **Asymmetric Edge-Penalty Loss:** Custom XGBoost objective derived to penalize errors more heavily at the extremes (favorites and hard passes).
   $$L(e, r) = \frac{1}{2}e^2 \cdot \exp(\alpha_{hi} \cdot \max(0, r - 4.0) + \alpha_{lo} \cdot \max(0, 1.5 - r))$$
 - **Joint Optuna Tuning:** Hyperparameters and asymmetric penalty coefficients are jointly optimized under **5×2 Repeated Cross-Validation**.
+- **Rank/Quantile Calibration (the real fix for regression-to-the-mean):** An MAE-trained regressor on clustered ratings (62% of movies are 3–4★) learns to hug the mode and *never predicts 5★* — which quietly inflates ±0.5★ accuracy for free. We apply a leakage-safe, **monotone** post-hoc map: each prediction's *rank* (vs the training-fold predictions) is mapped onto the empirical rating distribution (`np.quantile(y_train, rank)`), so the output distribution *equals* the real rating curve by construction and the model recovers the full 0.5–5★ range. Because it's ranking-preserving, it helps **exactly in proportion to ranking quality (Spearman ρ)**: a **net win for Games (ρ=0.84, MAE 0.652→0.598) and Books (ρ=0.70)** — which ranked well but compressed every prediction into [2,4] — a **deliberate accuracy-for-coverage trade for Movies** (ρ=0.74: +45 genuine 5★ predictions for ~4pts of ±0.5★ Acc), and **skipped for TV** (ρ=0.45 is too weak — calibration would stamp 5★ on the wrong shows). *Calibrate where the order is trustworthy.*
 - **Positive-Unlabeled (PU) Learning:** Solves the implicit feedback problem for music by sampling pseudo-negatives and using quantile calibration to map affinity to pseudo-ratings.
-- **Distillation Prior (tested, then removed):** We evaluated feeding the Unified Model's predictions into the Games/Books local SVRs as a prior feature. A paired Wilcoxon ablation on the frozen folds found it **not significantly helpful** (p = 0.21 / 0.18, effect direction negative), so the prior was **dropped** — the local SVRs run on their own features. Killing a feature that doesn't earn its keep is the point, not a regression.
+- **Distillation Prior (tested, then removed):** We evaluated feeding the Unified Model's predictions into the Games/Books local SVRs as a prior feature. A paired Wilcoxon ablation on the frozen folds found it **not significantly helpful** (p = 0.06 / 0.71, effect direction negative), so the prior was **dropped** — the local SVRs run on their own features. Killing a feature that doesn't earn its keep is the point, not a regression.
 - **Temporal Taste Decay:** Implementation of floored exponential sample weighting ($w_i = \max(\exp(-\lambda \Delta t_i), w_{min})$). Tuning revealed preferences are remarkably stable over the library's horizon (half-life ≈ 4.4 years).
 
 ## Performance Benchmarks
@@ -236,14 +238,14 @@ Are the ensembles complementary or is one member dead weight? (`feature_diagnost
 <!-- BENCHMARKS:BEGIN -->
 | Domain | N | Model | R² (CV mean) | MAE | ±0.5★ Accuracy |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Movies** | 980 | Prod Stacking (edge+Cat+SVR+Ord) | **0.558** | 0.478 | 79.1% |
-| **Unified (rated)** | 1,264 | Mean Ensemble | **0.443** | 0.542 | 75.6% |
-| **Unified (full pool)**† | 4,952 | Mean Ensemble (+music pool) | **0.498** | 0.411 | 80.4% |
-| **TV Shows** | 159 | Prod Simplex-Stack (edge+Cat+SVR) | **0.052** | 0.827 | 53.5% |
-| **Games** | 55 | Local SVR | **0.364** | 0.636 | 61.8% |
-| **Books** | 63 | Local SVR | **0.182** | 0.548 | 76.2% |
+| **Movies** | 1,000 | Prod Stacking (edge+Cat+SVR+Ord) | **0.501** | 0.503 | 75.5% |
+| **Unified (rated)** | 1,322 | Mean Ensemble | **0.467** | 0.530 | 75.5% |
+| **Unified (full pool)**† | 1,322 | Mean Ensemble (+music pool) | **0.442** | 0.547 | 74.1% |
+| **TV Shows** | 162 | Prod Simplex-Stack (edge+Cat+SVR) | **0.280** | 0.648 | 66.7% |
+| **Games** | 66 | Local SVR | **0.383** | 0.598 | 65.2% |
+| **Books** | 88 | Local SVR | **0.332** | 0.477 | 79.5% |
 
-*The four domain rows are the **production local models** on the frozen registry folds (one row per item, N = unique items): **Movies and TV are the deployed tuned ensembles** (Optuna edge-penalty XGB + CatBoost + SVR + ordinal-EV, fused) — not the earlier plain-XGB / manual-simplex proxies — and **Games and Books are the deployed SVR**. The two Unified rows are the cross-domain Mean Ensemble; **the rated row (N=1,264) is the headline taste metric**.*
+*The four domain rows are the **production local models** on the frozen registry folds (one row per item, N = unique items): **Movies and TV are the deployed tuned ensembles** (Optuna edge-penalty XGB + CatBoost + SVR + ordinal-EV, fused) — not the earlier plain-XGB / manual-simplex proxies — and **Games and Books are the deployed SVR**. The two Unified rows are the cross-domain Mean Ensemble; **the rated row (N=1,322) is the headline taste metric**.*
 
 *†Unified (full pool) is trained on the rated items **plus 3,688 music PU pseudo-labels** and evaluated including music via a separate RepeatedKFold(5×1) — music has no frozen registry. It is **not an actual-taste metric** and is shown only for transparency; never cite it as the unified result.*
 <!-- BENCHMARKS:END -->
@@ -259,7 +261,7 @@ Are the ensembles complementary or is one member dead weight? (`feature_diagnost
 
 > **Dependency note (code is the source of truth).** The list above is conceptual; the *imported* stack is pinned in `requirements.txt`. A few libraries were trialled and never wired in — `statsmodels`, `pandera`, `librosa`, `soundfile`, `omdb`, and `yt-dlp` are **not imported anywhere**. In particular: statistical tests use `scipy.stats` (not statsmodels); schema contracts use **Pydantic** only (not pandera); there is **no raw-audio DSP** — the 9 audio features come from the **ReccoBeats REST API** via `requests` (Spotify deprecated its audio-features endpoint for new apps on 2024-11-27); OMDb is a direct `requests` call; and YouTube uses the official **Data API v3** via `google-api-python-client`. These were pruned from `requirements.txt`.
 >
-> **Source provenance (verified against `src/<domain>/ingestion.py`).** Movies = TMDB + OMDb · TV = TMDB + TVMaze + OMDb · Games = RAWG · Books = **Hardcover (GraphQL) + Open Library** · Music = Spotify + ReccoBeats + MusicBrainz + Genius. Books requires `HARDCOVER_API_KEY` (a full `Bearer <jwt>` string); **TVMaze and Open Library are keyless**. (Earlier drafts mislabelled Books as "Google Books" and TV as "TMDB"-only — corrected throughout.)
+> **Source provenance (verified against `src/<domain>/ingestion.py`).** Movies = TMDB + OMDb · TV = TMDB + TVMaze + OMDb · Games = RAWG · Books = **Hardcover library API (GraphQL)** · Music = Spotify + ReccoBeats + MusicBrainz + Genius. The rated Books dataset is now pulled in full from the user's Hardcover library; the Books **Oracle** additionally queries Open Library live for arbitrary unrated titles. Books requires `HARDCOVER_API_KEY` (a full `Bearer <jwt>` string); **TVMaze and Open Library are keyless**. (Earlier drafts mislabelled Books as "Google Books" and TV as "TMDB"-only — corrected throughout.)
 
 ## Dashboards & Visualizations
 - **Latent Space Explorer:** UMAP projection of the 384-d semantic space, clustering items by "vibe."
@@ -271,7 +273,7 @@ Are the ensembles complementary or is one member dead weight? (`feature_diagnost
 ## Limitations
 Honest constraints, stated plainly:
 - **Aleatoric ceiling.** Ratings are self-reported on a 0.5★ grid; intrinsic noise caps achievable R²/MAE, especially after rounding. MAE-skill is the more honest yardstick in low-variance domains.
-- **Small-N domains.** Games (N≈55–62) and Books (N≈63) are pilots, not production claims; their R² is treacherous (near-zero variance), so we lead with skill score and conformal intervals, and the entity-bridge result is explicitly framed as a pilot with CIs.
+- **Small-N domains.** Games (N=72) and Books (N=88) are pilots, not production claims; their R² is treacherous (near-zero variance), so we lead with skill score and conformal intervals, and the entity-bridge result is explicitly framed as a pilot with CIs.
 - **PU pseudo-label caveat.** Music has no ground-truth ratings; its "ratings" are PU-classifier-calibrated affinities. Any pooled metric that scores music (the *Unified (full pool)* row) is the model partly predicting another model's output — reported only as a footnoted, secondary line.
 - **Single-user dataset.** Everything is one person's taste. Nothing here generalizes across users; multi-user generalization is explicitly out of scope.
 - **Transfer grid scope.** The shipped grid result is a documented **pilot** (subset of the 50 registry folds, 150-tree XGB proxy for the Mean Ensemble). The harness runs the full 50-fold/300-tree grid via `transfer_study.py full`; the verdict is reproducible either way.
@@ -422,12 +424,12 @@ Personal_Media_Intelligence_Hub/
 │       ├── 1_Movies_Dashboard.py     #    Movies analytics dashboard.
 │       ├── 2_Movies_Oracle.py        #    Movies rating predictor + SHAP "Verdict" explanations.
 │       ├── 3_TV_Shows_Dashboard.py   #    TV analytics dashboard.
-│       ├── 4_Music_Dashboard.py      #    Music analytics dashboard.
-│       ├── 5_Games_Dashboard.py      #    Games analytics dashboard.
-│       ├── 6_Books_Dashboard.py      #    Books analytics dashboard.
-│       ├── 7_TV_Shows_Oracle.py      #    TV rating predictor (Oracle).
-│       ├── 8_Music_Oracle.py         #    Music affinity / playlist recommender.
-│       ├── 9_Games_Oracle.py         #    Games rating predictor (Oracle).
+│       ├── 4_TV_Shows_Oracle.py      #    TV rating predictor (Oracle).
+│       ├── 5_Music_Dashboard.py      #    Music analytics dashboard.
+│       ├── 6_Music_Oracle.py         #    Music affinity / playlist recommender.
+│       ├── 7_Games_Dashboard.py      #    Games analytics dashboard.
+│       ├── 8_Games_Oracle.py         #    Games rating predictor (Oracle).
+│       ├── 9_Books_Dashboard.py      #    Books analytics dashboard.
 │       ├── 10_Books_Oracle.py        #    Books rating predictor (Oracle).
 │       ├── 11_YouTube_Dashboard.py   #    YouTube watch/engagement dashboard.
 │       ├── 12_Latent_Space_Explorer.py #  UMAP projection of the shared semantic ("vibe") space.
@@ -458,7 +460,7 @@ Personal_Media_Intelligence_Hub/
 │   │   ├── model_trainer.py
 │   │   └── predict_ratings.py
 │   │
-│   ├── books/                        #    Books domain (Hardcover + Open Library). Local SVR pipeline.
+│   ├── books/                        #    Books domain (Hardcover Library API). Local SVR pipeline.
 │   │   ├── ingestion.py
 │   │   ├── feature_engineering.py    #      19-feature matrix (author/category multi-hot + vibe PCA).
 │   │   ├── model_trainer.py

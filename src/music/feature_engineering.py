@@ -38,9 +38,16 @@ PCA_COMPONENTS = 32
 
 def load_and_merge(ratings_path=None) -> pd.DataFrame:
     df = pd.read_csv(config.LIBRARY_CSV)
-    for path in (config.MUSICBRAINZ_CSV, config.LYRICS_CSV):
+    for path in (config.MUSICBRAINZ_CSV, config.LYRICS_CSV, config.EXTRA_CSV):
         if path.exists():
             df = df.merge(pd.read_csv(path), on="track_id", how="left")
+
+    # Thin library exports drop `primary_artist`; derive it from the first credited
+    # name so artist multi-hot features work and downstream consumers (profile builder)
+    # have the column.
+    if "primary_artist" not in df.columns or df["primary_artist"].isna().all():
+        df["primary_artist"] = (df.get("artists", pd.Series([""] * len(df)))
+                                .fillna("").astype(str).str.split(",").str[0].str.strip())
 
     # Optional: real user ratings override the synthesised implicit rating.
     if ratings_path:
@@ -97,12 +104,22 @@ def build_numeric(df) -> pd.DataFrame:
                 "lyric_sentiment", "lyric_pos", "lyric_neu", "lyric_neg"]:
         num[col] = df[col].fillna(0) if col in df else 0.0
     num["lyrics_found"] = df["lyrics_found"].fillna(False).astype(int) if "lyrics_found" in df else 0
+
+    # Global popularity (Last.fm) — dense, source-independent mainstream/taste signal
+    # that the deprecated Spotify endpoints can no longer give us. Log-scaled, with a
+    # missing flag so the model can tell "unknown" from "genuinely obscure".
+    for src, out in [("lastfm_artist_listeners", "lastfm_artist_listeners_log"),
+                     ("lastfm_artist_playcount", "lastfm_artist_playcount_log"),
+                     ("lastfm_track_playcount", "lastfm_track_playcount_log")]:
+        vals = pd.to_numeric(df[src], errors="coerce") if src in df else pd.Series(np.nan, index=df.index)
+        num[out] = np.log1p(vals.fillna(0.0))
+        num[f"{out}_missing"] = vals.isna().astype(int)
     return num
 
 
 def build_genre_vocab(df):
     parts = []
-    for c in ("artist_genres", "mb_genres", "mb_tags"):
+    for c in ("artist_genres", "mb_genres", "mb_tags", "lastfm_tags", "discogs_styles"):
         if c in df:
             parts.append(split_terms(df[c]))
     if not parts:
@@ -115,11 +132,19 @@ def build_genre_vocab(df):
 
 
 def build_text_for_embed(df):
+    n = len(df)
+    blank = pd.Series([""] * n)
     return (
-        df.get("name", pd.Series([""]*len(df))).fillna("") + ". "
-        + df.get("artist_genres", pd.Series([""]*len(df))).fillna("") + ". "
-        + df.get("mb_tags", pd.Series([""]*len(df))).fillna("") + ". "
-        + df.get("lyric_embed_text", pd.Series([""]*len(df))).fillna("")
+        df.get("name", blank).fillna("") + ". "
+        + df.get("artist_genres", blank).fillna("") + ". "
+        + df.get("mb_tags", blank).fillna("") + ". "
+        # Last.fm crowd tags + similar artists + AudioDB mood: a strong, high-cardinality
+        # taste-neighbourhood signal, folded into text so the embedding absorbs it without
+        # exploding the column count (and so it also feeds cross-domain music-affinity).
+        + df.get("lastfm_tags", blank).fillna("") + ". "
+        + df.get("lastfm_similar", blank).fillna("") + ". "
+        + df.get("audiodb_mood", blank).fillna("") + ". "
+        + df.get("lyric_embed_text", blank).fillna("")
     ).tolist()
 
 def transform(df: pd.DataFrame, bundle: dict) -> np.ndarray:
@@ -128,7 +153,7 @@ def transform(df: pd.DataFrame, bundle: dict) -> np.ndarray:
     numeric = build_numeric(df)
     
     parts = []
-    for c in ("artist_genres", "mb_genres", "mb_tags"):
+    for c in ("artist_genres", "mb_genres", "mb_tags", "lastfm_tags", "discogs_styles"):
         if c in df:
             parts.append(split_terms(df[c]))
     if not parts:

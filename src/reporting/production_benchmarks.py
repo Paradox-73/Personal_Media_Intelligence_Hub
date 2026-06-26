@@ -28,6 +28,7 @@ Faithfulness & determinism
 * Everything is seeded (`random_state=42`, `TPESampler(seed=42)`), so the registry-fold
   numbers are reproducible.
 """
+import os
 import sys
 import json
 from pathlib import Path
@@ -47,7 +48,7 @@ from sklearn.utils.class_weight import compute_sample_weight
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.movies.custom_objectives import AsymmetricEdgePenaltyObjective
-from src.reporting.standalone_benchmarks import _load_domain, DROP_COLS
+from src.reporting.standalone_benchmarks import _load_domain, DROP_COLS, _maybe_calibrate
 
 BUCKET_MAP = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0, 4: 2.5, 5: 3.0, 6: 3.5, 7: 4.0, 8: 4.5, 9: 5.0}
 
@@ -71,8 +72,16 @@ def _metrics(y_true, y_pred_raw):
 
 
 def _balanced_weights(y):
+    # Balanced inverse-frequency weights, then an extra EDGE boost on extreme ratings
+    # (<=1.5 / >=4.5) so the production benchmark reflects the same edge-calibrated
+    # training as the deployed model: it predicts the full range instead of regressing
+    # to the 3.0-3.5 mode. Deliberately trades a little overall MAE for edge calibration.
+    import os
     classes = (np.asarray(y) * 2).round() / 2
-    return compute_sample_weight(class_weight="balanced", y=classes)
+    w = compute_sample_weight(class_weight="balanced", y=classes)
+    eb = float(os.getenv("EDGE_BOOST", "1.0"))  # OFF by default (superseded by calibration)
+    edge = (classes <= 1.5) | (classes >= 4.5)
+    return w * np.where(edge, eb, 1.0)
 
 
 # ---- edge-penalty alpha tuning (once per domain, seeded) ------------------------
@@ -176,12 +185,18 @@ def _stack_fold(X_tr, y_reg_tr, y_ord_tr, X_te, cfg, alphas):
     # Refit bases on the full training fold and predict the held-out test fold.
     full = _base_predictions(X_tr, y_reg, y_ord, X_te, cfg, alphas)
     Z_te = np.column_stack([full[n] for n in names])
-    return meta.predict(Z_te)
+    # Quantile-calibrate the stacked output (map test ranks -> train-rating distribution)
+    # so the ensemble predicts the full range instead of regressing to the mode.
+    return _maybe_calibrate(meta.predict(Z_tr), y_reg, meta.predict(Z_te))
 
 
 # ---- driver ---------------------------------------------------------------------
 
 def production_oof_for_domain(domain, uni_df, registry, alphas):
+    # Per-domain calibration: ON for all except domains in CALIBRATE_SKIP (default "tv",
+    # whose ranking is too weak — Spearman ~0.45 — for quantile calibration to place 5*s
+    # on the right items; calibrating it hurts MAE/accuracy). See edge_boost/calibration ablation.
+    os.environ["CALIBRATE"] = "0" if domain in os.getenv("CALIBRATE_SKIP", "tv").split(",") else "1"
     loc = _load_domain(domain, uni_df, registry)
     feat_cols = [c for c in loc.columns if c not in DROP_COLS + ["target_ordinal"]]
     cfg = CFG[domain]

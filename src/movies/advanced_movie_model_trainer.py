@@ -33,8 +33,13 @@ USE_CUSTOM_EDGE_LOSS = True
 
 from sklearn.base import BaseEstimator, RegressorMixin
 
-class OrdinalExpectedValueRegressor(BaseEstimator, RegressorMixin):
-    """Wraps the Ordinal Classifier to act as a regressor for stacking."""
+class OrdinalExpectedValueRegressor(RegressorMixin, BaseEstimator):
+    """Wraps the Ordinal Classifier to act as a regressor for stacking.
+
+    Mixin must precede BaseEstimator so RegressorMixin.__sklearn_tags__ sets
+    estimator_type='regressor' (sklearn >=1.6 tag-based is_regressor); the
+    reverse order shadows it and StackingRegressor rejects this as 'not a regressor'.
+    """
     _estimator_type = "regressor"
     
     def __init__(self, clf, unique_classes):
@@ -44,12 +49,36 @@ class OrdinalExpectedValueRegressor(BaseEstimator, RegressorMixin):
         self.present_bucket_vals = np.array([self.bucket_map[c] for c in unique_classes])
 
     def fit(self, X, y, sample_weight=None):
-        # Already fitted outside or fit here if needed
+        # CV-safe: StackingRegressor clones this and refits clones on CV folds, so a
+        # no-op fit leaves the inner classifier unfitted -> NotFittedError. Fit a fresh
+        # clone here. Stacking passes the continuous regression target, so map ratings
+        # -> ordinal bucket indices (0.5->0 ... 5.0->9), remapped contiguously per fold.
+        from sklearn.base import clone
+        raw = np.clip(np.rint(np.asarray(y, dtype=float) * 2).astype(int) - 1, 0, 9)
+        classes = np.sort(np.unique(raw))
+        cmap = {int(c): i for i, c in enumerate(classes)}
+        y_mapped = np.array([cmap[int(c)] for c in raw])
+        clf = clone(self.clf)
+        if hasattr(clf, "set_params"):
+            try:
+                clf.set_params(num_class=len(classes))
+            except Exception:
+                pass
+        try:
+            clf.fit(X, y_mapped, sample_weight=sample_weight)
+        except TypeError:
+            clf.fit(X, y_mapped)
+        self.clf_ = clf
+        self.bucket_vals_ = np.array([self.bucket_map[int(c)] for c in classes])
         return self
 
     def predict(self, X):
-        probs = self.clf.predict_proba(X)
-        return np.sum(probs * self.present_bucket_vals, axis=1)
+        # Use the fold-fitted clone if present; else fall back to a pre-fitted clf
+        # (standalone use of the original wrapper).
+        clf = getattr(self, "clf_", None)
+        if clf is None:
+            return np.sum(self.clf.predict_proba(X) * self.present_bucket_vals, axis=1)
+        return np.sum(clf.predict_proba(X) * self.bucket_vals_, axis=1)
     
     def get_params(self, deep=True):
         return {"clf": self.clf, "unique_classes": self.unique_classes}
@@ -170,6 +199,14 @@ def train_advanced_models():
     # Calculate standard sample weights for SVR and Ordinal
     weight_classes = (y_reg_train * 2).round() / 2
     sample_weights = compute_sample_weight(class_weight='balanced', y=weight_classes)
+    # Edge boost: heavily up-weight extreme-rating items (<=1.5 / >=4.5) on TOP of the
+    # balanced weights, so missing a 5/4.5 or a 1/0.5 is penalised hard. Without this the
+    # MAE-optimal move on a 3.0-3.5-clustered distribution is to hug the mode (the model
+    # otherwise never predicts >=4.5); this deliberately trades a little overall MAE for
+    # genuine calibration at the extremes the user cares about.
+    EDGE_WEIGHT_BOOST = 5.0
+    _edge = (weight_classes <= 1.5) | (weight_classes >= 4.5)
+    sample_weights = sample_weights * np.where(_edge, EDGE_WEIGHT_BOOST, 1.0)
 
     # 2. Define and Train Ordinal Classifier FIRST (to fuse it)
     print("\n--- Training 10-Bucket Ordinal Classifier ---")

@@ -12,7 +12,10 @@ from collections import Counter
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
 from src import config
+from geo_utils import aggregate_country_counts, make_world_map
+from milestones import render_milestones
 
 st.set_page_config(page_title="TV Intelligence Dashboard", page_icon="📺", layout="wide")
 
@@ -274,6 +277,27 @@ st.plotly_chart(fig_ratings, use_container_width=True)
 
 st.divider()
 
+# 1b. MILESTONE SHOWS (the 1st / 50th / 100th / … show you logged)
+# TV ratings carry only a year watched (no precise log date), so the logged
+# sequence is taken by year watched, then entry order within a year.
+shows_logged = df.copy()
+if 'year_watched' in shows_logged.columns:
+    shows_logged['_yw'] = pd.to_numeric(shows_logged['year_watched'], errors='coerce')
+    shows_logged['_orig'] = range(len(shows_logged))
+    shows_logged = shows_logged.sort_values(['_yw', '_orig'], kind='stable',
+                                            na_position='last').reset_index(drop=True)
+
+
+def _yw_sub(row):
+    yw = row.get('year_watched')
+    return f"watched {int(yw)}" if pd.notna(pd.to_numeric(yw, errors='coerce')) else None
+
+
+render_milestones(shows_logged, 'name', 'poster_path', "🏁 Milestone Shows (logged)",
+                  sub_fn=_yw_sub)
+
+st.divider()
+
 # 2. TIME, LENGTH & SEASONALITY
 st.subheader("⏳ Time & Duration")
 t_dec, t_run, t_sea = st.tabs(["Decades", "Seasons & Episodes", "Release Season"])
@@ -404,6 +428,17 @@ with t1:
         st.info("No critic scores available to compare.")
 
 with t2:
+    st.markdown("#### 🌍 Your TV World Map")
+    st.caption("Countries shaded by how many shows you've watched from there (log-scaled so smaller countries stay visible). Hover for the exact count and your average rating.")
+    geo_agg, geo_unmapped = aggregate_country_counts(df, 'country_list', 'user_rating')
+    if not geo_agg.empty:
+        map_fig = make_world_map(geo_agg, low_color="#2C343F", high_color=HUB_PALETTE[2])
+        st.plotly_chart(map_fig, use_container_width=True)
+        if geo_unmapped:
+            st.caption(f"Not placed on the map (unrecognized region): {', '.join(geo_unmapped)}")
+    else:
+        st.info("No country data available to map.")
+
     c_ctry, c_lang = st.columns(2)
     with c_ctry:
         cnt = get_frequent_items_with_avg(df, 'country_list', 8)

@@ -13,6 +13,9 @@ from sentence_transformers import SentenceTransformer
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+# Needed so joblib can unpickle the movie stacking/ordinal models (they embed an
+# OrdinalExpectedValueRegressor referenced under __main__ at train time).
+from src.movies.advanced_movie_model_trainer import OrdinalExpectedValueRegressor
 
 # --- HELPERS (Copied from src/movies/feature_engineering.py and src/movies/predict_ratings.py) ---
 def clean_money(x):

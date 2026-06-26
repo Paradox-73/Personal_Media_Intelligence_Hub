@@ -19,8 +19,12 @@ This pipeline routes around it with free sources:
 | Library + metadata | Spotify | **Spotify** (still fine) |
 | Audio features (danceability, energy, valence, tempo…) | Spotify `/audio-features` | **ReccoBeats** (free, same metrics, keyed by Spotify ID) |
 | Genre / "related" signal | Spotify Related Artists | **MusicBrainz** genres + folksonomy tags |
-| Lyrics | — | **Genius** |
+| Lyrics | — | **Genius**, with **LRCLIB** (free, keyless) as fallback |
 | Recommendations | Spotify `/recommendations` | **ReccoBeats** `/track/recommendation` |
+| Artist origin country | — | **MusicBrainz** artist `country`, cross-filled by **Wikidata** (P495) + **TheAudioDB** |
+| Lyrics language | — | **MusicBrainz** work `languages` |
+| Tempo (BPM) / loudness gain | Spotify `/audio-features` | **Deezer** `/track/{id}` (free, keyless) |
+| Release styles / label / pressing country | — | **Discogs** (free token) |
 
 ReccoBeats can occasionally miss a track; every stage caches to
 `data/cached/music/` and degrades gracefully (a missing feature becomes an
@@ -41,14 +45,20 @@ SPOTIPY_CLIENT_SECRET=...
 SPOTIPY_REDIRECT_URI=http://localhost:8888/callback
 GENIUS_ACCESS_TOKEN=...
 MUSICBRAINZ_CONTACT=you@example.com   # required by MusicBrainz' fair-use policy
+DISCOGS_TOKEN=...                     # optional; https://www.discogs.com/settings/developers
+AUDIODB_KEY=2                         # optional; "2" = free/test key (throttled), Patreon key recommended
 ```
+
+LRCLIB, Deezer and Wikidata need **no key**. Discogs and TheAudioDB are optional —
+if their keys are absent, `extra_enrichment.py` simply skips those two and runs the rest.
 
 ## Run order
 
 ```bash
 python src/music/spotify_ingestion.py        # 1. library + ReccoBeats audio features -> music_library.csv
-python src/music/musicbrainz_enrichment.py   # 2. MBIDs + genre tags                  -> music_musicbrainz.csv
-python src/music/genius_lyrics.py            # 3. lyrics + VADER sentiment            -> music_lyrics.csv
+python src/music/musicbrainz_enrichment.py   # 2. MBIDs, genre tags, artist country, lyrics language -> music_musicbrainz.csv
+python src/music/extra_enrichment.py         # 2b. Deezer/Discogs/AudioDB/Wikidata    -> music_extra.csv   (optional, additive)
+python src/music/genius_lyrics.py            # 3. lyrics (Genius + LRCLIB) + VADER     -> music_lyrics.csv
 python src/music/feature_engineering.py      # 4. merge + features                    -> music_processed.csv, music_features.npz
 python src/music/model_trainer.py            # 5. train ensemble + save model
 ```

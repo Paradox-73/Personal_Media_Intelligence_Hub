@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import ast
+import re
 import joblib
 import sys
 from pathlib import Path
@@ -58,7 +59,24 @@ def run_feature_engineering():
     df['vote_average'] = pd.to_numeric(df['vote_average'], errors='coerce').fillna(median_vote)
     df['year'] = pd.to_numeric(df['year'], errors='coerce').fillna(median_year)
     df['season_count'] = pd.to_numeric(df['number_of_seasons'], errors='coerce').fillna(1)
-    
+
+    # Multi-critic: add IMDb as a second crowd score (TV previously used only vote_average)
+    df['imdb_rating'] = pd.to_numeric(df['imdb_rating'], errors='coerce')
+    median_imdb = df['imdb_rating'].median()
+    if pd.isna(median_imdb): median_imdb = 7.5
+    df['imdb_rating'] = df['imdb_rating'].fillna(median_imdb)
+    df['imdb_votes_log'] = np.log1p(pd.to_numeric(df['imdb_votes'], errors='coerce').fillna(0))
+    # Runtime + episode count (present in enriched, previously unused)
+    median_runtime = pd.to_numeric(df['runtime'], errors='coerce').median()
+    if pd.isna(median_runtime): median_runtime = 45.0
+    df['runtime'] = pd.to_numeric(df['runtime'], errors='coerce').fillna(median_runtime)
+    median_episodes = pd.to_numeric(df['number_of_episodes'], errors='coerce').median()
+    if pd.isna(median_episodes): median_episodes = 10.0
+    df['episode_count'] = pd.to_numeric(df['number_of_episodes'], errors='coerce').fillna(median_episodes)
+    # Awards -> wins / nominations counts (like Movies)
+    df['total_wins'] = df['awards'].astype(str).str.extract(r'(\d+)\s+win', flags=re.IGNORECASE)[0].astype(float).fillna(0)
+    df['total_nominations'] = df['awards'].astype(str).str.extract(r'(\d+)\s+nomination', flags=re.IGNORECASE)[0].astype(float).fillna(0)
+
     # --- 2. Vibe Features (Network) ---
     df['primary_network'] = df['network'].apply(get_primary_network)
     
@@ -67,6 +85,15 @@ def run_feature_engineering():
     
     df['network_clean'] = df['primary_network'].apply(lambda x: x if x in top_networks else "Other")
     network_dummies = pd.get_dummies(df['network_clean'], prefix='net')
+
+    # Country one-hots (top countries by frequency; previously unused)
+    df['primary_country'] = (df['country'].fillna('').astype(str)
+                             .str.replace(r"[\[\]'\"<>]", "", regex=True)
+                             .str.split(',').str[0].str.strip())
+    top_countries = [c for c in df['primary_country'].value_counts().nlargest(8).index
+                     if c and c.lower() not in ('nan', 'none', '')]
+    df['country_clean'] = df['primary_country'].apply(lambda x: x if x in top_countries else 'Other')
+    country_dummies = pd.get_dummies(df['country_clean'], prefix='ctry')
 
     # Adult Content
     df['is_adult'] = df['age_rating'].apply(lambda x: 1 if str(x) in ['TV-MA', 'R', '18+'] else 0)
@@ -90,6 +117,8 @@ def run_feature_engineering():
     print("   Generating MiniLM embeddings for TV shows...")
     df['text_content'] = "Title: " + df['name'].fillna('Unknown') + \
                          ". Network: " + df['primary_network'].fillna('Unknown') + \
+                         ". Creator: " + df['created_by'].fillna('').astype(str).str.slice(0, 80) + \
+                         ". Cast: " + df['actors'].fillna('').astype(str).str.slice(0, 120) + \
                          ". " + df['overview'].fillna('')
     
     transformer_model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -102,8 +131,10 @@ def run_feature_engineering():
     text_df = pd.DataFrame(X_text_pca, columns=pca_cols, index=df.index)
 
     # --- 5. Combine ---
-    feature_cols = ['year', 'vote_average', 'vote_count_log', 'season_count', 'is_adult']
-    X = pd.concat([df[feature_cols], genre_df, network_dummies, text_df], axis=1)
+    feature_cols = ['year', 'vote_average', 'imdb_rating', 'vote_count_log', 'imdb_votes_log',
+                    'season_count', 'episode_count', 'runtime', 'is_adult',
+                    'total_wins', 'total_nominations']
+    X = pd.concat([df[feature_cols], genre_df, network_dummies, country_dummies, text_df], axis=1)
     
     # --- 6. Targets & Save Data ---
     y_reg = df['user_rating']
@@ -129,10 +160,15 @@ def run_feature_engineering():
         'median_values': {
             'year': median_year,
             'vote_average': median_vote,
+            'imdb_rating': median_imdb,
             'vote_count_log': df['vote_count_log'].median(),
-            'season_count': df['season_count'].median()
+            'imdb_votes_log': df['imdb_votes_log'].median(),
+            'season_count': df['season_count'].median(),
+            'episode_count': median_episodes,
+            'runtime': median_runtime,
         },
         'top_networks': top_networks,
+        'top_countries': top_countries,
         'mlb_genres': mlb,
         'kept_genres': kept_genres,
         'sentence_transformer': 'all-MiniLM-L6-v2',

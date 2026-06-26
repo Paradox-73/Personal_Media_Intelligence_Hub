@@ -33,5 +33,12 @@ class MusicTrackSchema(BaseModel):
         return [str(v)]
 
 def validate_track_data(data: dict) -> dict:
-    """Validates and coerces track data using MusicTrackSchema."""
-    return MusicTrackSchema(**data).dict()
+    """Validates and coerces track data using MusicTrackSchema.
+
+    Returns ALL original fields with the schema-declared ones coerced/validated
+    on top — the schema only declares a core subset, so returning just those
+    would silently drop every other Spotify column (audio features, uri, isrc,
+    duration_ms, has_audio_features, ...). Keep the full row.
+    """
+    validated = MusicTrackSchema(**data).dict()
+    return {**data, **validated}

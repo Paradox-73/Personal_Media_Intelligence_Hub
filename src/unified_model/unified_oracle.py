@@ -100,6 +100,22 @@ def _to_backbone(raw: dict, media_type: str) -> dict:
         m["imdb_rating"] = raw.get("averageRating") or raw.get("imdb_rating")  # 0-5 scale
         m["imdb_votes"] = raw.get("ratingsCount") or raw.get("imdb_votes")
         m["runtime"] = raw.get("pageCount") or raw.get("runtime")
+    elif media_type == "music":
+        # Mirror the music mapping used to build the unified training data
+        # (name->title, artists->director, artist_genres->genre, popularity->imdb_rating,
+        #  overview = mb_tags + genres + lyric snippet, runtime = length in minutes).
+        m["title"] = raw.get("name") or raw.get("title")
+        m["director"] = raw.get("artists") or raw.get("director")
+        m["genre"] = raw.get("artist_genres") or raw.get("mb_genres") or raw.get("genre")
+        m["overview"] = " ".join(str(raw.get(k) or "") for k in
+                                 ("mb_tags", "artist_genres", "lyric_embed_text")).strip()
+        m["imdb_rating"] = raw.get("popularity") or raw.get("imdb_rating")
+        m["year"] = raw.get("release_year") or raw.get("year")
+        length_ms = raw.get("mb_length_ms") or raw.get("duration_ms") or 0
+        try:
+            m["runtime"] = float(length_ms) / 60000
+        except (TypeError, ValueError):
+            m["runtime"] = 0
     # movie: keys already match the backbone
     return m
 

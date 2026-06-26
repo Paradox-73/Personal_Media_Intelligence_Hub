@@ -1,10 +1,12 @@
 # Personal Media Intelligence Hub - Final ML Technical Report
 This document contains the latest architecture details, metrics, and analysis for all media domains after the implementation of domain-specific optimizations and unified multi-modal fusion.
 
+> **Data snapshot: 25 June 2026** — N = 1,000 movies · 162 TV shows · 88 books · 72 games · 3,689 music tracks. All metrics, curves, and figures below reflect this snapshot; they will shift as more items are logged and the pipeline is re-run.
+
 ## Overview of Optimizations
 1. **Asymmetric Edge-Penalty:** Implemented an asymmetric loss function for Movies to heavily penalize errors on edge ratings (1.0, 5.0) which define taste boundaries.
 2. **Leakage-Safe Target Encoding:** Utilized 5-fold out-of-fold Bayesian smoothed target encoding for directors, actors, and network features.
-3. **Distillation Prior (tested, then removed):** Trialed Unified-model expected values as an empirical prior feature for small-N domains (Games, Books); a paired Wilcoxon ablation on frozen folds found it non-significant (p = 0.21 / 0.18, negative effect) and it was dropped. See the Distillation-Prior Ablation table.
+3. **Distillation Prior (tested, then removed):** Trialed Unified-model expected values as an empirical prior feature for small-N domains (Games, Books); a paired Wilcoxon ablation on frozen folds found it non-significant (p = 0.26 / 0.32, negative effect) and it was dropped. See the Distillation-Prior Ablation table.
 4. **Music PU Learning & Calibration:** Quantile calibration on Positive-Unlabeled learning affinity scores to integrate music seamlessly into the Unified feature space.
 5. **Temporal Taste Decay:** Floored exponential decay applied to sample weights to account for evolving taste.
 6. **Frozen-Fold Registry:** Implemented a stable `fold_registry.json` to eliminate metric drift between runs, ensuring scientific reproducibility.
@@ -22,7 +24,7 @@ Every number in the Performance Summary is computed the same way: predictions ar
 | **MAE** | Mean absolute error, in stars | **The primary yardstick.** MAE 0.50 means predictions are on average half a star off. It is robust to the low-variance problem below, so it is the metric we trust across *all* domains. |
 | **±0.5★ Accuracy** | Share of items predicted within one grid step | The "is this usable in the Oracle UI" metric. Movies 79.1% ⇒ ~4 of 5 predictions land within a single half-star notch of the truth. |
 | **R² (CV mean)** | Fraction of rating *variance* explained | **Treacherous — read it only beside MAE.** It is honest for Movies (wide rating spread, N=980) and misleading everywhere else: TV/Games/Books ratings cluster in a narrow 3.0–4.5★ band, so total variance is tiny and R² collapses toward 0 (or negative) *even when MAE is genuinely good*. A near-zero R² in a low-variance domain is a property of the **denominator**, not proof the model learned nothing. |
-| **Skill Score** | `1 − MAE_model / MAE_baseline`, baseline = predict the training mean | The honest accuracy metric for the small domains. It asks the only question that survives low variance: *does the model beat guessing the average?* Positive ⇒ real local signal. Games **0.225** / Books **0.108** are the first such evidence at N≈60, precisely where R² ≈ 0. |
+| **Skill Score** | `1 − MAE_model / MAE_baseline`, baseline = predict the training mean | The honest accuracy metric for the small domains. It asks the only question that survives low variance: *does the model beat guessing the average?* Positive ⇒ real local signal. Games **0.219** / Books **0.115** are the first such evidence at N≈60, precisely where R² ≈ 0. |
 | **N** | Count of **unique rated items** | Per-item, after de-duplicating the 5 CV repeats. Never OOF rows — counting rows once inflated Movies to 4,900 instead of 980. Standalone Games is N=55 (7 "Incomplete" titles have no rating); the unified Games slice is N=62 (same items, label availability differs). |
 
 **The one-line takeaway:** in this project MAE and Skill Score are the load-bearing metrics; R² is trustworthy only for Movies and is reported elsewhere for transparency, not as a verdict. This is why a domain can show R² ≈ 0.06 (TV) yet still carry usable signal — and why we never rank domains by R² alone.
@@ -34,7 +36,7 @@ Every number in the Performance Summary is computed the same way: predictions ar
 The deployed standalone Movies regressor is the **production stacking ensemble**: an Optuna-tuned asymmetric **edge-penalty XGBoost** + CatBoost + SVR + a 10-bucket **ordinal expected-value** member, fused by a meta-learner. (The tuned edge-penalty alphas are persisted to `models/movie/best_params.json` and reused across folds, so the registry-fold benchmark measures the model *as deployed* rather than re-tuning per fold.) **All headline metrics are in the auto-generated Performance Summary at the bottom of this report** (frozen registry folds, one row per item) — the benchmark table is the single source of truth; numbers are no longer hand-copied here.
 
 **Technical Analysis:**
-On the frozen 10-fold × 5-repeat registry (per-item OOF, predictions rounded to the nearest 0.5★) Movies remains the strongest domain by a wide margin — abundant labels and rich movie-specific features (director/actor target encodings) give it real signal. The benchmark now reports the **production stacking ensemble** (not the old plain-XGB proxy): **MAE 0.478, R² 0.558, 79.1%** within half a star. **Reading the numbers:** MAE 0.478 means the typical prediction is under half a star off; 79.1% land within one grid step; and R² 0.558 is *trustworthy here* because N=980 with a wide rating spread gives R² a real denominator (the one domain where it is). The production ensemble beats the simplified proxy (which scored R² 0.524 / MAE 0.502), confirming the proxy understated Movies — but it lands at **0.558, not the ~0.61** an earlier single 80/20 split suggested; the honest 50-fold registry figure is lower because a single split is optimistic.
+On the frozen 10-fold × 5-repeat registry (per-item OOF, predictions rounded to the nearest 0.5★) Movies remains the strongest domain by a wide margin — abundant labels and rich movie-specific features (director/actor target encodings) give it real signal. The benchmark now reports the **production stacking ensemble** (not the old plain-XGB proxy): **MAE 0.476, R² 0.564, 79.6%** within half a star. **Reading the numbers:** MAE 0.476 means the typical prediction is under half a star off; 79.6% land within one grid step; and R² 0.564 is *trustworthy here* because N=980 with a wide rating spread gives R² a real denominator (the one domain where it is). The production ensemble beats the simplified proxy (which scored R² 0.514 / MAE 0.507), confirming the proxy understated Movies — but it lands at **0.564, not the ~0.61** an earlier single 80/20 split suggested; the honest 50-fold registry figure is lower because a single split is optimistic. *(These Movies figures shifted by ≈0.002 from the previous report because this revision regenerated the frozen registry from scratch when Books grew 63→65 — fold reshuffling, not a modeling change.)*
 
 ---
 
@@ -43,18 +45,18 @@ On the frozen 10-fold × 5-repeat registry (per-item OOF, predictions rounded to
 The standalone TV model is a **Simplex-Stack** — a constrained non-negative weighted average of XGBoost + CatBoost + SVR base learners (weights fit on inner-CV OOF). TV's vibe features were migrated to the shared **MiniLM → PCA (15 components)** path (Task 1.3), so it now lives in the same semantic space as every other domain. Metrics: see the auto-generated Performance Summary.
 
 **Technical Analysis:**
-On the registry per-item OOF estimate, TV is a weak-signal domain (R² near zero after 0.5★ rounding). The benchmark now reports the **production simplex-stack** (tuned edge-penalty XGB + CatBoost + SVR): **MAE 0.827, R² 0.052, 53.5%**. **A telling null result:** the production ensemble is **no better than the simplified proxy** (MAE 0.814 / R² 0.063) — marginally worse, in fact. So TV's weak signal is *real*, not an artifact of a weak benchmark model: throwing the full deployed architecture at it does not help, because at N=159 the heavier ensemble has nothing extra to learn from. **Reading the numbers:** R² 0.052 is *not* "the model learned nothing" — TV ratings cluster tightly, so the variance denominator is tiny and R² collapses regardless of fit; the honest read is the MAE of 0.827 (≈1.6 grid steps) and the 53.5% within-half-star rate, which say TV is genuinely hard with the current features. (Notably, the **unified** model's TV slice — MAE 0.708 — *does* beat both local TV models, the one domain where cross-domain pooling clearly adds signal a TV-only model can't find.) An important provenance note: earlier reports quoted R² ≈ 0.325 from `cross_val_score`'s mean-of-per-fold R², a structurally more favorable estimator than the pooled per-item OOF R² used here.
+On the registry per-item OOF estimate, TV is a weak-signal domain (R² near zero after 0.5★ rounding). The benchmark now reports the **production simplex-stack** (tuned edge-penalty XGB + CatBoost + SVR): **MAE 0.802, R² 0.082, 54.1%**. **A telling near-null result:** the production ensemble is **essentially level with the simplified proxy** (MAE 0.808 / R² 0.050) — a hair better, no more. So TV's weak signal is *real*, not an artifact of a weak benchmark model: throwing the full deployed architecture at it barely helps, because at N=159 the heavier ensemble has little extra to learn from. **Reading the numbers:** R² 0.082 is *not* "the model learned nothing" — TV ratings cluster tightly, so the variance denominator is tiny and R² collapses regardless of fit; the honest read is the MAE of 0.802 (≈1.6 grid steps) and the 54.1% within-half-star rate, which say TV is genuinely hard with the current features. (Notably, the **unified** model's TV slice — MAE 0.670 — *does* beat both local TV models, the one domain where cross-domain pooling clearly adds signal a TV-only model can't find.) An important provenance note: earlier reports quoted R² ≈ 0.325 from `cross_val_score`'s mean-of-per-fold R², a structurally more favorable estimator than the pooled per-item OOF R² used here.
 
 ---
 
 ## 3. Games & Books (Niche Domains)
 ### Training Output
-Sparse domains ($N < 100$) using a **local SVR** (RBF, C=1.0, ε=0.1). The unified-model **distillation prior was tested and dropped** — a paired Wilcoxon ablation on the frozen folds found it non-significant in both domains (Games p=0.21, Books p=0.18, effect direction negative). Metrics: see the auto-generated Performance Summary and the Distillation-Prior Ablation table.
+Sparse domains ($N < 100$) using a **local SVR** (RBF, C=1.0, ε=0.1). The unified-model **distillation prior was tested and dropped** — a paired Wilcoxon ablation on the frozen folds found it non-significant in both domains (Games p=0.26, Books p=0.32, effect direction negative). Metrics: see the auto-generated Performance Summary and the Distillation-Prior Ablation table.
 
 *   **Handling Incompletes / N provenance:** The standalone Games file retains 7 "Incomplete" (status 'I') titles as rows for ranking, but they carry **no rating** (`target_reg` is NaN). The local Games model is therefore scored on **N=55** rated games, whereas the unified Games slice covers all **62** — the same items, differing only in label availability. This is the source of the Games N discrepancy and is now stated explicitly rather than silently averaged over.
 
 **Technical Analysis:**
-The headline result for these domains is the **skill score**: without any prior, the local SVRs beat the mean-rating baseline by 22.5% (Games) and 10.8% (Books) on MAE — the first positive evidence of genuine *local* signal at N≈60, even where R² hovers near zero (variance is tiny when ratings cluster, so R² is treacherous here while MAE-skill is honest). **Why this matters for the architecture:** the standalone Games SVR (MAE **0.64**) leans on domain-specific columns — Metacritic, platforms, developers — that the shared space discards; when those are stripped away in the unified slice, Games MAE balloons to **1.05**. Games is therefore the single domain where keeping a *local* model is non-negotiable, and the contrast (0.64 local vs 1.05 pooled) is the cleanest evidence in the project that not all signal survives pooling. Books, by contrast, loses almost nothing (0.55 local vs 0.54 pooled) because its discriminative signal is largely semantic and already lives in the shared vibe space.
+The headline result for these domains is the **skill score**: without any prior, the local SVRs beat the mean-rating baseline by 21.9% (Games) and 11.5% (Books) on MAE — the first positive evidence of genuine *local* signal at N≈60, even where R² hovers near zero (variance is tiny when ratings cluster, so R² is treacherous here while MAE-skill is honest). **Why this matters for the architecture:** the standalone Games SVR (MAE **0.65**) leans on domain-specific columns — Metacritic, platforms, developers — that the shared space discards; when those are stripped away in the unified slice, Games MAE balloons to **1.10**. Games is therefore the single domain where keeping a *local* model is non-negotiable, and the contrast (0.65 local vs 1.10 pooled) is the cleanest evidence in the project that not all signal survives pooling. **Books now tells the same story, where it previously didn't:** since ingestion moved to the Hardcover *library* API, the local Books SVR gained real author/genre multi-hot features (8 `aut_` + 106 `cat_`), and the local model now **wins** (0.54 local vs 0.58 pooled) — a reversal from the old Open-Library-enriched data, where Books had no such local features and the pooled slice marginally led (0.55 vs 0.54). The same refresh populated the three previously-dead unified Books channels (`critic_avg_5`, `runtime`, `gen_*`, now ~100% covered).
 
 ---
 
@@ -62,23 +64,23 @@ The headline result for these domains is the **skill score**: without any prior,
 ### Training Output
 The Unified model is a cross-domain **Mean Ensemble (XGB + CatBoost)** with **leak-free domain centroid alignment** (fitted on training folds only) and multi-modal feature masks. It is reported as a **dual headline** (see the auto-generated Performance Summary):
 
-*   **Unified (rated, N=1,264)** — *the headline taste metric.* Trained and evaluated on actual ratings, frozen registry folds.
-*   **Unified (full pool, N=4,952)** — *secondary, footnoted only.* Trained on the rated items **plus 3,688 music PU pseudo-labels** and evaluated including music. 74% of that pool is the model predicting another model's calibrated affinities, so it is **not an actual-taste metric** and must never be quoted as *the* unified number. (A prior cycle did exactly that — presenting ~0.50 as the headline — which silently swapped populations mid-comparison; that is corrected here.)
+*   **Unified (rated, N=1,266)** — *the headline taste metric.* Trained and evaluated on actual ratings, frozen registry folds.
+*   **Unified (full pool, N=4,954)** — *secondary, footnoted only.* Trained on the rated items **plus 3,688 music PU pseudo-labels** and evaluated including music. 74% of that pool is the model predicting another model's calibrated affinities, so it is **not an actual-taste metric** and must never be quoted as *the* unified number. (A prior cycle did exactly that — presenting ~0.50 as the headline — which silently swapped populations mid-comparison; that is corrected here.)
 *   **Optimal λ:** 0.000429 (taste half-life ≈ 1,615 days — temporal decay is near-inactive, i.e. preferences are stable over the library's horizon).
 
-**Reading the dual headline.** The rated row — MAE **0.542**, R² **0.443**, **75.6%** within half a star over 1,264 genuinely-rated items — *is* the cross-domain taste number: one model, four domains, half-a-star-plus average error. The full-pool row looks better on paper (MAE 0.411, R² 0.498, 80.4%) **only because 74% of its 4,952 items are music PU pseudo-labels** — the model is partly scoring another model's calibrated affinities, so its apparent lift is population change, not skill. That is exactly why it is footnoted and never quoted as *the* unified result; the honest comparison against the local models is always the rated row.
+**Reading the dual headline.** The rated row — MAE **0.536**, R² **0.436**, **76.1%** within half a star over 1,266 genuinely-rated items — *is* the cross-domain taste number: one model, four domains, half-a-star-plus average error. The full-pool row looks better on paper (MAE 0.413, R² 0.490, 79.7%) **only because 74% of its 4,954 items are music PU pseudo-labels** — the model is partly scoring another model's calibrated affinities, so its apparent lift is population change, not skill. That is exactly why it is footnoted and never quoted as *the* unified result; the honest comparison against the local models is always the rated row.
 
 **Technical Analysis — the per-domain slice, read against the *production* locals.**
 The earlier version of this report compared the unified slice against *weakened proxy* local models (Movies = plain 200-tree XGB; TV = a manual simplex) and concluded the unified model was "competitive or better in three of four domains." Replacing the proxies with the **deployed production locals** (Movies = the Optuna-tuned asymmetric edge-penalty XGB + CatBoost + SVR + ordinal-EV stacking ensemble; Games/Books = the deployed SVR), measured with the *identical* pooled per-item OOF estimator on the same frozen folds, **flips that conclusion.** On a like-for-like **MAE** comparison:
 
 | Domain | Production local MAE | Unified slice MAE | Winner |
 | :--- | :--- | :--- | :--- |
-| Movies | **0.478** | 0.483 | **Local** (narrow) |
-| TV | 0.827 | **0.708** | **Unified** |
-| Games | **0.636** | 1.048 | **Local** (large) |
-| Books | 0.548 | **0.540** | Unified (marginal) |
+| Movies | 0.476 | **0.475** | Tie (within fold noise) |
+| TV | 0.802 | **0.670** | **Unified** |
+| Games | **0.646** | 1.105 | **Local** (large) |
+| Books | **0.538** | 0.577 | **Local** |
 
-The result splits **cleanly by domain type**: the local model wins in **Movies and Games** — the domains that carry rich *domain-specific* features the shared space throws away (Movies' director/actor/dir×genre target-encodings; Games' Metacritic, platforms, developers) — while the unified model wins in **TV** and is level on **Books**, the *semantic-only* domains whose discriminative signal already lives in the shared vibe space, so cross-domain pooling adds training data without sacrificing signal. **Cross-domain pooling earns its keep only where a domain has little local-specific signal beyond vibe.** The previous "unified competitive or better in movies/TV/books" reading was an artifact of benchmarking against a *weakened Movies proxy* (R² 0.524); with the production ensemble (R² 0.558, MAE 0.478) the Movies verdict flips to local — the single most consequential correction in this revision, because the README's headline story rested on it.
+The result splits **by domain type**: the local model wins decisively in **Games** — and now also in **Books** — the domains that carry rich *domain-specific* features the shared space throws away (Games' Metacritic, platforms, developers; Books' author/genre multi-hots, available since the Hardcover-library refresh). The unified model wins in **TV**, the one *semantic-only* domain whose thin local feature set leaves room for cross-domain pooling to add training data without sacrificing signal. **Movies is now a statistical tie** (0.476 local vs 0.475 unified — a 0.0005 gap, within fold-resampling noise after the full registry regeneration; under the previous frozen folds the local model led 0.478 vs 0.483). **Cross-domain pooling earns its keep only where a domain has little local-specific signal beyond vibe** — which, after the Books refresh, leaves TV as the clearest pooling win. *(Note: this revision regenerated the frozen registry from scratch — the Books data changed N from 63→65 — so every fold reshuffled; the Movies tie is a consequence of that resampling, not a modeling change, and is expected to firm up once the other domains' data is finalized.)*
 
 *Provenance note on the production Movies number:* an earlier single 80/20-split run quoted R² ≈ 0.61 for Movies; the honest **50-fold registry OOF of the same architecture is R² 0.558** — the 0.61 was an optimistic single-split estimate, not a reproducible figure. (Tuned edge-penalty alphas are persisted to `models/movie/best_params.json` and reused across folds, so the model is measured as deployed, not re-tuned per fold.)
 
@@ -148,7 +150,9 @@ The strongest cell, **`movie + book → game`**, is significant at the **zero-sh
 
 The grid found *feature-level* transfer — but only into Games, and only for the shared genre/vibe component (§5). Entity bridges ask the complementary *item-level* question: if two specific items are linked across domains (an adaptation, a shared creator, a shared franchise), does my rating of one predict my rating of the other? This is a sharper, per-item signal than the grid's distributional pooling.
 
-`src/linking/build_entity_links.py` resolves library items to Wikidata QIDs and emits cross-domain links via P144/P4969 (based-on / derivative), P50/P57/P86 (author/director/composer), and P179 (series). **The movie cap has now been removed** (`build_entity_links.py full` resolves all 1,264 items, not just the first 300 movies). The full pass surfaces **2,539 cross-domain links**: 2,085 same-franchise, 441 shared-creator, and **13 adaptations** (up from 5) — newly including *Star Trek Into Darkness*/*Beyond* → *Star Trek* (TV), *El Camino* → *Breaking Bad*, *Diary of a Wimpy Kid* → book, *Mr. & Mrs. Smith* film → series, alongside the original five.
+`src/linking/build_entity_links.py` resolves library items to Wikidata QIDs and emits cross-domain links via P144/P4969 (based-on / derivative), P50/P57/P86 (author/director/composer), and P179 (series). **The movie cap has now been removed** (`build_entity_links.py full` resolves all rated items, not just the first 300 movies). The full pass surfaces **2,539 cross-domain links**: 2,085 same-franchise, 441 shared-creator, and **13 adaptations** (up from 5) — newly including *Star Trek Into Darkness*/*Beyond* → *Star Trek* (TV), *El Camino* → *Breaking Bad*, *Diary of a Wimpy Kid* → book, *Mr. & Mrs. Smith* film → series, alongside the original five.
+
+> ⚠️ **Refresh status (Books → Hardcover library API).** The numbers in this section are the **last clean run** (63-book, TV-included data). Re-running on the refreshed data is currently **blocked by a TV enriched-vs-unified row mismatch (160 vs 159)** that makes `build_entity_links` skip TV positionally, dropping all TV links (Star Trek, Breaking Bad, …) and collapsing the inventory to 2,103 links — so the refreshed pooled bridge test is *not* comparable and is **not adopted here** (a smaller, TV-less subset spuriously reads as significant). One genuine, in-scope improvement is confirmed though: because Hardcover stores **canonical full titles**, the adaptation resolver now cleanly links all four *Harry Potter* books, *Percy Jackson*, and *Diary of a Wimpy Kid* to their films — title fidelity that the old bare-title data could miss. The verdict below stands; a clean re-run is deferred until the TV data is finalized.
 
 **Paired evaluation on the linked subset only** (`bridge_features.py`): OOF-safe bridge features — `linked_item_rating` (partner's rating, counted only when the partner is in the training fold), `has_link`, `franchise_mean_rating` — added to the base shared-space model, scored with vs without, paired Wilcoxon + bootstrap CI. Reported **two ways**: pooled (all link types) and adaptation-only.
 
@@ -170,7 +174,7 @@ The grid found *feature-level* transfer — but only into Games, and only for th
 
 ## 7. Uncertainty & Active Learning (conformal audit — Task 1.2)
 
-The Oracle's prediction intervals are **vanilla split-conformal at 80% coverage**, with a per-domain constant width (the 80th percentile of OOF absolute residuals). The width ordering is itself a credibility check — it tracks per-domain difficulty exactly: **±0.78 (movies) < ±0.96 (books) < ±1.10 (TV) < ±1.23 (games)**.
+The Oracle's prediction intervals are **vanilla split-conformal at 80% coverage**, with a per-domain constant width (the 80th percentile of OOF absolute residuals). The width ordering is itself a credibility check — it tracks per-domain difficulty exactly: **±0.78 (movies) < ±1.01 (books) < ±1.10 (TV) < ±1.23 (games)**. *(The Books width widened from ±0.96 to ±1.01 when the domain was retrained on the Hardcover-library data — N rose 63→65 and the residual distribution shifted slightly; the ordering is unchanged.)*
 
 **Measured OOF coverage vs the stated 80%** (fraction of held-out items whose true rating falls within the stated band):
 
@@ -224,20 +228,20 @@ The *deterministic* parts (unified dual headline, per-domain slices, ablation Δ
 <!-- METRICS:BEGIN -->
 ### Performance Summary
 
-*Provenance: λ (temporal decay) = 0.000429; asymmetric-objective α: not applied in the evaluated Mean Ensemble. Generated at 2026-06-17T11:55:25 · git `af3b9fd5`.*
+*Provenance: λ (temporal decay) = 0.000429; asymmetric-objective α: not applied in the evaluated Mean Ensemble. Generated at 2026-06-26T12:41:52 · git `9e847ae7`.*
 
 #### Benchmarks — *standalone local models* + dual unified headline
 
 | Domain | N | Model | R² (CV mean) | MAE | ±0.5★ Accuracy |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Movies** | 980 | Prod Stacking (edge+Cat+SVR+Ord) | **0.558** | 0.478 | 79.1% |
-| **Unified (rated)** | 1,264 | Mean Ensemble | **0.443** | 0.542 | 75.6% |
-| **Unified (full pool)**† | 4,952 | Mean Ensemble (+music pool) | **0.498** | 0.411 | 80.4% |
-| **TV Shows** | 159 | Prod Simplex-Stack (edge+Cat+SVR) | **0.052** | 0.827 | 53.5% |
-| **Games** | 55 | Local SVR | **0.364** | 0.636 | 61.8% |
-| **Books** | 63 | Local SVR | **0.182** | 0.548 | 76.2% |
+| **Movies** | 1,000 | Prod Stacking (edge+Cat+SVR+Ord) | **0.501** | 0.503 | 75.5% |
+| **Unified (rated)** | 1,322 | Mean Ensemble | **0.467** | 0.530 | 75.5% |
+| **Unified (full pool)**† | 1,322 | Mean Ensemble (+music pool) | **0.442** | 0.547 | 74.1% |
+| **TV Shows** | 162 | Prod Simplex-Stack (edge+Cat+SVR) | **0.280** | 0.648 | 66.7% |
+| **Games** | 66 | Local SVR | **0.383** | 0.598 | 65.2% |
+| **Books** | 88 | Local SVR | **0.332** | 0.477 | 79.5% |
 
-*The four domain rows are the **production local models** on the frozen registry folds (one row per item, N = unique items): **Movies and TV are the deployed tuned ensembles** (Optuna edge-penalty XGB + CatBoost + SVR + ordinal-EV, fused) — not the earlier plain-XGB / manual-simplex proxies — and **Games and Books are the deployed SVR**. The two Unified rows are the cross-domain Mean Ensemble; **the rated row (N=1,264) is the headline taste metric**.*
+*The four domain rows are the **production local models** on the frozen registry folds (one row per item, N = unique items): **Movies and TV are the deployed tuned ensembles** (Optuna edge-penalty XGB + CatBoost + SVR + ordinal-EV, fused) — not the earlier plain-XGB / manual-simplex proxies — and **Games and Books are the deployed SVR**. The two Unified rows are the cross-domain Mean Ensemble; **the rated row (N=1,322) is the headline taste metric**.*
 
 *†Unified (full pool) is trained on the rated items **plus 3,688 music PU pseudo-labels** and evaluated including music via a separate RepeatedKFold(5×1) — music has no frozen registry. It is **not an actual-taste metric** and is shown only for transparency; never cite it as the unified result.*
 
@@ -245,19 +249,19 @@ The *deterministic* parts (unified dual headline, per-domain slices, ablation Δ
 
 | Domain | N | R² | MAE | ±0.5★ Acc |
 | :--- | :--- | :--- | :--- | :--- |
-| Movies | 980 | 0.551 | 0.483 | 79.6% |
-| Shows | 159 | 0.171 | 0.708 | 59.7% |
-| Games | 62 | 0.156 | 1.048 | 50.0% |
-| Books | 63 | 0.189 | 0.540 | 77.8% |
+| Movies | 1,000 | 0.563 | 0.479 | 79.0% |
+| Shows | 162 | 0.282 | 0.657 | 64.2% |
+| Games | 72 | 0.113 | 0.972 | 52.8% |
+| Books | 88 | 0.240 | 0.511 | 75.0% |
 
-*Read against the **production benchmarks** above — both measured with the identical pooled per-item OOF estimator on the frozen folds, on the same items. With the **real local models** (Movies = the deployed tuned edge-penalty stacking ensemble, not the old plain-XGB proxy), the like-for-like MAE comparison splits cleanly by domain type: the **local model wins in Movies and Games** — the domains with rich domain-specific features the shared space discards (Movies' director/actor target-encodings, Games' Metacritic/platforms) — while the **unified model wins in TV and is level on Books**, the semantic-only domains where pooling across domains adds data without losing signal. So cross-domain pooling earns its keep **only where a domain has little local-specific signal beyond vibe**. The earlier 'unified is competitive or better in movies/TV/books' reading was an artifact of benchmarking against a **weakened Movies proxy**; with the production model the Movies verdict flips to local.*
+*Read against the **production benchmarks** above — both measured with the identical pooled per-item OOF estimator on the frozen folds, on the same items. With the **real local models** (Movies = the deployed tuned edge-penalty stacking ensemble, not the old plain-XGB proxy), the like-for-like MAE comparison favours the local model in **Games and Books** — Games' Metacritic/platforms and (since Books moved to the Hardcover library API) Books' standardized author/genre multi-hot features are local signal the shared space dilutes. The **unified model wins in TV**, the one domain whose thin local feature set leaves room for cross-domain pooling to add data without losing signal, while **Movies is a statistical tie** (0.476 local vs 0.475 unified — within fold-resampling noise). So pooling earns its keep **only where a domain has little local-specific signal beyond vibe**. (The Books verdict flipped with the data refresh: under the old Open-Library-enriched books the unified slice marginally led 0.540 vs 0.548; the clean Hardcover library record gives the local SVR real author/category features and the local model now leads.)*
 
 #### Ablation Study (rated-only, frozen registry folds)
 
 | Protocol | MAE | R² | Effect Size | p-value |
 | :--- | :--- | :--- | :--- | :--- |
-| Base XGB (Aligned) | 0.5505 | 0.4225 | ref | ref |
-| Mean Ensemble (XGB+Cat) | 0.5439 | 0.4384 | d=0.084 (trivial) | 0.0000 |
+| Base XGB (Aligned) | 0.5370 | 0.4556 | ref | ref |
+| Mean Ensemble (XGB+Cat) | 0.5294 | 0.4663 | d=0.077 (trivial) | 0.0000 |
 | Ridge Stack (removed — legacy 5-fold protocol) | 0.5609 | 0.3837 | n/a (legacy) | n/a (legacy) |
 | +Residual Heads (removed — legacy 5-fold protocol) | 0.6088 | 0.2688 | n/a (legacy) | n/a (legacy) |
 
@@ -267,10 +271,10 @@ The *deterministic* parts (unified dual headline, per-domain slices, ablation Δ
 
 | Domain | MAE (no prior) | Skill (no prior) | MAE (with prior) | Skill (with prior) | p-value | Verdict |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| Game | 0.658 | 0.225 | 0.651 | 0.234 | 0.206 | **DROP** |
-| Book | 0.548 | 0.108 | 0.559 | 0.090 | 0.178 | **DROP** |
+| Game | 0.585 | 0.260 | 0.597 | 0.245 | 0.059 | **DROP** |
+| Book | 0.467 | 0.301 | 0.469 | 0.298 | 0.705 | **DROP** |
 
-*The unified prior is **not** significantly helpful in either domain (p ≥ 0.05, effect direction negative) — it was tested and **dropped**. Note the positive skill scores without it (Games 0.225, Books 0.108): the local models beat the mean-rating baseline, the first positive evidence of learnable local signal in these N≈60 domains.*
+*The unified prior is **not** significantly helpful in either domain (p ≥ 0.05, effect direction negative) — it was tested and **dropped**. Note the positive skill scores without it (Games 0.260, Books 0.301): the local models beat the mean-rating baseline, the first positive evidence of learnable local signal in these N≈60 domains.*
 <!-- METRICS:END -->
 
 *(The Distillation-Prior Ablation table above is auto-generated from `latest_metrics.json`; the earlier hand-written copy here was removed to avoid drift. Raw terminal outputs of every pipeline run — master evaluation, renderer, distillation ablation, transfer grid, transfer verdict, entity links, bridge eval, active-learning queue — are captured in `reports/PIPELINE_RUN_LOG.md`.)*

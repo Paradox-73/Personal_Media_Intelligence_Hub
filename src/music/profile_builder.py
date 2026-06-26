@@ -45,6 +45,9 @@ def build_profile():
     print("Loading library and pool data...")
     # Load library
     df_lib = pd.read_csv(config.MASTER_CSV)
+    if "primary_artist" not in df_lib.columns:
+        df_lib["primary_artist"] = (df_lib.get("artists", pd.Series([""] * len(df_lib)))
+                                    .fillna("").astype(str).str.split(",").str[0].str.strip())
     data_lib = np.load(config.FEATURES_NPZ, allow_pickle=True)
     X_lib = data_lib["X"]
     feature_names = data_lib["feature_names"].tolist()
@@ -87,8 +90,13 @@ def build_profile():
     cluster_label_names = []
     
     audio_cols = feature_groups["audio"]
-    # Global audio fingerprint for polar-opposite check
-    global_fingerprint_vals = df_lib[config.AUDIO_FEATURE_COLS].mean()
+    # Global audio fingerprint for polar-opposite check. Audio features may be absent
+    # (ReccoBeats not run / thin library export); fall back to 0 so the profile still
+    # builds from genres + popularity + embeddings.
+    global_fingerprint_vals = pd.Series(
+        {c: (float(df_lib[c].mean()) if c in df_lib.columns and df_lib[c].notna().any() else 0.0)
+         for c in config.AUDIO_FEATURE_COLS}
+    )
     
     for i in range(best_k):
         mask = (lib_labels == i)

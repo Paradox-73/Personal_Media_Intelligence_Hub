@@ -129,9 +129,15 @@ def fetch_game_details_by_id(game_id):
     }
 
 
-def enrich_game_data():
+def enrich_game_data(merge=True):
+    """Enrich the games dataset from RAWG.
+
+    merge=True (default): keep every existing (hand-cleaned) enriched row untouched
+    and only fetch+append games that are newly in the raw games_data.csv list.
+    merge=False: re-enrich the whole raw list from scratch.
+    """
     print("🎮 Starting Game Data Enrichment...")
-    
+
     raw_path = config.GAMES_RAW_DIR / "games_data.csv"
     if not raw_path.exists():
         print(f"❌ Raw data not found at {raw_path}")
@@ -143,12 +149,28 @@ def enrich_game_data():
         df = pd.read_csv(raw_path, encoding='latin1')
     print(f"📊 Loaded {len(df)} games from raw data.")
 
-    enriched_rows = []
-    
+    # Merge: preserve existing cleaned rows, enrich only games new to the raw list.
+    existing_by_name = {}
+    if merge and config.GAMES_ENRICHED_DATA_PATH.exists():
+        try:
+            ex = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH)
+        except Exception:
+            ex = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH, encoding='latin1')
+        if not ex.empty and 'name' in ex.columns:
+            existing_by_name = {str(r['name']).strip().lower(): r.to_dict()
+                                for _, r in ex.iterrows()}
+        print(f"   Merge: {len(existing_by_name)} existing (cleaned) games preserved.")
+
+    enriched_rows = list(existing_by_name.values())  # keep all cleaned rows first
+    n_new = 0
+
     for idx, row in df.iterrows():
         game_name = row['name']
-        print(f"[{idx+1}/{len(df)}] Processing: {game_name}")
-        
+        if merge and str(game_name).strip().lower() in existing_by_name:
+            continue  # already preserved above
+        n_new += 1
+        print(f"[new {n_new}] Processing: {game_name}")
+
         # Check if we need to fetch more data
         needs_fetch = False
         cols_to_check = ['genres', 'developers', 'publishers', 'metacritic', 'rating', 'description_raw', 'playtime']

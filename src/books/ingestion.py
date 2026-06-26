@@ -212,57 +212,217 @@ def fetch_book_details_by_id(book_id, fallback=None):
     return data
 
 
-def process_books_from_txt():
-    print("📚 Starting Book Ingestion (Hardcover + Open Library)...")
-    if not HARDCOVER_TOKEN:
-        print("⚠️ HARDCOVER_API_KEY not set — will rely on Open Library only.")
+# --------------------------------------------------------------------------- #
+# Library ingestion — pull the user's rated library straight from Hardcover.
+# This is the single source of truth for the Books domain: titles, ratings and
+# all metadata come from one Hardcover `user_books` record, so there is no
+# txt/csv input and no fuzzy title/ISBN join to corrupt enrichment.
+# --------------------------------------------------------------------------- #
 
-    txt_path = config.BOOKS_RAW_DIR / "book.txt"
-    if not txt_path.exists():
-        print(f"❌ Raw book.txt not found at {txt_path}")
+ME_QUERY = "{ me { id username books_count } }"
+
+LIBRARY_QUERY = """
+query($uid: Int!, $limit: Int!, $offset: Int!) {
+  user_books(where: {user_id: {_eq: $uid}, rating: {_is_null: false}},
+             order_by: {id: asc}, limit: $limit, offset: $offset) {
+    rating
+    status_id
+    edition {
+      isbn_13
+      pages
+      release_date
+      edition_format
+      publisher { name }
+      language { language }
+    }
+    book {
+      title
+      slug
+      release_year
+      pages
+      rating
+      ratings_count
+      description
+      image { url }
+      cached_tags
+      contributions { author { name } }
+      editions(where: {publisher_id: {_is_null: false}},
+               order_by: {users_count: desc}, limit: 1) {
+        isbn_13
+        publisher { name }
+      }
+    }
+  }
+}
+"""
+
+
+def _gql(query, variables=None):
+    """POST a GraphQL query to Hardcover; return the parsed `data` dict (or None)."""
+    header = _auth_header()
+    if not header:
+        print("❌ HARDCOVER_API_KEY missing — cannot reach the library API.")
+        return None
+    try:
+        resp = requests.post(HARDCOVER_URL, headers=header,
+                             json={"query": query, "variables": variables or {}}, timeout=30)
+        payload = resp.json()
+    except Exception as e:
+        print(f"  ⚠️ Hardcover request error: {e}")
+        return None
+    if payload.get("errors"):
+        print(f"  ⚠️ Hardcover GraphQL errors: {payload['errors']}")
+        return None
+    return payload.get("data")
+
+
+def _genres_from_cached_tags(tags):
+    """Extract the 'Genre' tag names from a Hardcover cached_tags blob."""
+    if not isinstance(tags, dict):
+        return []
+    return [t.get("tag") for t in tags.get("Genre", []) if t.get("tag")]
+
+
+def _shape_user_book(ub):
+    """Turn one Hardcover user_books record into an enriched-schema row dict.
+
+    Publisher and ISBN are taken from the user's own logged edition first (the most
+    accurate source — e.g. "Puffin Books", "Amulet Books"), then from the book's
+    most-held edition that has a publisher, so the publisher column is filled from
+    Hardcover wherever possible. pageCount stays on book.pages (the canonical count)
+    so the model's numeric features are unchanged by this enrichment.
+    """
+    book = ub.get("book") or {}
+    edition = ub.get("edition") or {}
+    authors = [c["author"]["name"] for c in book.get("contributions", []) if c.get("author")]
+    genres = _genres_from_cached_tags(book.get("cached_tags"))
+    book_edition = (book.get("editions") or [{}])
+    book_edition = book_edition[0] if book_edition else {}
+
+    # Publisher: user edition -> book's best publisher-bearing edition.
+    publisher = ((edition.get("publisher") or {}).get("name")
+                 or (book_edition.get("publisher") or {}).get("name") or "")
+    # ISBN: user edition -> book edition.
+    isbn = edition.get("isbn_13") or book_edition.get("isbn_13") or ""
+    language = (edition.get("language") or {}).get("language") or ""
+    slug = book.get("slug")
+    rating = book.get("rating")
+    return {
+        "title": book.get("title"),
+        "isbn": isbn,
+        "my_rating": ub.get("rating"),
+        "authors": ", ".join(dict.fromkeys(authors)),
+        "publisher": publisher,
+        "publishedDate": str(book.get("release_year") or ""),
+        "pageCount": book.get("pages") or edition.get("pages") or 0,
+        "categories": ", ".join(genres),
+        "averageRating": round(rating, 2) if rating else 0.0,
+        "ratingsCount": book.get("ratings_count") or 0,
+        "description": book.get("description") or "",
+        "thumbnail": (book.get("image") or {}).get("url") or "",
+        "infoLink": f"https://hardcover.app/books/{slug}" if slug else "",
+        "language": language,
+    }
+
+
+# Fields we try to backfill from Open Library when Hardcover leaves them empty.
+_OL_BACKFILL = {
+    "publisher": "publisher",
+    "pageCount": "pageCount",
+    "categories": "categories",
+    "description": "description",
+    "thumbnail": "thumbnail",
+    "publishedDate": "publishedDate",
+    "authors": "authors",
+}
+
+
+def _is_empty(v):
+    return v in (None, "", 0, 0.0, "0", "[]")
+
+
+def _backfill_from_openlibrary(row):
+    """Fill any enriched field Hardcover left empty from Open Library (keyed by ISBN)."""
+    gaps = [k for k in _OL_BACKFILL if _is_empty(row.get(k))]
+    if not gaps or not row.get("isbn"):
+        return row
+    ol = fetch_openlibrary(row["isbn"]) or {}
+    for field, ol_key in _OL_BACKFILL.items():
+        if _is_empty(row.get(field)) and not _is_empty(ol.get(ol_key)):
+            row[field] = ol[ol_key]
+    return row
+
+
+def fetch_library_from_hardcover(page_size=50):
+    """Fetch the authenticated user's rated library from Hardcover.
+
+    Returns a list of enriched-schema row dicts (one per rated book), in stable
+    user_books.id ascending order so the dataset — and therefore the frozen fold
+    registry built on top of it — is reproducible run to run.
+    """
+    me = _gql(ME_QUERY)
+    if not me or not me.get("me"):
+        print("❌ Could not resolve the current Hardcover user (check the token).")
+        return []
+    user = me["me"][0]
+    uid = user["id"]
+    print(f"📚 Hardcover user: {user.get('username')} (id {uid}) — "
+          f"{user.get('books_count')} books in library.")
+
+    rows, offset = [], 0
+    while True:
+        data = _gql(LIBRARY_QUERY, {"uid": uid, "limit": page_size, "offset": offset})
+        if data is None:
+            break
+        batch = data.get("user_books", [])
+        for ub in batch:
+            row = _shape_user_book(ub)
+            if row.get("title") and row.get("my_rating") is not None:
+                # Fill any Hardcover gap (publisher, pages, categories, …) from Open Library.
+                row = _backfill_from_openlibrary(row)
+                rows.append(row)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+        time.sleep(0.2)  # be polite to the API
+    return rows
+
+
+def _norm_key(series):
+    """Normalized join key (lower/stripped) for matching titles across runs."""
+    return series.fillna("").astype(str).str.strip().str.lower()
+
+
+def build_books_from_library(merge=True):
+    """Build the Books enriched dataset from the Hardcover library API.
+
+    merge=True (default): keep every existing (hand-cleaned) row in the enriched
+    CSV untouched and only fetch+append books that are newly in your library.
+    merge=False: overwrite the enriched CSV entirely from the library.
+    """
+    print("📚 Starting Book Ingestion (Hardcover library API)...")
+    if not HARDCOVER_TOKEN:
+        print("❌ HARDCOVER_API_KEY not set — the library API requires it. Aborting.")
         return
 
-    with open(txt_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
-    rows = []
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        # Format: "Title : ISBN : rating"
-        parts = line.split(":")
-        if len(parts) < 3:
-            continue
-        title = ":".join(parts[:-2]).strip()
-        isbn = parts[-2].strip()
-        try:
-            rating = float(parts[-1].strip())
-        except ValueError:
-            continue
-
-        print(f"Processing: {title} (ISBN: {isbn})")
-        hc = fetch_hardcover(isbn) or {}
-        ol = fetch_openlibrary(isbn) or {}
-
-        rows.append({
-            "title": title,
-            "isbn": isbn,
-            "my_rating": rating,
-            "authors": _coalesce(hc.get("authors"), ol.get("authors"), ""),
-            "publisher": _coalesce(ol.get("publisher"), ""),
-            "publishedDate": _coalesce(hc.get("publishedDate"), ol.get("publishedDate"), ""),
-            "pageCount": _coalesce(hc.get("pageCount"), ol.get("pageCount"), 0),
-            "categories": _coalesce(hc.get("categories"), ol.get("categories"), ""),
-            "averageRating": _coalesce(hc.get("averageRating"), 0.0),
-            "ratingsCount": _coalesce(hc.get("ratingsCount"), 0),
-            "description": _coalesce(hc.get("description"), ""),
-            "thumbnail": _coalesce(ol.get("thumbnail"), ""),
-            "infoLink": _coalesce(hc.get("infoLink"), ol.get("infoLink"), ""),
-        })
-        time.sleep(0.3)  # be polite to both APIs
+    rows = fetch_library_from_hardcover()
+    if not rows:
+        print("❌ No rated books returned from the Hardcover library. Aborting.")
+        return
 
     df = pd.DataFrame(rows)
+
+    if merge and config.BOOKS_ENRICHED_DATA_PATH.exists():
+        try:
+            existing = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH)
+        except Exception:
+            existing = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH, encoding="latin1")
+        if not existing.empty and "title" in existing.columns:
+            have = set(_norm_key(existing["title"]))
+            new_only = df[~_norm_key(df["title"]).isin(have)]
+            print(f"   Merge: {len(existing)} existing (cleaned) rows preserved, "
+                  f"{len(new_only)} new book(s) from library appended.")
+            df = pd.concat([existing, new_only], ignore_index=True)
 
     config.BOOKS_RAW_DIR.mkdir(parents=True, exist_ok=True)
     df.to_csv(config.BOOKS_RAW_DIR / "books_data.csv", index=False)
@@ -271,9 +431,12 @@ def process_books_from_txt():
 
     filled = (df["authors"].astype(str).str.len() > 0).sum()
     pages = pd.to_numeric(df["pageCount"], errors="coerce").fillna(0).gt(0).sum()
-    print(f"✅ Done. {len(df)} books | authors filled: {filled} | pages filled: {pages}")
+    cats = (df["categories"].astype(str).str.len() > 0).sum()
+    pubs = (df["publisher"].astype(str).str.len() > 0).sum()
+    print(f"✅ Done. {len(df)} rated books | authors: {filled} | pages: {pages} | "
+          f"genres: {cats} | publisher: {pubs}")
     print(f"   Saved to {config.BOOKS_ENRICHED_DATA_PATH}")
 
 
 if __name__ == "__main__":
-    process_books_from_txt()
+    build_books_from_library()

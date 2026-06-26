@@ -13,6 +13,9 @@ from sentence_transformers import SentenceTransformer
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+# Needed so joblib can unpickle the stacking/ordinal models, which embed an
+# OrdinalExpectedValueRegressor instance (referenced as __main__ at train time).
+from src.movies.advanced_movie_model_trainer import OrdinalExpectedValueRegressor
 
 def clean_money(x):
     if pd.isna(x): return 0
@@ -132,15 +135,21 @@ def batch_predict_ratings():
     
     bucket_vals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])
     
+    # Deployment calibration reference: the model's raw preds on rated movies vs ratings.
+    from src.utils.deployment_calibration import calibrate_to_ratings
+    _r = pd.to_numeric(df['user_rating'], errors='coerce') if 'user_rating' in df.columns else pd.Series(np.nan, index=df.index)
+    _rated = _r.notna().values
     for name, model in models.items():
         if name == "Ordinal_EV":
             probs = model.predict_proba(X_final)
             # REVERTED: Using Expected Value instead of argmax
-            raw_preds = np.sum(probs * bucket_vals, axis=1)
-            df[f'pred_{name}'] = np.round(np.clip(raw_preds, 0, 5) * 2) / 2
+            raw = np.sum(probs * bucket_vals, axis=1)
         else:
-            preds = model.predict(X_final)
-            df[f'pred_{name}'] = np.round(np.clip(preds, 0, 5) * 2) / 2
+            raw = np.asarray(model.predict(X_final), dtype=float)
+        # Restamp onto the user's real rating distribution so the Oracle spans the full
+        # range (incl. 5*) instead of regressing to the mode; ranking-preserving.
+        raw = calibrate_to_ratings(raw, raw[_rated], _r.values[_rated])
+        df[f'pred_{name}'] = np.round(np.clip(raw, 0, 5) * 2) / 2
 
     # --- 4. Performance Report ---
     results_dir = BASE_DIR / "results" / "movies"

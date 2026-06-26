@@ -111,8 +111,12 @@ def transform_single_media(meta, state, media_type='movie'):
         **masks
     }
     
-    # NLP
-    txt = f"Title: {meta.get('title', '')}. Lead: {meta.get('director', '') or meta.get('authors', '')}. {meta.get('overview', '') or meta.get('description', '')}"
+    # NLP — length-normalized, genre-templated text (matches the batch builder):
+    # cap title/genre and truncate the description to its first 40 words so domains
+    # share the same text shape, removing the cross-domain length confound.
+    _g = re.sub(r"[\[\]']", "", str(meta.get('genre') or meta.get('categories') or ''))[:80]
+    _d = " ".join(str(meta.get('overview') or meta.get('description') or '').split()[:40])
+    txt = f"Title: {str(meta.get('title') or '')[:120]}. Genre: {_g}. {_d}"
     transformer = SentenceTransformer(state['sentence_transformer'])
     emb = transformer.encode([txt], normalize_embeddings=True)
 
@@ -242,12 +246,25 @@ def build_universal_dataset():
             'mb_length_ms': 'duration_ms'
         })
         df_mu['media_type'] = 'music'
-        df_mu['runtime'] = df_mu['duration_ms'].fillna(0) / 60000 
-        
-        # Build overview including lyrics if available
-        df_mu['overview'] = df_mu['mb_tags'].fillna('') + " " + \
-                            df_mu['genre'].fillna('') + " " + \
-                            df_mu.get('lyric_embed_text', pd.Series(['']*len(df_mu))).fillna('')
+        df_mu['runtime'] = df_mu['duration_ms'].fillna(0) / 60000
+
+        # CROSS-DOMAIN ALIGNMENT: music now carries the same geography/language axes
+        # the other domains use. Lyrics language -> shared `language`; artist origin
+        # country -> shared `country` (which movies/TV already populate).
+        _blank = pd.Series([''] * len(df_mu))
+        df_mu['language'] = df_mu.get('mb_language', _blank)
+        df_mu['country'] = df_mu.get('mb_artist_country', _blank)
+
+        # Build overview with the richest aligned signals so the text embedding (and
+        # therefore the cross-domain music-affinity features) carry genre + crowd tags +
+        # mood + origin, not just MusicBrainz tags.
+        df_mu['overview'] = (df_mu['mb_tags'].fillna('') + " "
+                             + df_mu['genre'].fillna('') + " "
+                             + df_mu.get('lastfm_tags', _blank).fillna('') + " "
+                             + df_mu.get('audiodb_mood', _blank).fillna('') + " "
+                             + df_mu.get('mb_artist_country', _blank).fillna('') + " "
+                             + df_mu.get('mb_language', _blank).fillna('') + " "
+                             + df_mu.get('lyric_embed_text', _blank).fillna(''))
         df_mu['user_rating'] = pd.to_numeric(df_mu['user_rating'], errors='coerce')
     except Exception as e:
         print(f"   ⚠️ Could not load Music data: {e}")
@@ -307,10 +324,28 @@ def build_universal_dataset():
     top_3_langs = df['language'].astype(str).str.split(', ').explode().value_counts().nlargest(3).index.tolist()
     X_lang = pd.get_dummies(df['language'].apply(lambda x: next((l.strip() for l in str(x).split(',') if l.strip() in top_3_langs), 'Other')), prefix='lang')
 
-    print("   Generating text embeddings...")
-    df['txt'] = "Title: " + df['title'].fillna('') + ". Lead: " + df['director'].fillna('') + ". " + df['overview'].fillna('')
+    # Shared GEOGRAPHY axis (movies + TV + music now populate `country`). A new
+    # cross-domain bridge: top origin countries one-hot, everything else -> Other.
+    if 'country' not in df.columns:
+        df['country'] = np.nan
+    _ctry_counts = (df['country'].astype(str).str.split(',').explode().str.strip().value_counts())
+    top_countries = [c for c in _ctry_counts.index
+                     if c and c.lower() not in ('nan', 'none', 'unknown', '')][:6]
+    X_country = pd.get_dummies(df['country'].apply(
+        lambda x: next((c.strip() for c in str(x).split(',') if c.strip() in top_countries), 'Other')),
+        prefix='ctry')
+
+    print("   Generating text embeddings (length-normalized, genre-templated)...")
+    # Cap title/genre and truncate the description to its first 40 words so a movie
+    # and a game share the same text shape. This removes the cross-domain text-length
+    # confound (movie plots ~214 chars vs game descriptions ~1074) that masked
+    # cross-domain transfer in the shared vibe space; see text_norm_transfer_control.
+    _gen = df['genre'].fillna('').astype(str).str.replace(r"[\[\]']", "", regex=True).str.slice(0, 80)
+    _desc = df['overview'].fillna('').astype(str).apply(lambda s: " ".join(s.split()[:40]))
+    df['txt'] = ("Title: " + df['title'].fillna('').astype(str).str.slice(0, 120)
+                 + ". Genre: " + _gen + ". " + _desc)
     transformer = SentenceTransformer('all-MiniLM-L6-v2')
-    text_embeddings = transformer.encode(df['txt'].tolist())
+    text_embeddings = transformer.encode(df['txt'].tolist(), normalize_embeddings=True)
     
     # --- DOMAIN CENTROID ALIGNMENT (REMOVED: Handle in trainer per-fold to avoid leakage) ---
     # Centering here on full dataset leaks test info.
@@ -345,7 +380,7 @@ def build_universal_dataset():
     mask_cols = [f'has_{d}_feats' for d in ['movie', 'tv', 'game', 'book', 'music']]
 
     # Final
-    X_final = pd.concat([df[num_cols + mask_cols], X_lang, X_genre, X_mpaa, X_text, X_music], axis=1)
+    X_final = pd.concat([df[num_cols + mask_cols], X_lang, X_country, X_genre, X_mpaa, X_text, X_music], axis=1)
     X_final.columns = [sanitize_col(c) for c in X_final.columns]
     X_final = X_final.loc[:, ~X_final.columns.duplicated()]
 

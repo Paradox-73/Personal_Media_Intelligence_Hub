@@ -27,7 +27,7 @@ from src.movies.custom_objectives import AsymmetricEdgePenaltyObjective
 
 from sklearn.base import BaseEstimator, RegressorMixin
 
-class SimplexWeightedAverager(BaseEstimator, RegressorMixin):
+class SimplexWeightedAverager(RegressorMixin, BaseEstimator):
     """
     Constrained non-negative weighted average (simplex-constrained).
     Weights are derived from OOF performance or a simple optimization.

@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import plotly.io as pio
 import sys
+import re
 import numpy as np
 from pathlib import Path
 from collections import Counter
@@ -114,6 +115,7 @@ with tab1:
     cat_counts = df_cats['cat_list'].value_counts().reset_index().head(15)
     cat_counts.columns = ['Category', 'Count']
     fig = px.bar(cat_counts, x='Count', y='Category', orientation='h', color='Count', color_continuous_scale='Viridis')
+    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
     st.plotly_chart(fig, use_container_width=True)
 
 with tab2:
@@ -123,6 +125,7 @@ with tab2:
     auth_counts = df_auths['auth_list'].value_counts().reset_index().head(15)
     auth_counts.columns = ['Author', 'Count']
     fig = px.bar(auth_counts, x='Count', y='Author', orientation='h', color='Count', color_continuous_scale='Magma')
+    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
     st.plotly_chart(fig, use_container_width=True)
 
 with tab3:
@@ -190,6 +193,7 @@ with tab4:
     agg.columns = ['Category', 'Avg Rating', 'Count']
     fig = px.bar(agg.sort_values('Avg Rating'), x='Avg Rating', y='Category', orientation='h',
                  color='Avg Rating', color_continuous_scale='RdYlGn', hover_data=['Count'])
+    fig.update_layout(yaxis={'categoryorder': 'total ascending'})
     st.plotly_chart(fig, use_container_width=True)
 
 with tab5:
@@ -198,6 +202,47 @@ with tab5:
     if 'predicted_rating' in df.columns:
         display_cols.append('predicted_rating')
     st.dataframe(df[display_cols].sort_values('my_rating', ascending=False), use_container_width=True)
+
+st.divider()
+
+# --- DESCRIPTION VIBE CHECK (themes from book descriptions, like the Movies plot vibe check) ---
+st.subheader("🧠 Description Vibe Check")
+st.caption("Dominant themes extracted from your book descriptions. Hover to see your average rating "
+           "for books containing each theme (color = your average rating).")
+
+if 'description' in df.columns:
+    _stops = set([
+        'the', 'a', 'an', 'and', 'or', 'but', 'if', 'because', 'as', 'what', 'where', 'when', 'how', 'who',
+        'which', 'this', 'that', 'these', 'those', 'am', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+        'have', 'has', 'had', 'having', 'do', 'does', 'did', 'doing', 'at', 'by', 'for', 'from', 'in', 'into',
+        'of', 'off', 'on', 'onto', 'out', 'over', 'up', 'down', 'to', 'with', 'within', 'without', 'he', 'him',
+        'his', 'she', 'her', 'hers', 'it', 'its', 'they', 'them', 'their', 'theirs', 'i', 'me', 'my', 'mine',
+        'you', 'your', 'yours', 'we', 'us', 'our', 'ours', 'after', 'before', 'while', 'during', 'since',
+        'until', 'through', 'about', 'against', 'between', 'will', 'must', 'only', 'other', 'one', 'two',
+        'new', 'back', 'most', 'just', 'more', 'there', 'soon', 'now', 'then', 'than', 'so', 'all', 'her',
+        # book-specific noise
+        'book', 'books', 'novel', 'story', 'stories', 'tale', 'series', 'author', 'reader', 'readers',
+        'edition', 'page', 'pages', 'bestseller', 'bestselling', 'york', 'times', 'life', 'world', 'man',
+        'woman', 'young', 'first', 'years', 'year', 'find', 'finds', 'must',
+    ])
+    _word_ratings = {}
+    for _, _row in df.dropna(subset=['description', 'my_rating']).iterrows():
+        _words = set(w.lower() for w in re.findall(r'\w+', str(_row['description']))
+                     if len(w) > 3 and w.lower() not in _stops)
+        for _w in _words:
+            _word_ratings.setdefault(_w, []).append(_row['my_rating'])
+    _word_stats = [{'Word': w, 'Count': len(r), 'Avg_Rating': float(np.mean(r))}
+                   for w, r in _word_ratings.items() if len(r) >= 2]
+    if _word_stats:
+        _wdf = pd.DataFrame(_word_stats).sort_values('Count', ascending=False).head(50)
+        _wdf['Avg_Rating'] = _wdf['Avg_Rating'].round(3)
+        fig = px.treemap(_wdf, path=['Word'], values='Count', color='Avg_Rating',
+                         hover_data=['Avg_Rating'], range_color=[1, 5],
+                         color_continuous_scale='RdYlGn',
+                         title="Dominant Themes in Your Books (Color = Your Avg Rating)")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Not enough description text to extract recurring themes yet.")
 
 st.divider()
 st.subheader("🏆 Top Rated Books")

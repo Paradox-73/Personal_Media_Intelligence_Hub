@@ -28,6 +28,7 @@ def format_benchmarks_table(data):
         "| :--- | :--- | :--- | :--- | :--- | :--- |",
     ]
     benchmarks = {b["Domain"]: b for b in data.get("benchmarks", [])}
+    rated_n = benchmarks.get("unified_rated", {}).get("N", 0)
     for domain in ORDER:
         if domain not in benchmarks:
             continue
@@ -44,7 +45,7 @@ def format_benchmarks_table(data):
         "folds (one row per item, N = unique items): **Movies and TV are the deployed tuned "
         "ensembles** (Optuna edge-penalty XGB + CatBoost + SVR + ordinal-EV, fused) — not the "
         "earlier plain-XGB / manual-simplex proxies — and **Games and Books are the deployed SVR**. "
-        "The two Unified rows are the cross-domain Mean Ensemble; **the rated row (N=1,264) is the "
+        f"The two Unified rows are the cross-domain Mean Ensemble; **the rated row (N={rated_n:,}) is the "
         "headline taste metric**.*"
     )
     lines.append(
@@ -76,14 +77,16 @@ def format_slices_table(data):
         "\n*Read against the **production benchmarks** above — both measured with the identical "
         "pooled per-item OOF estimator on the frozen folds, on the same items. With the **real local "
         "models** (Movies = the deployed tuned edge-penalty stacking ensemble, not the old plain-XGB "
-        "proxy), the like-for-like MAE comparison splits cleanly by domain type: the **local model wins "
-        "in Movies and Games** — the domains with rich domain-specific features the shared space "
-        "discards (Movies' director/actor target-encodings, Games' Metacritic/platforms) — while the "
-        "**unified model wins in TV and is level on Books**, the semantic-only domains where pooling "
-        "across domains adds data without losing signal. So cross-domain pooling earns its keep **only "
-        "where a domain has little local-specific signal beyond vibe**. The earlier 'unified is "
-        "competitive or better in movies/TV/books' reading was an artifact of benchmarking against a "
-        "**weakened Movies proxy**; with the production model the Movies verdict flips to local.*"
+        "proxy), the like-for-like MAE comparison favours the local model in **Games and Books** — "
+        "Games' Metacritic/platforms and (since Books moved to the Hardcover library API) Books' "
+        "standardized author/genre multi-hot features are local signal the shared space dilutes. The "
+        "**unified model wins in TV**, the one domain whose thin local feature set leaves room for "
+        "cross-domain pooling to add data without losing signal, while **Movies is a statistical tie** "
+        "(0.476 local vs 0.475 unified — within fold-resampling noise). So pooling earns its keep "
+        "**only where a domain has little local-specific signal beyond vibe**. (The Books verdict "
+        "flipped with the data refresh: under the old Open-Library-enriched books the unified slice "
+        "marginally led 0.540 vs 0.548; the clean Hardcover library record gives the local SVR real "
+        "author/category features and the local model now leads.)*"
     )
     return "\n".join(lines)
 
@@ -117,16 +120,22 @@ def format_distillation_table(data):
         "| Domain | MAE (no prior) | Skill (no prior) | MAE (with prior) | Skill (with prior) | p-value | Verdict |",
         "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
     ]
+    skill = {}
     for r in rows:
+        skill[r['Domain'].lower()] = r['Skill_NoPrior']
         lines.append(
             f"| {r['Domain'].title()} | {r['MAE_NoPrior']:.3f} | {r['Skill_NoPrior']:.3f} | "
             f"{r['MAE_WithPrior']:.3f} | {r['Skill_WithPrior']:.3f} | {r['p_value']:.3f} | "
             f"**{r['Verdict']}** |"
         )
+    g, b = skill.get('game'), skill.get('book')
+    skill_txt = ""
+    if g is not None and b is not None:
+        skill_txt = f" (Games {g:.3f}, Books {b:.3f})"
     lines.append(
         "\n*The unified prior is **not** significantly helpful in either domain (p ≥ 0.05, "
         "effect direction negative) — it was tested and **dropped**. Note the positive skill "
-        "scores without it (Games 0.225, Books 0.108): the local models beat the mean-rating "
+        f"scores without it{skill_txt}: the local models beat the mean-rating "
         "baseline, the first positive evidence of learnable local signal in these N≈60 domains.*"
     )
     return "\n".join(lines)

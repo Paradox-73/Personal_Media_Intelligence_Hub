@@ -1,62 +1,89 @@
 title,authors,publishedDate,my_rating,predicted_rating,averageRating,categories
-Diary of a Wimpy Kid 3 : The Last Stra,Jeff Kinney,06-10-2009,2.5,3.5,4.5,Children's stories
-The Ugly Truth,Jeff Kinney,2012,3.0,3.0,5.0,Juvenile Fiction
-Dog Days,Jeff Kinney,2011,3.0,3.0,4.0,Children's stories
-Hard Luck,Jeff Kinney,2013,2.5,3.0,0.0,Bullying
-Rodrick Rules,Jeff Kinney,01-01-2009,3.0,3.0,4.5,Brothers
-Diary of a Wimpy Kid,Jeff Kinney,2007,2.5,3.0,4.0,Juvenile Fiction
-Night of the Living Dummy II,R. L. Stine,1995,3.5,3.5,0.0,Juvenile Fiction
-Welcome to Dead House,R. L. Stine,1992,3.5,3.5,4.0,Juvenile Fiction
-The Haunted School,R. L. Stine,01-10-2005,3.5,3.5,0.0,Juvenile Fiction
-Goosebumps,R. L. Stine,1992,3.0,3.0,0.0,Horror tales
-The Curse of Camp Cold Lake,R. L. Stine,1997,3.0,3.0,0.0,Juvenile Fiction
-Night of the Living Dummy III,R. L. Stine,1996,3.0,3.0,4.0,Juvenile Fiction
-Harry Potter and the Chamber of Secrets,J. K. Rowling,01-01-2014,3.0,3.5,0.0,Juvenile Fiction
-Harry Potter and the Prisoner of Azkaban,J. K. Rowling,01-09-2014,4.0,3.5,0.0,Juvenile Fiction
-Harry Potter and the Order of the Phoenix,J. K. Rowling,01-09-2014,4.0,4.0,0.0,Fiction
-Harry Potter and the Half-Blood Prince,J. K. Rowling,01-01-2014,1.0,2.5,5.0,Juvenile Fiction
-Harry Potter and the Deathly Hallows,J. K. Rowling,01-01-2014,3.5,3.5,4.5,Fiction
-Harry Potter and the Philosopher's Stone,J. K. Rowling,01-01-2014,3.5,3.5,5.0,Juvenile Fiction
-The Hidden Oracle,Rick Riordan,2017-05,3.0,3.0,0.0,Children's stories
-Dark Prophecy,Rick Riordan,30-04-2018,3.0,3.0,0.0,Juvenile Fiction
-The Burning Maze (the Trials of Apollo Book 3),Rick Riordan,27-04-2019,3.0,3.0,5.0,Juvenile Fiction
-The Tyrant's Tomb (The Trials of Apollo Book 4),Rick Riordan,18-08-2020,3.0,3.0,0.0,Juvenile Fiction
-The Tower of Nero (the Trials of Apollo Book 5),Rick Riordan,2021,3.0,3.0,0.0,Juvenile Fiction
-Scott Pilgrim Vs. the World,Bryan Lee O'Malley,2010,4.5,4.5,2.0,Comics & Graphic Novels
-Dark Matter,Blake Crouch,24-08-2017,3.5,3.5,0.0,Fiction
-"Chainsaw Man, Vol. 1",Tatsuki Fujimoto,06-10-2020,4.0,4.0,0.0,Comics & Graphic Novels
-Recursion,Blake Crouch,09-01-2020,3.0,3.0,0.0,Fiction
-Dune,Frank Herbert,01-09-1990,3.0,3.0,0.0,Fiction
-The World's Favourite Agatha Christie,Agatha Christie,2015,3.0,3.0,0.0,"Detective and mystery stories,  Classic Literature, Murder"
-Sita,Amish Tripathi,2017,3.0,3.0,3.0,FICTION
-Scion of Ikshvaku,Amish Tripathi,2015,2.5,3.0,0.0,Hindu mythology
-Raavan,Amish Tripathi,2019,3.5,3.0,4.5,FICTION
-Immortals of Meluha,Amish Tripathi,2010,3.5,3.5,5.0,Fiction
-Secret of The Nagas,Amish Tripathi,2011-05,3.0,3.0,5.0,Fiction
-The Oath of the Vayuputras,Amish Tripathi,2013,3.0,3.5,0.0,Fiction
-The Perks of Being a Wallflower,Stephen Chbosky,14-08-2012,5.0,4.5,4.5,Fiction
-The Hitchhiker's Guide to the Galaxy,Douglas Adams,20-11-1995,4.0,4.0,5.0,"Science Fiction, Humorous, Action, Adventure, Fiction"
-The Complete Sherlock Holmes,Sir Arthur Conan Doyle,1984,3.5,3.5,4.1,"Detective and mystery stories,  Classic Literature, Murder"
-Mysterious Eye of the Dragon (Geronimo Stilton #78),Geronimo Stilton,20-07-2021,2.0,2.5,3.0,Juvenile Fiction
-The Metamorphosis (Legend Classics),Franz Kafka,01-06-2017,4.0,4.0,0.0,Fiction
-The Stranger,Albert Camus,2024-04,4.0,4.0,0.0,Fiction
-"Percy Jackson and the Olympians, Book One: Lightning Thief, The (Movie Tie-In Edition)",Rick Riordan,05-01-2010,4.5,4.5,0.0,Juvenile Fiction
-Percy Jackson and the Sea of Monsters,Rick Riordan,2013,4.0,4.0,5.0,Juvenile Nonfiction
-Percy Jackson and the Titan's Curse,Rick Riordan,2013,4.5,4.5,0.0,"Animals, Mythical"
-Percy Jackson and the Battle of the Labyrinth,Rick Riordan,2013,4.0,4.0,0.0,Adventure stories
-Percy Jackson and the Greek Gods,Rick Riordan,07-05-2015,5.0,4.5,0.0,Children's stories
-Percy Jackson and the Greek Heroes,Rick Riordan,2016,5.0,4.0,0.0,Juvenile Fiction
-"Kane Chronicles, The, Book One: The Red Pyramid",Rick Riordan,04-05-2010,2.0,2.5,4.5,Juvenile Fiction
-The Throne of Fire,Rick Riordan,2012,2.0,2.5,0.0,Adventure stories
-The Serpent's Shadow,Rick Riordan,2013,2.0,3.0,0.0,Juvenile Fiction
-The Lost Hero,Rick Riordan,25-01-2012,4.0,4.0,3.5,Juvenile Nonfiction
-Heroes of Olympus,Rick Riordan,2017,4.0,4.0,0.0,
-The Mark of Athena,Rick Riordan,2012,4.5,4.5,5.0,Camps
-The House of Hades,Rick Riordan,01-01-2013,5.0,4.5,5.0,Camps
-The Blood of Olympus,Rick Riordan,2014,3.5,3.5,0.0,Children's stories
-Magnus Chase and the Sword of Summer,Rick Riordan,2016,3.5,3.5,0.0,Boston (Mass.)
-Magnus Chase and the Hammer of Thor,Rick Riordan,2016-10,3.5,3.5,0.0,
-Magnus Chase and the Ship of the Dead (Book 3),Rick Riordan,03-10-2017,3.5,3.5,4.0,Juvenile Fiction
-Brooklyn House Magician's Manual,Rick Riordan,03-05-2018,3.0,3.0,5.0,Juvenile Fiction
-Call Me By Your Name,,,4.0,4.5,0.0,
-Project Hail Mary,,,5.0,4.5,0.0,
+The Lightning Thief,Rick Riordan,2005,5.0,4.0,4.07,"Fantasy, Fiction, Young Adult, Children, Adventure, Middle Grade, Mythology, General, greek mythology, Juvenile Fiction"
+The Last Straw,Jeff Kinney,2008,2.5,2.5,3.6,"Humor, Young Adult, Fiction, Comics, Friendship, Diaries, Fantasy, Children's stories"
+The Ugly Truth,Jeff Kinney,2010,3.0,3.0,3.54,"Fantasy, Young Adult, Fiction, Comics, Friendship, Spanish"
+Hard Luck,Jeff Kinney,2001,2.5,2.5,3.55,"Young Adult, Fiction, Comics, Children, Friendship, Spanish, Juvenile Fiction, Diaries, Bullying"
+Rodrick Rules,Jeff Kinney,2008,3.5,2.5,3.78,"Humor, Young Adult, Fiction, Comics, Children, Friendship, Spanish, Children's stories,  American, Children's audiobooks"
+Diary of a Wimpy Kid,Jeff Kinney,2004,3.0,3.0,3.64,"Humor, Young Adult, Comics, Children, Fiction, Family, Children's stories,  etc, Humour, childrens"
+Night of the Living Dummy II,R. L. Stine,1995,3.5,3.5,3.55,"Young Adult, Fantasy, Science Fiction, Juvenile Fiction, Fiction"
+Night of the Living Dummy III,R. L. Stine,1996,3.0,3.0,3.27,"Young Adult, Fantasy, Juvenile Fiction, Brothers and sisters, Adventure, Fiction, Horror tales"
+Welcome to Dead House,R. L. Stine,1991,3.5,3.5,3.58,"Haunted houses, Juvenile Fiction, Fantasy, Classics, Adventure, Fiction, Spanish, Murder, Mystery, Botany"
+The Haunted School,R. L. Stine,1997,3.5,3.5,3.67,"Classics, Fantasy, Young Adult, Adventure, Fiction, Juvenile Fiction, Children's stories, German language materials"
+One Day at Horrorland,R. L. Stine,1994,3.0,3.5,3.79,"Fantasy, Young Adult, Adventure, Juvenile Fiction, Fiction, Amusement parks"
+The Curse of Camp Cold Lake,R. L. Stine,1997,3.5,3.5,3.44,"Classics, Fantasy, Young Adult, Adventure, Fiction, Horror tales"
+Project Hail Mary,Andy Weir,2021,5.0,3.5,4.5,"Science Fiction, Fiction, Fantasy, Space, Adventure, Hard Science Fiction, Science Fiction & Fantasy, Thriller, adult, Sci-fi"
+Call Me by Your Name,Andre Aciman,2007,4.0,4.5,4.0,"Romance, Fiction, LGBTQ, Contemporary, Gay teenagers > Fiction, Italy > Fiction, Authors > Fiction, General, Young Adult, Foreign Language Study"
+Harry Potter and the Prisoner of Azkaban,J.K. Rowling,1999,4.0,4.0,4.41,"Fantasy, Fiction, Young Adult, Adventure, Children's audiobooks, Magic, Classics, Middle Grade, Juvenile Fiction, Science Fiction & Fantasy"
+The Oath of the Vayuputras,Amish Tripathi,2013,3.5,3.5,3.45,"Fantasy, Adventure, Mythology, Young Adult, Fiction, War"
+The Mark of Athena,Rick Riordan,2012,4.5,4.0,4.22,"Fantasy, Adventure, Young Adult, General, Spanish, Children, Fiction, Children's stories, Jeune Adulte, Aventure"
+The Tower of Nero,"Rick Riordan, John Rocco",2020,2.5,2.5,4.39,"Fantasy, Young Adult, Adventure, Fiction, LGBTQ, Children, Jeune Adulte, Aventure, Greek fiction"
+The Perks of Being a Wallflower,Stephen Chbosky,1999,5.0,3.5,4.08,"Fiction, Young Adult, Classics, Contemporary, Bildungsromans, social science, Romance, LGBTQ, General, Friendship"
+The Red Pyramid,Rick Riordan,2010,1.5,1.5,3.87,"Fantasy, Young Adult, Fiction, Middle Grade, Aventure, Enfants, Brothers and sisters, Adventure, Historical Fiction, Mystery"
+The Sword of Summer,Rick Riordan,2015,3.5,3.5,4.0,"Fantasy, Young Adult, Adventure, Fiction, LGBTQ, Spanish, Juvenile Fiction, Children, Urban Fantasy, Jeune Adulte"
+Harry Potter and the Order of the Phoenix,"J.K. Rowling, Mary GrandPré",2003,3.5,3.5,4.29,"Fantasy, Young Adult, Fiction, Adventure, Children's audiobooks, Magic, Middle Grade, Classics, Children, Bildungsromans"
+The Burning Maze,"Rick Riordan, John Rocco",2018,2.5,3.0,4.16,"Fantasy, Adventure, Young Adult, Children's audiobooks, Middle Grade, Adventure stories, Children, Fiction, Jeune Adulte, Aventure"
+The Tyrant's Tomb,Rick Riordan,2019,2.5,3.0,4.24,"Fantasy, Adventure, Fiction, LGBTQ, Jeune Adulte, Aventure, Young Adult, Greek fiction"
+Raavan: Enemy of Aryavarta,Amish Tripathi,2019,3.5,3.5,4.02,"Fantasy, Young Adult, Demonology, Adventure, Fiction, Indic fiction (English)"
+The Ship of the Dead,Rick Riordan,2017,3.5,3.5,4.11,"Adventure, Young Adult, Fantasy, LGBTQ, Children, Queer, Magic, Fiction"
+Harry Potter and the Chamber of Secrets,J.K. Rowling,1998,3.0,3.5,4.17,"Fantasy, Fiction, Young Adult, Adventure, Middle Grade, Magic, Juvenile Fiction, Children's audiobooks, Classics, childrens"
+Dune,"Frank Herbert, Brian Herbert",1965,3.5,3.5,4.32,"Science Fiction, Fiction, Fantasy, Classics, Adventure, Space Opera, Sci-fi, Science Fiction & Fantasy, Audiobook, Dystopian"
+Murder on the Orient Express,Agatha Christie,1933,3.0,3.0,4.08,"Mystery, Fiction, Crime, General, Classics, Biography, Nonfiction, Adventure, Literature, Detective and mystery stories"
+Hitchhiker's Guide To The Galaxy: The Filming of the Douglas Adams Classic,"Robbie Stamp, Paul Simpson",2005,4.0,4.5,4.19,"Performing Arts, Film (Motion picture)"
+The Lost Hero,Rick Riordan,2010,4.0,4.5,4.05,"Fantasy, Young Adult, Adventure, Fiction, Spanish, Children, Jeune Adulte, Aventure, Enfants, Aventura"
+The Hammer of Thor,Rick Riordan,2014,3.5,3.5,4.07,"Fantasy, Young Adult, Adventure, Fiction, LGBTQ, Juvenile Fiction, Children, Queer, Jeune Adulte, Aventure"
+The House Of Hades,Rick Riordan,2013,5.0,5.0,4.38,"Fantasy, Children, Adventure, Romance, Young Adult, Action & Adventure, Fantasy & Magic, Folk Tales & Myths, General, Science Fiction & Fantasy"
+Harry Potter and the Deathly Hallows,J.K. Rowling,2007,3.5,3.0,4.43,"Fantasy, Fiction, Young Adult, Adventure, Middle Grade, Juvenile Fiction, Children's audiobooks, Classics, low fantasy, Bildungsromans"
+The Blood Of Olympus,Rick Riordan,2014,3.5,4.0,4.19,"Fantasy, Young Adult, Adventure, Fiction, General, LGBTQ, Spanish, Juvenile Fiction, Camps, Children"
+The Hidden Oracle,Rick Riordan,2016,3.0,3.0,3.91,"Fantasy, Young Adult, Adventure, Fiction, General, LGBTQ, Delphian oracle, Juvenile Fiction, Children, Children's audiobooks"
+Harry Potter and the Philosopher's Stone,J.K. Rowling,1997,3.5,4.0,4.28,"Fantasy, Fiction, Young Adult, Magic, Adventure, Classics, Juvenile Fiction, Middle Grade, Fantasy & Magic, Children's audiobooks"
+Dark Matter,Blake Crouch,2016,3.5,3.5,4.05,"Science Fiction, Fiction, Mystery, Suspense, Thriller, Thrillers, Fantasy, Thriller & Suspense, Technothrillers, Adventure"
+The Titan's Curse,Rick Riordan,2007,4.5,5.0,4.16,"Fantasy, Young Adult, Children, Adventure, Middle Grade, Fiction,  Mythical, Education, Jeune Adulte, Aventure"
+The Battle of the Labyrinth,Rick Riordan,2008,4.5,5.0,4.24,"Fantasy, Young Adult, Fiction, Middle Grade, Adventure, Children, Fantasy & Magic, Science Fiction & Fantasy, Fairy tales, General"
+The Serpent's Shadow,Rick Riordan,2012,2.0,1.5,4.04,"Fantasy, Young Adult, Adventure, Fiction, Juvenile Fiction, Children, Middle Grade, Comics, Brothers and sisters, Adventure stories"
+The Dark Prophecy,"Rick Riordan, John Rocco",2017,3.0,3.0,3.92,"Fantasy, Young Adult, Adventure, Juvenile Fiction, Children's stories, Young Adult Fiction, Children, Jeune Adulte, Aventure, Greek fiction"
+Scion of Ikshvaku,Amish Tripathi,2015,3.0,3.0,3.8,"Fantasy, Adventure, Mythology, Fiction"
+The Secret of the Nagas,Amish Tripathi,2011,3.5,3.5,3.79,"Mythology, Young Adult, Adventure, Fantasy, War, Fantasy fiction, Fiction"
+The Complete Sherlock Holmes,Arthur Conan Doyle,1887,3.5,3.5,4.52,"Fiction, Mystery, Classics, Literature, History, Crime, Children, Young Adult, Adventure, England"
+The Sea of Monsters,Rick Riordan,2006,4.0,4.5,3.99,"Fantasy, Young Adult, Children, Fiction, Adventure, Middle Grade, Camps, Jeune Adulte, Aventure, Enfants"
+Percy Jackson's Greek Heroes,Rick Riordan,2015,5.0,4.0,4.21,"Fantasy, Young Adult, Adventure, Fiction, Juvenile Fiction"
+The Throne of Fire,Rick Riordan,2011,1.5,2.0,3.96,"Fantasy, Young Adult, Fiction, Adventure, Children, Middle Grade, Children's stories, Comics, Spanish, Magic"
+Harry Potter and the Half-Blood Prince,"J.K. Rowling, Mary GrandPré",2005,2.5,2.5,4.38,"Fantasy, Fiction, Young Adult, Adventure, Children's audiobooks, Middle Grade, Bildungsromans, low fantasy, Science Fiction, Juvenile Fiction"
+"Chainsaw Man, Vol. 1: Dog and Chainsaw",Tatsuki Fujimoto,2019,4.0,4.5,4.09,"Comics & Graphic Novels, Manga, Fantasy, Comics, Graphic Novels, Literature, Young Adult"
+Scott Pilgrim Vol. 2: Scott Pilgrim vs. The World,Bryan Lee O’Malley,2005,4.5,4.5,4.2,"Comics, Young Adult, Adventure, Fiction, LGBTQ, Young Adult Fiction, Fantasy, Graphic Novels"
+The Son of Neptune,Rick Riordan,2011,4.0,4.5,4.2,"Fantasy, Adventure, Young Adult, Juvenile Fiction, Children, Jeune Adulte, Aventure, Enfants, Aventura, Camps"
+Recursion,Blake Crouch,2018,3.0,3.0,4.21,"Science Fiction, Fiction, Thriller, Mystery, Suspense, Technothrillers, Fantasy, Thriller & Suspense, Time Travel, Adventure"
+Sita: Warrior of Mithila,Amish Tripathi,2017,3.5,3.5,3.79,"Fiction, Fantasy, Adventure, Young Adult"
+The Immortals of Meluha,Amish Tripathi,2010,3.5,3.5,3.91,"Mythology, Young Adult, Adventure, Fantasy, War, Indus civilization, Fiction"
+Dog Days,Jeff Kinney,2008,3.0,2.5,3.6,"Fantasy, Young Adult, Fiction, Comics, Children, Friendship, Spanish, Humor, Juvenile Fiction, Diaries"
+The Metamorphosis,"Franz Kafka, Michael Hofmann",1915,4.5,5.0,3.85,"Classics, Fiction, Fantasy, Literature, General, Foreign Language Study, Cliffs Notes, Science Fiction, Classique, Young Adult"
+Harry Potter and the Goblet of Fire,"J.K. Rowling, Mary GrandPré",2000,3.0,3.0,4.36,"Fantasy, Young Adult, Fiction, Children's audiobooks, Adventure, Growing Up & Facts of Life, Middle Grade, Science Fiction & Fantasy, Classics, Magic"
+Percy Jackson's Greek Gods,"Rick Riordan, John Rocco",2014,5.0,5.0,4.2,"Fantasy, Young Adult, Adventure, Fiction, Spanish,  Greek, gods, Greek fiction"
+The Last Olympian,Rick Riordan,2009,5.0,4.5,4.35,"Fantasy, Young Adult, Children, Adventure, Fiction, Middle Grade, Enfants, Greek fiction, Aventura, Comics"
+The Search for Treasure,Geronimo Stilton,2010,2.5,2.5,3.94,"Gems, Witches, Adventure and adventurers, Juvenile fiction, Quests (Expeditions), Fiction, Prophecies, Adventure stories"
+The Jungle Book,"Rudyard Kipling, Christopher Paolini",1847,3.5,3.5,3.66,"Fantasy, Young Adult, Adventure, Fiction, Romance, Literature, History, Historical Fiction, Women, Classics"
+"Bone, Vol. 5: Rock Jaw Master of the Eastern Border","Jeff Smith, Steve Hamaker",1998,3.5,3.5,4.15,"Fantasy, Young Adult, Adventure, Fiction, Comics, Spanish, Juvenile Fiction,  strips,  etc"
+The Stranger,"Albert Camus, Matthew Ward",1942,4.5,5.0,3.94,"Classics, Fiction, Philosophy, Philosophical Fiction, General, Murder, Algeria, Adventure stories, History, English fiction"
+Night of the Living Dummy,R. L. Stine,1993,3.5,3.5,3.31,"Adventure, Fantasy, Young Adult, Science fiction, Juvenile Fiction, Fiction, Classics, Horror tales, Juvenile Nonfiction"
+I Have No Mouth and I Must Scream,Harlan Ellison,1967,4.5,4.0,3.73,"Science Fiction, Short stories, Fiction, Horror, Classics, Fantasy, Dystopian, Fantasy fiction"
+The Cask of Amontillado,Edgar Allan Poe,1846,4.5,5.0,3.59,"Fiction, Horror, Short stories, Classics, Fantasy, Young Adult"
+The Kingdom Of Fantasy,Geronimo Stilton,2000,2.5,2.5,3.96,"Fantasy, Young Adult, Adventure, Fiction"
+"It's Halloween, You 'Fraidy Mouse!",Geronimo Stilton,2001,2.5,2.5,3.25,"Humorous stories, Handicraft, Journalists, Juvenile fiction, Halloween, Fiction, Games, Mice"
+All Because of a Cup of Coffee,Geronimo Stilton,2000,2.5,2.5,3.31,"Fantasy, Fiction, Young Adult, Adventure, Comics, Juvenile Fiction, Romance, Humor, Spanish"
+The Quest for Paradise: The Return to the Kingdom of Fantasy,Geronimo Stilton,2005,2.5,2.5,3.5,"Fantasy, Young Adult, Adventure, Fiction, Comics"
+The Amazing Voyage,Geronimo Stilton,2007,2.5,2.5,3.5,"Fantasy, Geronimo Stilton (Fictitious character), Juvenile fiction, Adventure and adventurers, Fairies, Mice, Fiction, Children's fiction"
+The Dragon Prophecy,Geronimo Stilton,2008,2.5,2.5,3.86,"Geronimo Stilton (Fictitious character), Juvenile fiction, Adventure and adventurers, Quests (Expeditions), Mice, Dragons, Fiction, Children's fiction"
+The Volcano of Fire,Geronimo Stilton,2009,2.5,2.5,4.08,"Adventure and adventurers, Juvenile fiction, Quests (Expeditions), Mice, Elves, Fiction, Children's fiction, Stilton, geronimo (fictitious character), fiction"
+The Mona Mousa Code,"Matt Wolf, Elisabetta Dami, Geronimo Stilton",2000,2.5,2.5,3.07,"Children's fiction, Ciphers, Geronimo Stilton (Fictitious character), Juvenile fiction, Adventure and adventurers, Fiction, Mice, Painting"
+The Secret of Cacklefur Castle,"Larry Keys, Blasco Tabasco, Toffina Sakkarina, Geronimo Stilton",2002,2.5,2.5,2.9,"Castles, Humorous stories, Animals, Journalists, Geronimo Stilton (Fictitious character), Juvenile fiction, Fiction, Mice"
+The Karate Mouse,Geronimo Stilton,2005,3.0,3.0,3.3,"Karate, Detective and mystery stories, Journalists, Juvenile fiction, Mystery and detective stories, Mice, Fiction, Humorous stories"
+The Temple of the Ruby of Fire,Geronimo Stilton,2003,2.5,2.5,2.88,"Fantasy, Fiction, Young Adult, Adventure, Comics, Humor"
+The Giant Diamond Robbery,Geronimo Stilton,2008,3.0,2.5,3.38,"Animals, Journalists, Geronimo Stilton (Fictitious character), Juvenile fiction, Adventure and adventurers, Mice, Fiction, Child and youth fiction"
+A Very Merry Christmas,Geronimo Stilton,2007,2.5,2.5,3.38,"Fantasy, Fiction, Young Adult, Adventure, Mystery, Humor, Christmas, Holiday"
+The Race Across America,Geronimo Stilton,2009,2.5,3.0,2.75,"Humorous stories, Description and travel, Juvenile fiction, Mice, Travel, Bicycle racing, Children's fiction, Adventure and adventurers, fiction"
+The Race Against Time,"Danilo Barozzi, Silvia Bigolin, Christian Aliprandi, Andrea Denegri, Beth Dunfey, Julia Heim, Geronimo Stilton",2006,3.0,3.0,2.8,"Mice, Fiction, Time travel, Adventure and adventurers, Children's fiction, Mice, fiction, Time travel, fiction, Adventure and adventurers, fiction"
+The Way of the Samurai,Geronimo Stilton,2010,3.0,3.0,3.33,"Fantasy, Fiction, Young Adult, Adventure, Science fiction, Mystery, Humor, Travel"
+The Hunt for the Golden Book,Geronimo Stilton,2014,2.5,2.5,3.17,"Books and reading, Theft, Authors, Secrets, Monsters, Fiction, Child and youth fiction, Children's fiction"
+Back in Time,Geronimo Stilton,2006,3.0,3.0,3.5,"Fantasy, Young Adult, Adventure, Science Fiction"
+Geronimo Stilton Graphic Novels #5: The Great Ice Age,Geronimo Stilton,2008,3.0,3.0,3.67,"Fiction, Adventure, Fantasy, Comics, Graphic Novels, Middle Grade, Science Fiction"
+The Secret of the Sphinx,Geronimo Stilton,2007,2.5,2.5,2.5,"Fantasy, Fiction, Young Adult, Adventure, Comics, literary criticism"
+Thea Stilton And The Mystery In Paris,Thea Stilton,2007,2.5,2.5,3.5,"Fashion shows, Students, Juvenile fiction, Mystery and detective stories, Mice, Fiction, Child and youth fiction, Children's fiction"

@@ -237,17 +237,19 @@ def run_master_evaluation():
         assert not (abs(b['MAE'] - s.get('MAE', -1)) < 1e-9 and
                     abs(b['R2'] - s.get('R2', -1)) < 1e-9), \
             f"benchmarks == slices for {dom} -- standalone/slice not separated!"
-    # (b) N must be unique item counts, never OOF rows (no 5x inflation).
-    #   Unified slices cover all rated registry items: movie 980, tv 159, game 62, book 63.
-    #   Standalone Games covers only 55 -- 7 "Incomplete"-status games have NaN target_reg
-    #   in the standalone pipeline and cannot be scored locally (provenance, documented).
-    slice_counts = {'movie': 980, 'tv': 159, 'game': 62, 'book': 63}
-    standalone_counts = {'movie': 980, 'tv': 159, 'game': 55, 'book': 63}
+    # (b) N must be unique item counts, never OOF rows (no 5x inflation). Counts are
+    #   derived from the data (NOT hard-coded) so this survives library growth: each
+    #   unified slice must cover exactly the unique rated items in that domain, and
+    #   each standalone model must score no MORE items than its slice (Games scores
+    #   fewer -- "Incomplete"-status games carry NaN target_reg and can't be scored).
+    expected_slice_n = (df_rated.groupby('media_type')['source_id'].nunique().to_dict())
     for dom in ['movie', 'tv', 'game', 'book']:
-        assert slice_by_domain[dom]['N'] == slice_counts[dom], \
-            f"{dom} slice N={slice_by_domain[dom]['N']} != unique items {slice_counts[dom]}"
-        assert standalone_by_domain[dom]['N'] == standalone_counts[dom], \
-            f"{dom} standalone N={standalone_by_domain[dom]['N']} != {standalone_counts[dom]}"
+        exp = expected_slice_n.get(dom)
+        assert slice_by_domain[dom]['N'] == exp, \
+            f"{dom} slice N={slice_by_domain[dom]['N']} != unique rated items {exp}"
+        assert 0 < standalone_by_domain[dom]['N'] <= slice_by_domain[dom]['N'], \
+            (f"{dom} standalone N={standalone_by_domain[dom]['N']} outside "
+             f"(0, slice N={slice_by_domain[dom]['N']}]")
     print("✅ Assertions passed: benchmarks != slices; N == unique items (no 5x inflation).")
 
     # 5) Ablation (rated-only registry folds)
