@@ -37,30 +37,56 @@ SCOPE = "user-library-read playlist-modify-public playlist-modify-private"
 
 LASTFM_ROOT = "http://ws.audioscrobbler.com/2.0/"
 
-PLAYLIST_NAME = os.environ.get("PLAYLIST_NAME", "Daily Mix (auto)")
-PLAYLIST_PUBLIC = os.environ.get("PLAYLIST_PUBLIC", "false").lower() == "true"
+def _env(name, default=None):
+    """os.environ.get, but an empty/whitespace value falls back to default.
 
-PLAYLIST_SIZE = int(os.environ.get("PLAYLIST_SIZE", "200"))
+    GitHub Actions expands an undefined `${{ vars.X }}` to an empty string, so
+    a bare os.environ.get() would return '' instead of the default.
+    """
+    v = os.environ.get(name)
+    if v is None or v.strip() == "":
+        return default
+    return v
+
+
+def _env_int(name, default):
+    try:
+        return int(_env(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _env_float(name, default):
+    try:
+        return float(_env(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+PLAYLIST_NAME = _env("PLAYLIST_NAME", "Daily Mix (auto)")
+PLAYLIST_PUBLIC = _env("PLAYLIST_PUBLIC", "false").lower() == "true"
+
+PLAYLIST_SIZE = _env_int("PLAYLIST_SIZE", 200)
 
 # Bucket ratios (must be a 3-tuple; normalized to PLAYLIST_SIZE below).
-RATIO_HEAVY = float(os.environ.get("RATIO_HEAVY", "0.33"))
-RATIO_OLDER = float(os.environ.get("RATIO_OLDER", "0.33"))
-RATIO_DISCOVERY = float(os.environ.get("RATIO_DISCOVERY", "0.34"))
+RATIO_HEAVY = _env_float("RATIO_HEAVY", 0.33)
+RATIO_OLDER = _env_float("RATIO_OLDER", 0.33)
+RATIO_DISCOVERY = _env_float("RATIO_DISCOVERY", 0.34)
 
 # "Recently heard" window (days) used to decide what counts as an *older* liked
 # song. Liked songs scrobbled within this window are excluded from the older
 # bucket. Larger = stricter definition of "haven't heard in a while".
-RECENT_WINDOW_DAYS = int(os.environ.get("RECENT_WINDOW_DAYS", "180"))
-RECENT_MAX_PAGES = int(os.environ.get("RECENT_MAX_PAGES", "25"))  # 200 scrobbles/page
+RECENT_WINDOW_DAYS = _env_int("RECENT_WINDOW_DAYS", 180)
+RECENT_MAX_PAGES = _env_int("RECENT_MAX_PAGES", 25)  # 200 scrobbles/page
 
 # How many seed tracks to fan out from when finding similar tracks.
-DISCOVERY_SEEDS = int(os.environ.get("DISCOVERY_SEEDS", "40"))
-SIMILAR_PER_SEED = int(os.environ.get("SIMILAR_PER_SEED", "20"))
+DISCOVERY_SEEDS = _env_int("DISCOVERY_SEEDS", 40)
+SIMILAR_PER_SEED = _env_int("SIMILAR_PER_SEED", 20)
 
-RANDOM_SEED = os.environ.get("RANDOM_SEED")  # set for reproducible runs
+RANDOM_SEED = _env("RANDOM_SEED")  # set for reproducible runs
 
-LASTFM_API_KEY = os.environ.get("LASTFM_API_KEY")
-LASTFM_USER = os.environ.get("LASTFM_USER")
+LASTFM_API_KEY = _env("LASTFM_API_KEY")
+LASTFM_USER = _env("LASTFM_USER")
 
 
 # --------------------------------------------------------------------------- #
