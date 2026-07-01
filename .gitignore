@@ -10,6 +10,10 @@ srs.txt
 catboost_info/
 err.txt
 req.txt
+
+# Spotify OAuth token caches (contain refresh tokens - never commit)
+.cache
+.cache-*
 src/movies/ratings.csv
 paper/
 paper.zip
