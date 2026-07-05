@@ -13,7 +13,10 @@ from src.books.ingestion import search_books_by_query, fetch_book_details_by_id
 from src.books.feature_engineering import transform_single_book, find_similar_books, explain_similarity_books
 from src.unified_model.unified_oracle import predict_unified
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
+from mobile import apply_mobile_css
 st.set_page_config(page_title="The Oracle", page_icon="🔮", layout="wide")
+apply_mobile_css()
 
 st.header("🔮 The Books Oracle")
 st.markdown("Predict your rating for any book using a Local Regressor, a Tiered Classifier, and Semantic Text Embeddings.")
@@ -55,8 +58,9 @@ search_col, _ = st.columns([3, 1])
 with search_col:
     search_term = st.text_input("Search for a Book", value=st.session_state['search_query_input_book'], key="book_search_input")
     st.session_state['search_query_input_book'] = search_term
+    do_search = st.button("🔍 Search", key="book_search_btn", use_container_width=True)
 
-    if search_term and search_term != st.session_state['last_search_executed_book']:
+    if search_term and (do_search or search_term != st.session_state['last_search_executed_book']):
         st.session_state['last_search_executed_book'] = search_term
         st.session_state['search_results_book'] = search_books_by_query(search_term)
         st.session_state['selected_book_id'] = None

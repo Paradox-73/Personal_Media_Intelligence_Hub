@@ -13,7 +13,10 @@ from src.games.ingestion import search_games_by_query, fetch_game_details_by_id
 from src.games.feature_engineering import transform_single_game, find_similar_games, explain_similarity_games
 from src.unified_model.unified_oracle import predict_unified
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
+from mobile import apply_mobile_css
 st.set_page_config(page_title="The Oracle", page_icon="🔮", layout="wide")
+apply_mobile_css()
 
 st.header("🔮 The Games Oracle")
 st.markdown("Predict your rating for any game using a Local Regressor, a Tiered Classifier, and Semantic Text Embeddings.")
@@ -55,8 +58,9 @@ search_col, _ = st.columns([3, 1])
 with search_col:
     search_term = st.text_input("Search for a Game", value=st.session_state['search_query_input_game'], key="game_search_input")
     st.session_state['search_query_input_game'] = search_term
+    do_search = st.button("🔍 Search", key="game_search_btn", use_container_width=True)
 
-    if search_term and search_term != st.session_state['last_search_executed_game']:
+    if search_term and (do_search or search_term != st.session_state['last_search_executed_game']):
         st.session_state['last_search_executed_game'] = search_term
         st.session_state['search_results_game'] = search_games_by_query(search_term)
         st.session_state['selected_game_id'] = None

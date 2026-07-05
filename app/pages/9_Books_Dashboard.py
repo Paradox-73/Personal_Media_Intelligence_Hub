@@ -11,9 +11,13 @@ from collections import Counter
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
 from src import config
+from ridgeline import genre_rating_ridgeline
 
+from mobile import apply_mobile_css
 st.set_page_config(page_title="Books Dashboard", page_icon="📚", layout="wide")
+apply_mobile_css()
 
 # --- CUSTOM STYLING ---
 st.markdown("""
@@ -117,6 +121,19 @@ with tab1:
     fig = px.bar(cat_counts, x='Count', y='Category', orientation='h', color='Count', color_continuous_scale='Viridis')
     fig.update_layout(yaxis={'categoryorder': 'total ascending'})
     st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("**🎚️ Rating Distribution by Category (Ridgeline)**")
+    st.caption("Each curve is a smoothed distribution of your ratings within that category; warmer "
+               "curves are categories you score higher on average, and the number on the right is "
+               "how many books fed the curve.")
+    _ridge_pairs = (df_cats[['cat_list', 'my_rating']]
+                    .rename(columns={'cat_list': 'genre', 'my_rating': 'rating'}))
+    _fig_ridge = genre_rating_ridgeline(_ridge_pairs, rating_label="My Rating",
+                                        count_label="books", min_count=3)
+    if _fig_ridge is not None:
+        st.plotly_chart(_fig_ridge, use_container_width=True)
+    else:
+        st.info("Not enough category-tagged ratings to draw the ridgeline.")
 
 with tab2:
     st.subheader("✍️ Top Authors")

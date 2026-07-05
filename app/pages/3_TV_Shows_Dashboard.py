@@ -16,8 +16,11 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for sha
 from src import config
 from geo_utils import aggregate_country_counts, make_world_map
 from milestones import render_milestones
+from ridgeline import genre_rating_ridgeline
 
+from mobile import apply_mobile_css
 st.set_page_config(page_title="TV Intelligence Dashboard", page_icon="📺", layout="wide")
+apply_mobile_css()
 
 # --- CUSTOM STYLING ---
 st.markdown("""
@@ -532,6 +535,24 @@ with t_mat:
         with cm2:
             fig = px.box(df, x="age_rating", y="user_rating", title="Rating Spread per Maturity Level", color_discrete_sequence=HUB_PALETTE)
             st.plotly_chart(fig, use_container_width=True)
+
+st.divider()
+
+# RATING DISTRIBUTION BY GENRE (RIDGELINE)
+st.subheader("🎚️ Rating Distribution by Genre")
+st.caption("A ridgeline of how your scores are spread *within* each genre. Each curve is a "
+           "smoothed distribution of your ratings; warmer curves are genres you rate higher on "
+           "average, and the number on the right is how many shows fed that curve. Genres are "
+           "stacked from your lowest- to highest-rated.")
+if 'genres_list' in df.columns:
+    _ridge_pairs = (df[['genres_list', 'user_rating']].explode('genres_list')
+                    .rename(columns={'genres_list': 'genre', 'user_rating': 'rating'}))
+    _fig_ridge = genre_rating_ridgeline(_ridge_pairs, rating_label="Your Rating",
+                                        count_label="shows", min_count=4)
+    if _fig_ridge is not None:
+        st.plotly_chart(_fig_ridge, use_container_width=True)
+    else:
+        st.info("Not enough genre-tagged ratings to draw the ridgeline.")
 
 st.divider()
 

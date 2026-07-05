@@ -1,0 +1,26 @@
+{
+ "0.0": {
+  "lift_real": 0.1316,
+  "lift_placebo": -0.0036,
+  "p_real_vs_placebo": 0.0,
+  "n_folds": 50
+ },
+ "0.25": {
+  "lift_real": 0.1007,
+  "lift_placebo": -0.0245,
+  "p_real_vs_placebo": 0.0001,
+  "n_folds": 50
+ },
+ "0.5": {
+  "lift_real": 0.1218,
+  "lift_placebo": -0.0152,
+  "p_real_vs_placebo": 0.0,
+  "n_folds": 50
+ },
+ "1.0": {
+  "lift_real": 0.1343,
+  "lift_placebo": 0.0529,
+  "p_real_vs_placebo": 0.011,
+  "n_folds": 50
+ }
+}

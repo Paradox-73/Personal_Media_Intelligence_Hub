@@ -26,7 +26,10 @@ from sklearn.preprocessing import StandardScaler
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
+from mobile import apply_mobile_css
 st.set_page_config(page_title="Latent Space Explorer", page_icon="🌌", layout="wide")
+apply_mobile_css()
 
 # ---------------------------------------------------------------------------
 # Configuration — ADJUST THESE to match unified_feature_engineering.py output

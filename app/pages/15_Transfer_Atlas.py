@@ -10,7 +10,10 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
+from mobile import apply_mobile_css
 st.set_page_config(page_title="Transfer Atlas", page_icon="🧭", layout="wide")
+apply_mobile_css()
 
 st.header("🧭 Transfer Atlas — does taste cross domains?")
 st.markdown("""

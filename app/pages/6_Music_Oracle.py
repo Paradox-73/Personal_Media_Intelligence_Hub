@@ -11,7 +11,10 @@ from src.music.model_training import Oracle
 from src.unified_model.unified_oracle import predict_unified
 import src.music.config as music_config
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
+from mobile import apply_mobile_css
 st.set_page_config(page_title="Music Oracle", page_icon="🎧", layout="wide")
+apply_mobile_css()
 
 st.title("🎧 The Music Oracle")
 st.markdown("Discover how closely a track aligns with your sonic profile and find similar gems in your library.")

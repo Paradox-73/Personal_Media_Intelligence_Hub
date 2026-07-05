@@ -11,9 +11,13 @@ from collections import Counter
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
 from src import config
+from ridgeline import genre_rating_ridgeline
 
+from mobile import apply_mobile_css
 st.set_page_config(page_title="Games Dashboard", page_icon="🎮", layout="wide")
+apply_mobile_css()
 
 # --- CUSTOM STYLING ---
 st.markdown("""
@@ -153,6 +157,19 @@ with tab_gen:
                      title="Rating Spread per Genre (Min 3 Games)", color_discrete_sequence=HUB_PALETTE)
         fig.update_layout(showlegend=False, xaxis_title="Genre", yaxis_title="My Rating")
         st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("**🎚️ Rating Distribution by Genre (Ridgeline)**")
+    st.caption("Each curve is a smoothed distribution of your ratings within that genre; warmer "
+               "curves are genres you score higher on average, and the number on the right is how "
+               "many games fed the curve.")
+    _ridge_pairs = (df[['genre_list', 'my_rating']].explode('genre_list')
+                    .rename(columns={'genre_list': 'genre', 'my_rating': 'rating'}))
+    _fig_ridge = genre_rating_ridgeline(_ridge_pairs, rating_label="My Rating",
+                                        count_label="games", min_count=3)
+    if _fig_ridge is not None:
+        st.plotly_chart(_fig_ridge, use_container_width=True)
+    else:
+        st.info("Not enough genre-tagged ratings to draw the ridgeline.")
 
 with tab_dev:
     st.subheader("👨‍💻 Developers")

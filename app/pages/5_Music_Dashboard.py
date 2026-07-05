@@ -15,7 +15,9 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for sha
 from src import config
 from geo_utils import aggregate_country_counts, make_world_map
 
+from mobile import apply_mobile_css
 st.set_page_config(page_title="Music Intelligence", page_icon="🎵", layout="wide")
+apply_mobile_css()
 
 # Spotify Brand Colors
 SPOTIFY_GREEN = "#1DB954"
@@ -65,6 +67,37 @@ def primary_artist(x):
         return None
     s = str(x).strip()
     return s if s and s.lower() not in ('nan', 'none', 'unknown') else None
+
+# Real artist names that contain a comma — protect these before splitting a credit
+# on commas so "Drake, Tyler, The Creator" -> ["Drake", "Tyler, The Creator"].
+ARTIST_COMMA_EXCEPTIONS = [
+    "Tyler, The Creator",
+    "Earth, Wind & Fire",
+    "Crosby, Stills, Nash & Young",
+    "Crosby, Stills & Nash",
+    "Blood, Sweat & Tears",
+    "Emerson, Lake & Palmer",
+    "Peter, Paul and Mary",
+    "Kool, Rok",
+    "Florence, The Machine",
+]
+
+def split_artists(x):
+    """Split a comma-separated artist credit into individual artists, keeping known
+    comma-containing names (ARTIST_COMMA_EXCEPTIONS) intact."""
+    s = str(x).strip()
+    if not s or s.lower() in ('nan', 'none', 'unknown'):
+        return []
+    # Mask exception names with comma-free placeholders, then restore after splitting.
+    placeholders = {}
+    for i, name in enumerate(ARTIST_COMMA_EXCEPTIONS):
+        idx = s.lower().find(name.lower())
+        if idx != -1:
+            token = f"\x00{i}\x00"
+            placeholders[token] = s[idx:idx + len(name)]
+            s = s[:idx] + token + s[idx + len(name):]
+    parts = [placeholders.get(p.strip(), p.strip()) for p in s.split(',')]
+    return [p for p in parts if p and p.lower() not in ('nan', 'none', 'unknown')]
 
 def get_frequent_items(series, top_n=10):
     all_items = [i for i in series if i and str(i).lower() not in ['unknown', 'nan', 'none']]
@@ -398,11 +431,47 @@ if has_lyrics:
 
 # 2b. MOST-REPEATED WORDS & PHRASES (mined from the local lyric cache)
 if 'track_id' in df.columns:
-    ngrams, n_lyrics = compute_lyric_ngrams(tuple(df['track_id'].dropna().astype(str)), _filter_signature())
-    if n_lyrics > 0:
+    _, n_lyrics_all = compute_lyric_ngrams(tuple(df['track_id'].dropna().astype(str)), _filter_signature())
+    if n_lyrics_all > 0:
         st.subheader("🔤 Most-Repeated Words & Phrases")
-        st.caption(f"What recurs most across the lyrics of {n_lyrics:,} tracks with cached lyrics. "
-                   "Pick a phrase length — counts are total occurrences across the whole library.")
+
+        # Genre / artist filter scopes which tracks' lyrics are mined. Artists are split
+        # on commas so collaborators count individually; the artist box lists the top 10
+        # by track count and surfaces the rest as you type a name.
+        _ph_genres = sorted({g for gl in df['genre_list'] if isinstance(gl, list)
+                             for g in gl if g and str(g).lower() not in ('unknown', 'nan', '')})
+        _artist_src = 'artists' if 'artists' in df.columns else 'primary_artist'
+        _artist_counts = df[_artist_src].dropna().apply(split_artists).explode()
+        _artist_counts = _artist_counts[_artist_counts.notna() & (_artist_counts.str.len() > 0)].value_counts()
+        _top_artists = _artist_counts.head(10).index.tolist()
+
+        _pc1, _pc2 = st.columns(2)
+        with _pc1:
+            _ph_genre = st.selectbox("Filter by genre", ["All"] + _ph_genres, key="phrase_genre")
+        with _pc2:
+            _aq = st.text_input("Search artist (type to reach beyond the top 10)", key="phrase_artist_q")
+            # Always keep the top 10 plus any typed matches; also retain the current pick
+            # so clearing the search box doesn't blank a selection that's outside the top 10.
+            _opts = set(_top_artists)
+            if _aq:
+                _opts |= {a for a in _artist_counts.index if _aq.lower() in a.lower()}
+            _cur = st.session_state.get("phrase_artist")
+            if _cur and _cur != "All" and _cur in set(_artist_counts.index):
+                _opts.add(_cur)
+            _ph_artist = st.selectbox("Filter by artist", ["All"] + sorted(_opts), key="phrase_artist")
+
+        pdf = df
+        if _ph_genre != "All":
+            pdf = pdf[pdf['genre_list'].apply(lambda gl: isinstance(gl, list) and _ph_genre in gl)]
+        if _ph_artist != "All":
+            pdf = pdf[pdf[_artist_src].apply(lambda v: _ph_artist in split_artists(v))]
+        phrase_ids = tuple(pdf['track_id'].dropna().astype(str))
+        ngrams, n_lyrics = compute_lyric_ngrams(phrase_ids, _filter_signature())
+
+        _scope = ("across the whole library" if (_ph_genre == "All" and _ph_artist == "All")
+                  else "for the selected filter")
+        st.caption(f"What recurs most across the lyrics of {n_lyrics:,} tracks with cached lyrics "
+                   f"({_scope}). Pick a phrase length — counts are total occurrences.")
         hide_filler = st.checkbox(
             "Hide filler-only phrases (the, you, oh, yeah …)", value=True,
             help="When on, words/phrases made up entirely of common stopwords and lyric filler are dropped, "
@@ -440,7 +509,7 @@ if 'track_id' in df.columns:
                 if 'name' in df.columns else {}
             id2artist = dict(zip(df['track_id'].astype(str), df['primary_artist'].astype(str))) \
                 if 'primary_artist' in df.columns else {}
-            hits = songs_for_phrase(tuple(df['track_id'].dropna().astype(str)), pick)
+            hits = songs_for_phrase(phrase_ids, pick)
             if hits:
                 hit_df = pd.DataFrame([
                     {'Song': id2name.get(tid, tid),

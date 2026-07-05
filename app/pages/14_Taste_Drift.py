@@ -10,7 +10,10 @@ from scipy.stats import entropy
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
+from mobile import apply_mobile_css
 st.set_page_config(page_title="Taste Drift Analysis", page_icon="📈", layout="wide")
+apply_mobile_css()
 
 st.header("📈 Taste Drift & Entropy Analysis")
 st.markdown("""

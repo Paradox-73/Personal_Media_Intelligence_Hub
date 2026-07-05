@@ -12,7 +12,10 @@ from collections import Counter
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
+from mobile import apply_mobile_css
 st.set_page_config(page_title="YouTube Intelligence", page_icon="🟥", layout="wide")
+apply_mobile_css()
 
 # --- YOUTUBE RED & WHITE PALETTE ---
 YT_RED = "#FF0000"

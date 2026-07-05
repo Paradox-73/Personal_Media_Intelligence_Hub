@@ -23,7 +23,10 @@ import re
 from src.movies.advanced_movie_model_trainer import OrdinalExpectedValueRegressor as _OEVR
 setattr(sys.modules['__main__'], 'OrdinalExpectedValueRegressor', _OEVR)
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
+from mobile import apply_mobile_css
 st.set_page_config(page_title="The Oracle", page_icon="🔮", layout="wide")
+apply_mobile_css()
 
 # --- PARITY TRANSFORMATION ---
 def transform_for_parity(movie_data, state):
@@ -181,8 +184,9 @@ search_col, _ = st.columns([3, 1])
 with search_col:
     search_term = st.text_input("Search for a Movie", value=st.session_state['search_query_input'], key="movie_search_input")
     st.session_state['search_query_input'] = search_term
+    do_search = st.button("🔍 Search", key="movie_search_btn", use_container_width=True)
 
-    if search_term and search_term != st.session_state['last_search_executed']:
+    if search_term and (do_search or search_term != st.session_state['last_search_executed']):
         st.session_state['last_search_executed'] = search_term
         st.session_state['search_results'] = search_movies_by_query(search_term)
         st.session_state['selected_movie_id'] = None 

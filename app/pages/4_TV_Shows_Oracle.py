@@ -13,7 +13,10 @@ from src.shows.ingestion import tmdb_tv, get_tv_show_metadata_ultimate
 from src.unified_model.unified_oracle import predict_unified
 from sentence_transformers import SentenceTransformer
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
+from mobile import apply_mobile_css
 st.set_page_config(page_title="TV Shows Oracle", page_icon="🔮", layout="wide")
+apply_mobile_css()
 
 
 # --- HELPERS ---
@@ -173,7 +176,8 @@ search_col, _ = st.columns([3, 1])
 with search_col:
     term = st.text_input("Search for a TV Show", value=st.session_state['tv_query'], key="tv_search_input")
     st.session_state['tv_query'] = term
-    if term and term != st.session_state['tv_last']:
+    do_search = st.button("🔍 Search", key="tv_search_btn", use_container_width=True)
+    if term and (do_search or term != st.session_state['tv_last']):
         st.session_state['tv_last'] = term
         try:
             res = tmdb_tv.search(term)

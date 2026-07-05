@@ -16,8 +16,11 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for sha
 from src import config
 from geo_utils import aggregate_country_counts, make_world_map
 from milestones import render_milestones
+from ridgeline import genre_rating_ridgeline
 
+from mobile import apply_mobile_css
 st.set_page_config(page_title="Analytics Dashboard", page_icon="📊", layout="wide")
+apply_mobile_css()
 
 # --- CUSTOM STYLING ---
 st.markdown("""
@@ -654,6 +657,16 @@ st.caption("Dominant plot themes extracted from Plot + Overview + Tagline. Hover
 
 if 'overview' in df.columns and 'plot' in df.columns:
     df['vibe_text'] = df['overview'].fillna('') + " " + df['tagline'].fillna('') + " " + df['plot'].fillna('')
+
+    # Optional genre filter for the theme treemap (default: all genres).
+    vibe_df = df
+    if 'genre_list' in df.columns:
+        _vibe_genres = sorted({g for gl in df['genre_list'] if isinstance(gl, list)
+                               for g in gl if g and str(g).lower() not in ('unknown', 'nan', '')})
+        _vibe_pick = st.selectbox("Filter themes by genre", ["All"] + _vibe_genres, key="vibe_genre")
+        if _vibe_pick != "All":
+            vibe_df = df[df['genre_list'].apply(lambda gl: isinstance(gl, list) and _vibe_pick in gl)]
+
     stops = set([
         'the', 'a', 'an', 'and', 'or', 'but', 'if', 'because', 'as', 'what', 'where', 'when', 'how', 'who', 'which', 'this', 'that', 'these', 'those', 
         'am', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'having', 'do', 'does', 'did', 'doing',
@@ -666,7 +679,7 @@ if 'overview' in df.columns and 'plot' in df.columns:
     ])
     
     word_ratings = {}
-    for _, row in df.dropna(subset=['vibe_text', 'user_rating']).iterrows():
+    for _, row in vibe_df.dropna(subset=['vibe_text', 'user_rating']).iterrows():
         text = str(row['vibe_text'])
         words = set([w.lower() for w in re.findall(r'\w+', text) if len(w) > 3 and w.lower() not in stops])
         for w in words:
@@ -677,11 +690,14 @@ if 'overview' in df.columns and 'plot' in df.columns:
     for w, ratings in word_ratings.items():
         word_stats.append({'Word': w, 'Count': len(ratings), 'Avg_Rating': np.mean(ratings)})
         
-    wdf = pd.DataFrame(word_stats).sort_values('Count', ascending=False).head(50)
-    wdf['Avg_Rating'] = wdf['Avg_Rating'].round(3)
-    
-    fig = px.treemap(wdf, path=['Word'], values='Count', color='Count', hover_data=['Avg_Rating'], title="Dominant Themes in Your Movies", color_continuous_scale=[[0, HUB_PALETTE[2]], [1, HUB_PALETTE[1]]])
-    st.plotly_chart(fig, use_container_width=True)
+    if word_stats:
+        wdf = pd.DataFrame(word_stats).sort_values('Count', ascending=False).head(50)
+        wdf['Avg_Rating'] = wdf['Avg_Rating'].round(3)
+
+        fig = px.treemap(wdf, path=['Word'], values='Count', color='Count', hover_data=['Avg_Rating'], title="Dominant Themes in Your Movies", color_continuous_scale=[[0, HUB_PALETTE[2]], [1, HUB_PALETTE[1]]])
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No plot text available for the selected genre.")
     
 st.divider()
 
@@ -830,6 +846,24 @@ with t_rated:
             fig = px.box(df, x="rated", y="user_rating", color="rated", title="Rating Spread per Maturity Level", color_discrete_sequence=HUB_PALETTE)
             fig.update_layout(showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
+
+st.divider()
+
+# 11b. RATING DISTRIBUTION BY GENRE (RIDGELINE)
+st.subheader("🎚️ Rating Distribution by Genre")
+st.caption("A ridgeline of how your scores are spread *within* each genre. Each curve is a "
+           "smoothed distribution of your ratings; warmer curves are genres you rate higher on "
+           "average, and the number on the right is how many movies fed that curve. Genres are "
+           "stacked from your lowest- to highest-rated.")
+if 'genre_list' in df.columns:
+    _ridge_pairs = (df[['genre_list', 'user_rating']].explode('genre_list')
+                    .rename(columns={'genre_list': 'genre', 'user_rating': 'rating'}))
+    _fig_ridge = genre_rating_ridgeline(_ridge_pairs, rating_label="Your Rating",
+                                        count_label="movies", min_count=10)
+    if _fig_ridge is not None:
+        st.plotly_chart(_fig_ridge, use_container_width=True)
+    else:
+        st.info("Not enough genre-tagged ratings to draw the ridgeline.")
 
 st.divider()
 

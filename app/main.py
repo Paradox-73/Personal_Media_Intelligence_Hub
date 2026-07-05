@@ -1,14 +1,20 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.express as px
+import ast
 import sys
 from pathlib import Path
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
+sys.path.append(str(Path(__file__).resolve().parent))  # app/ dir for shared helpers
 from src import config
+from ridgeline import genre_rating_ridgeline
 
+from mobile import apply_mobile_css
 st.set_page_config(page_title="Personal Media Intelligence Hub", page_icon="🧠", layout="wide")
+apply_mobile_css()
 
 st.title("🧠 Personal Media Intelligence Hub")
 
@@ -129,6 +135,104 @@ def load_rating_curves():
     return curves, combined
 
 
+# --- CROSS-DOMAIN GENRE PLUMBING ---
+# Genre is the one descriptive axis every domain shares, so it's the natural way to
+# "club" the whole library into a single view. Each domain stores genres differently
+# (Python-list strings for movies/TV, comma-separated for games/books/music), so we
+# normalize them all into one long (Domain, genre, rating) table.
+_DOMAIN_COLORS = {
+    '🎬 Movies': '#ff8000', '📺 TV Shows': '#40bcf4', '🎵 Music': '#1DB954',
+    '📚 Books': '#c77dff', '🎮 Games': '#00e054',
+}
+
+# Light cross-taxonomy synonym merge so the same concept lines up across domains.
+_GENRE_CANON = {
+    'science fiction': 'Sci-Fi', 'sci-fi': 'Sci-Fi', 'scifi': 'Sci-Fi',
+    'sci-fi & fantasy': 'Sci-Fi', 'action & adventure': 'Adventure',
+    'rpg': 'RPG', 'hip hop': 'Hip-Hop', 'hip-hop': 'Hip-Hop', 'rap': 'Hip-Hop',
+    'anime': 'Animation',
+}
+
+
+def _canon_genre(g):
+    s = str(g).strip()
+    return _GENRE_CANON.get(s.lower(), s.title())
+
+
+def _parse_genres(x):
+    """Normalize a genre cell (Python-list string OR comma-separated) into a list."""
+    if pd.isna(x):
+        return []
+    s = str(x).strip()
+    if not s or s.lower() in ('nan', 'none'):
+        return []
+    if s.startswith('['):
+        try:
+            return [str(i).strip() for i in ast.literal_eval(s)]
+        except Exception:
+            pass
+    return [g.strip() for g in s.split(',') if g.strip()]
+
+
+@st.cache_data
+def load_cross_domain_genres():
+    """Long-form (Domain, genre, rating) across every domain for shared-axis views."""
+    # Music is excluded from every rating-based view: its "ratings" are synthetic
+    # affinity scores (positive-only, no real negatives), so a rating distribution
+    # would be misleading. This mirrors the "Rating Curve Across Domains" above.
+    specs = [
+        ('🎬 Movies', config.MOVIES_ENRICHED_DATA_PATH, 'genre', 'user_rating'),
+        ('📺 TV Shows', config.TV_SHOWS_ENRICHED_DATA_PATH, 'genres', 'user_rating'),
+        ('🎮 Games', config.GAMES_ENRICHED_DATA_PATH, 'genres', 'my_rating'),
+        ('📚 Books', config.BOOKS_ENRICHED_DATA_PATH, 'categories', 'my_rating'),
+    ]
+    frames = []
+    for domain, path, gcol, rcol in specs:
+        try:
+            d = _read_csv(path)
+            if gcol not in d.columns or rcol not in d.columns:
+                continue
+            d = d[[gcol, rcol]].copy()
+            d['rating'] = _num(d[rcol])
+            d['genre'] = d[gcol].apply(_parse_genres)
+            d = d[['genre', 'rating']].explode('genre').dropna(subset=['genre', 'rating'])
+            d = d[d['genre'].astype(str).str.strip() != '']
+            d['genre'] = d['genre'].apply(_canon_genre)
+            d['Domain'] = domain
+            frames.append(d[['Domain', 'genre', 'rating']])
+        except Exception:
+            pass
+    return pd.concat(frames, ignore_index=True) if frames else \
+        pd.DataFrame(columns=['Domain', 'genre', 'rating'])
+
+
+@st.cache_data
+def load_domain_ratings():
+    """Long-form (Domain, rating) with one row per item — for the per-domain ridgeline.
+    Unlike the genre table, this is not exploded, so multi-genre items aren't double-counted."""
+    # Music excluded — synthetic positive-only ratings (see load_cross_domain_genres).
+    specs = [
+        ('🎬 Movies', config.MOVIES_ENRICHED_DATA_PATH, 'user_rating'),
+        ('📺 TV Shows', config.TV_SHOWS_ENRICHED_DATA_PATH, 'user_rating'),
+        ('🎮 Games', config.GAMES_ENRICHED_DATA_PATH, 'my_rating'),
+        ('📚 Books', config.BOOKS_ENRICHED_DATA_PATH, 'my_rating'),
+    ]
+    frames = []
+    for domain, path, rcol in specs:
+        try:
+            d = _read_csv(path)
+            if rcol not in d.columns:
+                continue
+            r = _num(d[rcol]).dropna()
+            r = r[(r > 0) & (r <= 5)]
+            if not r.empty:
+                frames.append(pd.DataFrame({'Domain': domain, 'rating': r.values}))
+        except Exception:
+            pass
+    return pd.concat(frames, ignore_index=True) if frames else \
+        pd.DataFrame(columns=['Domain', 'rating'])
+
+
 stats = load_library_stats()
 st.subheader("📊 Your Library at a Glance")
 cols = st.columns(5)
@@ -172,6 +276,59 @@ if _curves:
     st.plotly_chart(fig_rc, use_container_width=True)
 else:
     st.info("No rating data available to plot.")
+
+st.divider()
+
+# --- GENRES ACROSS YOUR WHOLE LIBRARY (cross-domain, shared genre axis) ---
+st.subheader("🎭 Genres Across Your Whole Library")
+st.caption("Genre is the one descriptive axis every domain shares, so it's how we club the whole "
+           "library into a single view. These are your most-tagged genres pooled across movies, "
+           "TV, games and books — each bar split by where the items come from, so you can see "
+           "which tastes span every medium. Hover for the per-domain count and average rating. "
+           "Music is excluded: its ratings are synthetic affinity scores, not real ratings.")
+_genres_long = load_cross_domain_genres()
+if not _genres_long.empty:
+    _agg = (_genres_long.groupby(['genre', 'Domain'])
+            .agg(Count=('rating', 'size'), Avg=('rating', 'mean')).reset_index())
+    # Rank by breadth first (how many domains a genre meaningfully spans), then by
+    # total volume. This surfaces genres shared across media instead of letting
+    # music's thousands of micro-genres flood the chart.
+    _solid = _agg[_agg['Count'] >= 2]
+    _breadth = _solid.groupby('genre')['Domain'].nunique()
+    _totals = _agg.groupby('genre')['Count'].sum()
+    _rank = pd.DataFrame({'breadth': _breadth, 'total': _totals}).fillna({'breadth': 0})
+    _rank = _rank.sort_values(['breadth', 'total'], ascending=[False, False])
+    _top_genres = _rank.head(16).index.tolist()
+    _sub = _agg[_agg['genre'].isin(_top_genres)].copy()
+    _sub['Avg'] = _sub['Avg'].round(2)
+    fig_g = px.bar(_sub, x='Count', y='genre', color='Domain', orientation='h',
+                   category_orders={'genre': _top_genres[::-1],
+                                    'Domain': list(_DOMAIN_COLORS.keys())},
+                   color_discrete_map=_DOMAIN_COLORS, custom_data=['Domain', 'Avg'])
+    fig_g.update_traces(
+        hovertemplate="%{y} · %{customdata[0]}<br>%{x} items · avg %{customdata[1]}★<extra></extra>",
+        marker_line_width=0.5, marker_line_color="#14171C")
+    fig_g.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", barmode='stack',
+        font=dict(color="#E0E0E0"), xaxis_title="Items in your library", yaxis_title=None,
+        xaxis=dict(gridcolor="#2C343F"), yaxis=dict(gridcolor="#2C343F"),
+        legend=dict(orientation="h", y=-0.12, title=None), height=560,
+        margin=dict(l=10, r=10, t=10, b=10))
+    st.plotly_chart(fig_g, use_container_width=True)
+
+    # Cross-domain ridgeline: one rating curve per domain (genre-style joyplot, top level).
+    st.markdown("#### 🎚️ Rating Distribution by Domain")
+    st.caption("The same ridgeline you'll find on each dashboard, lifted to the top level: one "
+               "smoothed curve per domain so you can see which media you rate generously and which "
+               "you're tougher on. The number on the right is how many rated items shaped each curve.")
+    _dom_pairs = load_domain_ratings().rename(columns={'Domain': 'genre'})
+    fig_dom = genre_rating_ridgeline(
+        _dom_pairs, rating_label="Your Rating", count_label="rated items",
+        min_count=20, top_n=6)
+    if fig_dom is not None:
+        st.plotly_chart(fig_dom, use_container_width=True)
+else:
+    st.info("No genre data available across domains.")
 
 st.divider()
 
