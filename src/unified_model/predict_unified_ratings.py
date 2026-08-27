@@ -14,8 +14,19 @@ from sentence_transformers import SentenceTransformer
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common.parsing import (  # canonical shared parsers
+    parse_list, people_key, sanitize_col, clean_money)
 
 from src.unified_model.unified_utils import get_music_affinity_features, get_music_gate_mask
+from src.common.text_embedding import encode_pooled
+from src.unified_model.unified_feature_engineering import unified_header, unified_body
+# categorize_rating MUST come from the builder, not the local copy below: the two
+# had drifted, and the local `'R' in r` version buckets 'Not Rated'/'Unrated' as
+# Adult and 'Teen' as General -- 151 of 1407 rows (10.7%) got the wrong rated_* one-hot.
+from src.unified_model.unified_feature_engineering import (
+    categorize_rating as _builder_categorize_rating, UNIFIED_ENCODE, TE_PRIOR)
+from src.common.parsing import canon_genre
+from src.common import taste_features as tf
 
 # Define MusicProfile in __main__ to satisfy joblib
 from dataclasses import dataclass
@@ -41,20 +52,7 @@ class SimplexWeightedAverager:
     def predict(self, X):
         return X @ self.weights
 
-def clean_money(x):
-    if pd.isna(x): return 0
-    if isinstance(x, (int, float)): return x
-    x = str(x).replace('$', '').replace(',', '').strip()
-    try: return float(x)
-    except: return 0
 
-def parse_list(x):
-    if isinstance(x, (list, np.ndarray)): return x if isinstance(x, list) else x.tolist()
-    if pd.isna(x) or x == "": return []
-    try:
-        if "[" in str(x): return ast.literal_eval(str(x))
-        return [item.strip() for item in str(x).split(',')]
-    except: return [str(x)]
 
 def categorize_rating(r):
     r = str(r).upper()
@@ -62,8 +60,6 @@ def categorize_rating(r):
     if 'PG' in r or 'TV-14' in r: return 'Teen'
     return 'General'
 
-def sanitize_col(col_name):
-    return re.sub(r"[\[\]<']", "", str(col_name))
 
 def clean_year(val):
     try:
@@ -117,6 +113,17 @@ def batch_predict_unified_ratings():
         
         df_shows['media_type'] = 'tv'
         df_shows['is_tv_show'] = 1; df_shows['is_game'] = 0; df_shows['is_book'] = 0
+        # build_universal_dataset folds the season-by-season narrative into `overview`
+        # for TV. Do the same here or every scored show is embedded from a one-line
+        # logline while the model was trained on the full multi-season text.
+        try:
+            from src.shows.season_data import attach_season_narrative, SEASON_NARRATIVE_COL
+            df_shows = attach_season_narrative(df_shows)
+            _sn = df_shows[SEASON_NARRATIVE_COL].fillna('').astype(str).str.strip()
+            df_shows['overview'] = (df_shows['overview'].fillna('').astype(str).str.strip()
+                                    + " " + _sn).str.strip()
+        except Exception as _e:
+            print(f"   ⚠️ season narrative unavailable ({_e}); TV text will not match training")
         df_shows = df_shows.rename(columns={'name': 'title', 'created_by': 'director', 'genres': 'genre', 'age_rating': 'rated'})
 
         df_games['media_type'] = 'game'
@@ -161,24 +168,74 @@ def batch_predict_unified_ratings():
     
     for col, med_val in state['median_values'].items():
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(med_val)
+            # Strip thousands separators BEFORE coercing, exactly as the builder does.
+            # OMDb returns imdb_votes grouped Indian-style ("7,13,701"); a bare
+            # to_numeric turned 756 of 1062 movies into NaN and then into the global
+            # median, so 70% of films were scored on a fake vote count.
+            df[col] = pd.to_numeric(
+                df[col].astype('string').str.replace(',', '', regex=False),
+                errors='coerce').fillna(med_val)
         else:
             df[col] = med_val
     
     df['language_cleaned'] = df['language'].apply(lambda x: next((l.strip() for l in str(x).split(',') if l.strip() in state['top_languages']), 'Other'))
     X_lang = pd.get_dummies(df['language_cleaned'], prefix='lang')
     
-    df['text_content'] = "Title: " + df['title'].fillna('Unknown') + ". Lead Creative: " + df['director'].fillna('Unknown') + ". " + df['overview'].fillna(df.get('plot', '')).fillna('')
+    # The PCA in `state` was fit by build_universal_dataset() on chunk-pooled,
+    # L2-normalised vectors of "Title: .. Genre: .. Tags: .." + overview. This path
+    # used to build "Title: .. Lead Creative: .. <overview>" and encode it raw -- a
+    # different sentence template AND a different vector norm, so every batch-scored
+    # row was projected through a PCA fitted on a space it did not live in.
+    # `tags` fills the Tags slot of the embedding header. The builder sets it per
+    # domain; this path never created the column at all, so unified_header fell
+    # through to NaN and every TV row (173/173) and most books (71/104) were embedded
+    # as "Tags: ." while training had the real tag list. Same bug class as the
+    # "Lead Creative" template -- it simply survived in a second place.
+    if 'tags' not in df.columns:
+        df['tags'] = ''
+    def _col(name):
+        return df[name].fillna('').astype(str) if name in df.columns else pd.Series('', index=df.index)
+    _is = lambda mt: df['media_type'] == mt
+    df.loc[_is('movie'), 'tags'] = _col('keywords')[_is('movie')]
+    df.loc[_is('tv'), 'tags'] = (_col('keywords') + ", " + _col('tvdb_tags')).str.strip(' ,')[_is('tv')]
+    if 'moods' in df.columns or 'hc_tags' in df.columns:
+        df.loc[_is('book'), 'tags'] = (_col('moods') + ", " + _col('hc_tags')).str.strip(' ,')[_is('book')]
+
+    _records = df.to_dict('records')
+    df['txt_header'] = [unified_header(r) for r in _records]
+    _desc = pd.Series([unified_body(r) for r in _records], index=df.index)
+    df['text_content'] = df['txt_header'] + " " + _desc
     transformer_model = SentenceTransformer(state.get('sentence_transformer', 'all-MiniLM-L6-v2'))
-    text_embeddings = transformer_model.encode(df['text_content'].tolist(), show_progress_bar=True)
+    text_embeddings = encode_pooled(df['txt_header'].tolist(), _desc.tolist(),
+                                    transformer_model, show_progress_bar=True)
     pca_vec = state['pca'].transform(text_embeddings)
+    # The trainer fits the models on CENTROID-ALIGNED pca_*, and transform_single_media
+    # applies the aligner at inference. This path never did, so batch scores were the
+    # only ones served in the unaligned space (tv 0.07, book 0.13, game 0.15 mean
+    # |delta pred|; movie is the reference domain so it is exactly 0, which is why
+    # this hid for so long).
+    _aligner = state.get('aligner')
+    if _aligner is not None:
+        pca_vec = _aligner.transform(pca_vec, df['media_type'].to_numpy())
+    else:
+        print("   WARNING: state has no 'aligner' -- serving UNALIGNED pca_*. "
+              "build_universal_dataset rewrites the state without it, so the trainer "
+              "must run after any feature rebuild.")
     X_text = pd.DataFrame(pca_vec, columns=[f'pca_{i}' for i in range(pca_vec.shape[1])], index=df.index)
 
-    df['genre_list'] = df['genre'].apply(parse_list)
+    # Canonicalise + split the combined TMDB buckets before transform, matching the
+    # builder. Without this the raw label 'Sci-Fi' matches no class and
+    # MultiLabelBinarizer silently drops it: 115 of 1407 rows (8.2%) lost genre bits.
+    _split = {'Sci-Fi & Fantasy': ['Science Fiction', 'Fantasy'],
+              'Action & Adventure': ['Action', 'Adventure']}
+    df['genre_list'] = df['genre'].apply(parse_list).apply(
+        lambda gl: list({canon_genre(item) for g in gl for item in _split.get(g, [g])}))
+    _known = set(state['mlb_genre'].classes_)
+    df['genre_list'] = df['genre_list'].apply(lambda gl: [g for g in gl if g in _known])
     genre_encoded = state['mlb_genre'].transform(df['genre_list'])
     X_genre = pd.DataFrame(genre_encoded, columns=[f"gen_{sanitize_col(c)}" for c in state['mlb_genre'].classes_], index=df.index)
 
-    df['mpaa_cat'] = df['rated'].apply(categorize_rating)
+    df['mpaa_cat'] = df['rated'].apply(_builder_categorize_rating)
     X_mpaa = pd.get_dummies(df['mpaa_cat'], prefix='rated')
 
     # Music Affinity (Gated)
@@ -196,14 +253,66 @@ def batch_predict_unified_ratings():
     for domain in ['movie', 'tv', 'game', 'book', 'music']:
         df[f'has_{domain}_feats'] = (df['media_type'] == domain).astype(int)
 
+    # --- CREATOR / STUDIO ENTITY ENCODINGS ---
+    # These were MISSING entirely from this path. creator_encoded and studio_encoded
+    # sit on a ~3.3-star scale and are never 0 in any of the 1407 training rows, yet
+    # X_final below zero-filled them: measured mean |delta pred| of 0.52 stars
+    # (max 1.83) on the deployed XGB. Mirror the builder's construction exactly.
+    if 'studio' not in df.columns:
+        df['studio'] = ''
+    for alt in ('production', 'production_companies', 'networks', 'network'):
+        if alt in df.columns:
+            df['studio'] = df['studio'].fillna('').astype(str).replace('nan', '')
+            df['studio'] = df['studio'].where(df['studio'].str.strip() != '',
+                                              df[alt].fillna('').astype(str))
+    if 'writer' in df.columns:
+        df['director'] = (df['director'].fillna('').astype(str).str.strip(" []")
+                          + ", "
+                          + df['writer'].fillna('').astype(str).str.strip(" []")
+                          ).str.strip(' ,')
+
+    _arts = state.get('te_artifacts') or {}
+    te_frames = {}
+    for col, limit in state.get('unified_encode', UNIFIED_ENCODE):
+        art = _arts.get(col)
+        if not art or col not in df.columns:
+            continue
+        name = 'creator' if col == 'director' else col
+        pairs = [tf.apply_entity_map(v, art['map'], art.get('counts', {}),
+                                     art['mean'], art.get('limit', limit))
+                 for v in df[col].tolist()]
+        te_frames[f'{name}_encoded'] = [p[0] for p in pairs]
+        te_frames[f'{name}_n'] = [p[1] for p in pairs]
+    X_entity = pd.DataFrame(te_frames, index=df.index) if te_frames else pd.DataFrame(index=df.index)
+
+    # --- SHARED GEOGRAPHY ONE-HOTS ---
+    # Also missing. Every one of the 1407 training rows has exactly one ctry_* set;
+    # this path sent an all-zero block, a combination no training row ever had.
+    _top_countries = state.get('top_countries') or []
+    if 'country' not in df.columns:
+        df['country'] = ''
+    X_country = pd.DataFrame(0, index=df.index,
+                             columns=[f'ctry_{c}' for c in _top_countries] + ['ctry_Other'])
+    for i, v in zip(df.index, df['country'].astype(str)):
+        hit = next((c.strip() for c in v.split(',') if c.strip() in _top_countries), 'Other')
+        X_country.at[i, f'ctry_{hit}'] = 1
+
     mask_cols = [f'has_{d}_feats' for d in ['movie', 'tv', 'game', 'book', 'music']]
-    X_temp = pd.concat([df[list(state['median_values'].keys())], df[mask_cols], X_lang, X_genre, X_mpaa, X_text, X_music], axis=1)
+    X_temp = pd.concat([df[list(state['median_values'].keys())], df[mask_cols], X_entity,
+                        X_lang, X_country, X_genre, X_mpaa, X_text, X_music], axis=1)
     X_temp.columns = [sanitize_col(col) for col in X_temp.columns]
     X_temp = X_temp.loc[:, ~X_temp.columns.duplicated()]
 
     X_final = pd.DataFrame(0, index=df.index, columns=state['training_columns'])
     common_cols = [c for c in state['training_columns'] if c in X_temp.columns]
     X_final[common_cols] = X_temp[common_cols]
+    # Never zero-fill silently. A model feature the scorer forgot to build looks
+    # exactly like a feature that is legitimately 0, and that is how creator_encoded
+    # and the whole ctry_* block went unnoticed while costing 0.52 stars a row.
+    missing = [c for c in state['training_columns'] if c not in X_temp.columns]
+    if missing:
+        print(f"   WARNING: {len(missing)} training column(s) not built by this path and "
+              f"served as 0: {missing[:12]}{' ...' if len(missing) > 12 else ''}")
 
     # --- 4. Predict ---
     print("   Predicting ratings with unified models...")

@@ -14,7 +14,10 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
 from src import config
 from ridgeline import genre_rating_ridgeline
+from genre_spread import genre_spread_figure, SPREAD_CAPTION
+from rating_distribution import render_rating_distribution
 
+from critic_delta import render_critic_delta
 from mobile import apply_mobile_css
 st.set_page_config(page_title="Games Dashboard", page_icon="🎮", layout="wide")
 apply_mobile_css()
@@ -112,13 +115,14 @@ with c5:
 # --- DISTRIBUTIONS ---
 col_left, col_right = st.columns([1, 1])
 with col_left:
-    st.subheader("⭐ My Rating Distribution")
-    rating_counts = df['my_rating'].value_counts().reset_index()
-    rating_counts.columns = ['Rating', 'Count']
-    fig = px.bar(rating_counts.sort_values('Rating'), x='Rating', y='Count',
-                 text='Count', color_discrete_sequence=[HUB_PALETTE[1]])
-    fig.update_traces(textposition='outside')
-    st.plotly_chart(fig, use_container_width=True)
+    st.subheader("⭐ Rating Distribution")
+    render_rating_distribution(
+        df['my_rating'],
+        critic_sources=[
+            ('Metacritic', df.get('metacritic'), 100),
+            ('RAWG players', df.get('rating'), 5),
+        ],
+        key="games_dist", user_color=HUB_PALETTE[1], critic_color=HUB_PALETTE[2])
 
 with col_right:
     st.subheader("🖥️ Platform Breakdown")
@@ -152,11 +156,15 @@ with tab_gen:
         fig.update_layout(yaxis={'categoryorder': 'total ascending', 'title': None})
         st.plotly_chart(fig, use_container_width=True)
     with cg2:
-        valid = gen_stats[gen_stats['Count'] >= 3]['genre_list']
-        fig = px.box(df_genres[df_genres['genre_list'].isin(valid)], x='genre_list', y='my_rating',
-                     title="Rating Spread per Genre (Min 3 Games)", color_discrete_sequence=HUB_PALETTE)
-        fig.update_layout(showlegend=False, xaxis_title="Genre", yaxis_title="My Rating")
-        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("**Rating Spread per Genre (Min 3 Games)**")
+        st.caption(SPREAD_CAPTION.format(noun="game"))
+        fig = genre_spread_figure(
+            df_genres, 'genre_list', 'my_rating', 'name', HUB_PALETTE,
+            min_count=3, x_title="Genre", y_title="My Rating", height=520, noun="game(s)")
+        if fig is not None:
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Not enough genre-tagged ratings to draw the spread.")
 
     st.markdown("**🎚️ Rating Distribution by Genre (Ridgeline)**")
     st.caption("Each curve is a smoothed distribution of your ratings within that genre; warmer "
@@ -237,6 +245,20 @@ with tab_crit:
         st.dataframe(sdf, use_container_width=True)
     else:
         st.info("No critic scores available to compare.")
+
+    st.divider()
+    # --- Added: the same comparison at TITLE level, not just in aggregate. The
+    # bars above say how OFTEN you agree; these two say WHERE you disagree.
+    render_critic_delta(
+        df=df,
+        title_col='name',
+        user_col='my_rating',
+        critic_sources=[
+            ('Metacritic', df.get('metacritic'), 100),
+            ('RAWG Users', df.get('rating'), 5),
+        ],
+        key='games_cd',
+    )
 
 with tab_time:
     st.subheader("⏱️ Time to Beat")

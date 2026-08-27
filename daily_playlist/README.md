@@ -12,7 +12,7 @@ Auto-builds one Spotify playlist every day, mixing three buckets
 The same playlist is replaced in-place each run, so a cron job keeps it fresh.
 
 > Lives inside the Personal Media Intelligence Hub repo and reuses its root
-> `.env` and the `content_rec` venv. The GitHub Actions workflow is at
+> `.env` and the `.venv` venv. The GitHub Actions workflow is at
 > `.github/workflows/daily-playlist.yml` (repo root).
 
 > **Why Last.fm for discovery?** Spotify deprecated the `/v1/recommendations`
@@ -36,15 +36,15 @@ dashboard (https://developer.spotify.com/dashboard).
 ### 2. Get a Spotify refresh token (one time, local)
 Run from the repo root:
 ```
-content_rec\Scripts\python.exe -m pip install -r daily_playlist\requirements.txt
-content_rec\Scripts\python.exe daily_playlist\get_refresh_token.py
+.venv\Scripts\python.exe -m pip install -r daily_playlist\requirements.txt
+.venv\Scripts\python.exe daily_playlist\get_refresh_token.py
 ```
 Approve in the browser; paste the printed token into `SPOTIFY_REFRESH_TOKEN`
 in your `.env`.
 
 ### 3. Test locally
 ```
-content_rec\Scripts\python.exe daily_playlist\daily_playlist.py
+.venv\Scripts\python.exe daily_playlist\daily_playlist.py
 ```
 
 ### 4. Automate on GitHub Actions

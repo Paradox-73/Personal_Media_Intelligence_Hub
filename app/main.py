@@ -45,11 +45,13 @@ def load_library_stats():
     except Exception:
         stats['movies'] = None
 
-    # TV Shows: count + total watch hours (episodes x runtime, default 45m)
+    # TV Shows: count + watch hours from the seasons actually watched. Using
+    # number_of_episodes here would bill you for every season TMDB lists,
+    # including ones that aired after you stopped and unreleased ones.
     try:
-        ds = _read_csv(config.TV_SHOWS_ENRICHED_DATA_PATH)
-        est_rt = _num(ds['runtime']).fillna(45)
-        hrs = (_num(ds['number_of_episodes']) * est_rt).sum() / 60
+        from src.shows.season_data import attach_watched_counts
+        ds = attach_watched_counts(_read_csv(config.TV_SHOWS_ENRICHED_DATA_PATH))
+        hrs = ds['hours_watched'].sum()
         stats['shows'] = {'count': len(ds), 'sub': f"~{int(hrs):,} hrs watched"}
     except Exception:
         stats['shows'] = None

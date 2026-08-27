@@ -275,7 +275,9 @@ def load_data():
     try:
         # Clean Numerics
         df['release_year'] = pd.to_numeric(df.get('release_year'), errors='coerce').fillna(0).astype(int)
-        df['rating'] = pd.to_numeric(df.get('rating'), errors='coerce')
+        # Music has no rating (taste is clustering/similarity, not stars); drop any stale column.
+        if 'rating' in df.columns:
+            df = df.drop(columns=['rating'])
         if 'popularity' in df.columns:
             df['popularity'] = pd.to_numeric(df['popularity'], errors='coerce')
 
@@ -557,8 +559,8 @@ if has_country or has_language:
 
     if has_country:
         st.caption("Countries shaded by how many tracks you have from artists who originate there "
-                   "(log-scaled so smaller scenes stay visible). Hover for the exact count and your average rating.")
-        geo_agg, geo_unmapped = aggregate_country_counts(df, 'geo_country', rating_col='rating')
+                   "(log-scaled so smaller scenes stay visible). Hover for the exact count and average popularity.")
+        geo_agg, geo_unmapped = aggregate_country_counts(df, 'geo_country', rating_col='popularity')
         if not geo_agg.empty:
             map_fig = make_world_map(geo_agg, low_color="#1d3a2a", high_color=SPOTIFY_GREEN,
                                      land_color="#282828", ocean_color=SPOTIFY_BLACK)
@@ -650,7 +652,7 @@ st.subheader("📅 Release Era")
 c_time1, c_time2 = st.columns(2)
 
 with c_time1:
-    df_year = df.groupby('release_year')['rating'].count().reset_index(name='Count')
+    df_year = df.groupby('release_year').size().reset_index(name='Count')
     fig_year = px.area(df_year, x='release_year', y='Count', title="Tracks by Release Year",
                        color_discrete_sequence=[SPOTIFY_GREEN])
     fig_year.update_layout(**DARK_LAYOUT)
@@ -663,7 +665,7 @@ with c_time2:
         fig_pop.update_layout(**DARK_LAYOUT)
         st.plotly_chart(fig_pop, use_container_width=True)
     else:
-        dec = df.groupby('decade')['rating'].count().reset_index(name='Count')
+        dec = df.groupby('decade').size().reset_index(name='Count')
         fig_dec = px.bar(dec, x='decade', y='Count', title="Tracks by Decade",
                          color_discrete_sequence=[SPOTIFY_GREEN])
         fig_dec.update_layout(**DARK_LAYOUT)
@@ -673,7 +675,8 @@ with c_time2:
 with st.expander("📂 View Library Data"):
     explorer_cols = [c for c in ['name', 'artists', 'mb_artist_country', 'mb_language',
                                  'discogs_styles', 'lastfm_tags', 'lastfm_similar',
-                                 'lastfm_artist_listeners', 'deezer_bpm', 'release_year', 'rating',
+                                 'lastfm_artist_listeners', 'deezer_bpm', 'release_year',
                                  'popularity', 'duration_min', 'lyric_word_count', 'lyric_sentiment']
                      if c in df.columns]
-    st.dataframe(df[explorer_cols].sort_values('rating', ascending=False), use_container_width=True)
+    sort_col = 'popularity' if 'popularity' in df.columns else explorer_cols[0]
+    st.dataframe(df[explorer_cols].sort_values(sort_col, ascending=False), use_container_width=True)

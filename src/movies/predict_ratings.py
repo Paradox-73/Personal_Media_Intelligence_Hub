@@ -13,18 +13,22 @@ from sentence_transformers import SentenceTransformer
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common.parsing import (  # canonical shared parsers
+    parse_list, people_key, sanitize_col, clean_money)
+from src.common.text_embedding import encode_pooled
+from src.movies.feature_engineering import _movie_header, _movie_body
 # Needed so joblib can unpickle the stacking/ordinal models, which embed an
 # OrdinalExpectedValueRegressor instance (referenced as __main__ at train time).
-from src.movies.advanced_movie_model_trainer import OrdinalExpectedValueRegressor
+from src.movies.advanced_movie_model_trainer import (
+    OrdinalExpectedValueRegressor, MeanMetaRegressor, AnchoredRegressor)  # noqa: F401
 
-def clean_money(x):
-    if pd.isna(x): return 0
-    if isinstance(x, (int, float)): return x
-    x = str(x).replace('$', '').replace(',', '').strip()
-    try: return float(x)
-    except: return 0
 
-def parse_list(x):
+# Canonical parsers live in feature_engineering so training and inference cannot
+# drift apart. Re-exported here because several modules import them from this file.
+from src.movies.feature_engineering import parse_list, people_key  # noqa: E402
+
+
+def _parse_list_legacy(x):
     if pd.isna(x) or x == "": return []
     try:
         if isinstance(x, list): return x
@@ -38,8 +42,6 @@ def categorize_rating(r):
     if 'PG' in r or 'TV-14' in r: return 'Teen'
     return 'General'
 
-def sanitize_col(col_name):
-    return re.sub(r"[\[\]<']", "", str(col_name))
 
 def batch_predict_ratings():
     print("🚀 Starting Batch Prediction (Ensemble Mode)...")
@@ -79,8 +81,11 @@ def batch_predict_ratings():
     print("   Processing features...")
     
     # --- 2. Feature Engineering ---
-    if df['rotten_tomatoes_rating'].dtype == 'object':
-        df['rotten_tomatoes_rating'] = df['rotten_tomatoes_rating'].str.replace('%', '', regex=False).astype(float)
+    # Unconditional: the `dtype == 'object'` guard silently stops firing under
+    # pandas' Arrow-backed `str` dtype, leaving "92%" strings to poison the mean.
+    df['rotten_tomatoes_rating'] = pd.to_numeric(
+        df['rotten_tomatoes_rating'].astype('string').str.replace('%', '', regex=False),
+        errors='coerce')
     df['box_office_clean'] = df['box_office'].apply(clean_money)
     df['box_office_log'] = np.log1p(df['box_office_clean'])
     df['total_wins'] = df['awards'].str.extract(r'(\d+)\s+win', flags=re.IGNORECASE)[0].astype(float).fillna(0)
@@ -108,9 +113,16 @@ def batch_predict_ratings():
     X_lang = pd.get_dummies(df['language_cleaned'], prefix='lang')
     
     print("   Generating text embeddings...")
-    df['text_content'] = "Title: " + df['title'].fillna('Unknown') + ". Directed by: " + df['director'].fillna('Unknown') + ". " + df['plot'].fillna('')
+    # Richer text — MUST match src/movies/feature_engineering.py process_features()
+    # MUST match feature_engineering.process_features(): the PCA in `state` was fit
+    # on chunk-pooled, L2-normalised vectors, so scoring has to build them the same way.
+    _records = df.to_dict('records')
+    df['text_header'] = [_movie_header(r) for r in _records]
+    _body = pd.Series([_movie_body(r) for r in _records], index=df.index)
+    df['text_content'] = df['text_header'] + " " + _body
     transformer_model = SentenceTransformer(state.get('sentence_transformer', 'all-MiniLM-L6-v2'))
-    text_embeddings = transformer_model.encode(df['text_content'].tolist(), show_progress_bar=True)
+    text_embeddings = encode_pooled(df['text_header'].tolist(), _body.tolist(),
+                                    transformer_model, show_progress_bar=True)
     pca_vec = state['pca'].transform(text_embeddings)
     X_text = pd.DataFrame(pca_vec, columns=[f'pca_{i}' for i in range(pca_vec.shape[1])], index=df.index)
 
@@ -121,7 +133,30 @@ def batch_predict_ratings():
     df['mpaa_cat'] = df['rated'].apply(categorize_rating)
     X_mpaa = pd.get_dummies(df['mpaa_cat'], prefix='rated')
 
-    X_temp = pd.concat([df[list(state['median_values'].keys())], X_lang, X_genre, X_mpaa, X_text], axis=1)
+    # Target encodings. These were previously omitted entirely, so the three
+    # *_encoded columns stayed at the 0-fill of X_final for every batch
+    # prediction -- off the scale the models were trained on (~3.24).
+    te = state.get('target_encodings', {})
+
+    def apply_te(val, meta):
+        if not meta:
+            return 0.0
+        mapping, g_mean = meta['map'], meta['mean']
+        items = parse_list(val)
+        if not items:
+            return g_mean
+        return float(np.mean([mapping.get(i, g_mean) for i in items]))
+
+    df['director_encoded'] = df['director'].apply(lambda v: apply_te(v, te.get('director')))
+    df['actors_encoded'] = df['actors'].apply(lambda v: apply_te(v, te.get('actors')))
+    primary_genre = df['genre_list'].apply(lambda x: x[0] if len(x) else 'Unknown')
+    dg = te.get('dir_genre')
+    dg_keys = df['director'].apply(people_key) + "_" + primary_genre
+    df['dir_genre_encoded'] = dg_keys.apply(
+        lambda k: dg['map'].get(k, dg['mean']) if dg else 0.0)
+    X_te = df[['director_encoded', 'actors_encoded', 'dir_genre_encoded']]
+
+    X_temp = pd.concat([df[list(state['median_values'].keys())], X_lang, X_genre, X_te, X_mpaa, X_text], axis=1)
     X_temp.columns = [sanitize_col(col) for col in X_temp.columns]
     X_temp = X_temp.loc[:, ~X_temp.columns.duplicated()]
 
@@ -149,7 +184,7 @@ def batch_predict_ratings():
         # Restamp onto the user's real rating distribution so the Oracle spans the full
         # range (incl. 5*) instead of regressing to the mode; ranking-preserving.
         raw = calibrate_to_ratings(raw, raw[_rated], _r.values[_rated])
-        df[f'pred_{name}'] = np.round(np.clip(raw, 0, 5) * 2) / 2
+        df[f'pred_{name}'] = np.round(np.clip(raw, 0.5, 5.0) * 2) / 2
 
     # --- 4. Performance Report ---
     results_dir = BASE_DIR / "results" / "movies"

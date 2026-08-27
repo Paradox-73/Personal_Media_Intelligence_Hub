@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # One-shot music enrichment -> retrain -> cross-domain transfer chain.
 # Continue-on-error (;) so every stage's log is produced even if one hiccups.
-cd "E:/Personal_Media_Intelligence_Hub" || exit 1
-PY="content_rec/Scripts/python.exe"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT" || exit 1
+PY=".venv/Scripts/python.exe"
 R="reports"
 ts() { date '+%H:%M:%S'; }
 

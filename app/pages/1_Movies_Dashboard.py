@@ -14,9 +14,16 @@ from collections import Counter
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
 from src import config
+# Rows enriched from OMDb carry IMDb's genre taxonomy ("Sci-Fi"), rows from TMDB
+# carry TMDB's ("Science Fiction"). Same genre, two bars, split averages.
+from src.common.parsing import canon_genre
 from geo_utils import aggregate_country_counts, make_world_map
-from milestones import render_milestones
 from ridgeline import genre_rating_ridgeline
+from genre_spread import genre_spread_figure, SPREAD_CAPTION
+from rating_distribution import render_rating_distribution, parse_percent
+from critic_delta import render_critic_delta
+from diary_tags import render_tag_analytics
+from theatre_tags import render_theatre_tag_analytics
 
 from mobile import apply_mobile_css
 st.set_page_config(page_title="Analytics Dashboard", page_icon="📊", layout="wide")
@@ -223,28 +230,40 @@ def load_theatre_watch():
     try:
         path = config.DATA_DIR / "raw" / "movies" / "lists" / "theatre-watch.csv"
         if not path.exists(): return None
-        # Letterboxd list exports have 3 metadata lines before the header
-        df_theatre = pd.read_csv(path, skiprows=3)
-        return df_theatre
+        # Letterboxd list exports put list metadata above the film table. The
+        # separator line between them is blank in some exports and ",,,," in
+        # others, so a fixed skiprows lands on the wrong row half the time —
+        # find the real header instead.
+        with open(path, encoding='utf-8') as fh:
+            lines = fh.readlines()
+        header = next((i for i, ln in enumerate(lines) if ln.startswith('Position,')), 3)
+        return pd.read_csv(path, skiprows=header)
     except Exception as e:
         print(f"Error loading theatre watch list: {e}")
         return None
 
 @st.cache_data
-def load_diary():
+def load_diary_raw():
+    """The diary exactly as exported, dates parsed, nothing dropped."""
     try:
         path = config.DATA_DIR / "raw" / "movies" / "diary.csv"
         if not path.exists():
             return None
-        df_diary = pd.read_csv(path)
+        d = pd.read_csv(path)
         # Ensure column names are correct and handle the space in 'Watched Date'
-        df_diary['Watched Date'] = pd.to_datetime(df_diary['Watched Date'], errors='coerce')
-        # Drop rows where we don't have a date or a rating
-        df_diary = df_diary.dropna(subset=['Watched Date', 'Rating'])
-        return df_diary.sort_values('Watched Date')
+        d['Watched Date'] = pd.to_datetime(d['Watched Date'], errors='coerce')
+        return d.sort_values('Watched Date').reset_index(drop=True)
     except Exception as e:
         print(f"Error loading diary: {e}")
         return None
+
+@st.cache_data
+def load_diary():
+    d = load_diary_raw()
+    if d is None:
+        return None
+    # Drop rows where we don't have a date or a rating
+    return d.dropna(subset=['Watched Date', 'Rating'])
 
 @st.cache_data
 def load_data():
@@ -262,6 +281,10 @@ def load_data():
         for c in ['genre', 'actors', 'writer', 'director', 'production', 'country', 'language']:
             if c in df.columns:
                 df[f'{c}_list'] = df[c].apply(parse_list_col)
+                # Merge IMDb/TMDB genre spellings (Sci-Fi == Science Fiction)
+                if c == 'genre':
+                    df['genre_list'] = df['genre_list'].apply(
+                        lambda lst: list(dict.fromkeys(canon_genre(i) for i in lst)) if isinstance(lst, list) else lst)
                 # Apply actor threshold
                 if c == 'actors':
                     df[f'{c}_list'] = df[f'{c}_list'].apply(lambda x: x[:MAX_ACTORS_PER_MOVIE] if isinstance(x, list) else x)
@@ -278,6 +301,9 @@ def load_data():
 
 df = load_data()
 df_diary = load_diary()
+# Tag charts want every diary entry, not only the rated-and-dated ones: an
+# untagged-rating entry still records a trip to the cinema.
+df_diary_tags = load_diary_raw()
 df_theatre_raw = load_theatre_watch()
 
 if df is None:
@@ -346,75 +372,65 @@ with c6:
         lb_metric("Taste Diversity", f"{gen_entropy:.2f}", 
                   help_text="Shannon Entropy. Max ~4.5.")
 
-st.markdown("#### Your Rating Distribution")
-rating_counts = df['user_rating'].value_counts().reset_index()
-rating_counts.columns = ['Rating', 'Count']
-# Letterboxd signature rating chart is green
-fig_ratings = px.bar(rating_counts.sort_values('Rating'), x='Rating', y='Count', 
-                     text='Count', color_discrete_sequence=['#00e054'])
-update_bar_trace(fig_ratings)
-fig_ratings.update_traces(textposition='outside')
-fig_ratings.update_layout(xaxis=dict(tickmode='linear', tick0=0.5, dtick=0.5))
-st.plotly_chart(fig_ratings, use_container_width=True)
+st.markdown("#### Rating Distribution")
+# Same axis, one view at a time: your own stars, or the same films as the critics
+# scored them (every source rescaled to 0.5-5).
+render_rating_distribution(
+    df['user_rating'],
+    critic_sources=[
+        ('IMDb', df.get('imdb_rating'), 10),
+        ('TMDB', df.get('vote_average'), 10),
+        ('Metacritic', df.get('metascore'), 100),
+        ('Rotten Tomatoes',
+         df['rotten_tomatoes_rating'].apply(parse_percent) if 'rotten_tomatoes_rating' in df.columns else None, 100),
+    ],
+    key="movies_dist", user_color='#00e054', critic_color='#40bcf4',
+    style_fn=update_bar_trace)
 
 st.divider()
 
-# 1b. MILESTONE MOVIES (the 1st / 50th / 100th / 250th / … movie you logged)
-@st.cache_data
-def load_logged_movies():
-    """Movies in the order they were logged. Uses Letterboxd's watched.csv export
-    (oldest-first; the same-day backlog import keeps its file order within that day,
-    so the 1st watched film is the first row)."""
-    try:
-        r = pd.read_csv(config.MOVIES_RAW_DIR / "watched.csv")
-    except Exception:
-        return None
-    r['Date'] = pd.to_datetime(r.get('Date'), errors='coerce')
-    r['_orig'] = range(len(r))
-    return r.sort_values(['Date', '_orig'], kind='stable', na_position='last').reset_index(drop=True)
+# 1b. VIEWING CONTEXT — what your Letterboxd diary tags say about the watch
+render_tag_analytics(df_diary_tags, HUB_PALETTE, metric_fn=lb_metric)
 
-
-def _date_sub(row, col):
-    d = row.get(col)
-    return d.strftime('%d %b %Y') if pd.notna(d) else None
-
-
-logged_movies = load_logged_movies()
-if logged_movies is not None and not logged_movies.empty:
-    lm = logged_movies.merge(df[['letterboxd_uri', 'poster', 'title']],
-                             left_on='Letterboxd URI', right_on='letterboxd_uri', how='left')
-    lm['disp_title'] = lm['title'].fillna(lm.get('Name'))
-    render_milestones(lm, 'disp_title', 'poster', "🏁 Milestone Movies (logged)",
-                      sub_fn=lambda r: _date_sub(r, 'Date'))
-    st.divider()
-
-# Theatre milestones — from your Letterboxd 'Theatre watch' list. The list is
-# exported newest-first (Position 1 = most recent), so sort by Position descending
-# to recover the order you actually watched them in (oldest = your 1st theatre film).
-if df_theatre is not None and not df_theatre.empty and 'Position' in df_theatre.columns:
-    th = df_theatre.copy()
-    th['Position'] = pd.to_numeric(th['Position'], errors='coerce')
-    th = th.sort_values('Position', ascending=False, kind='stable').reset_index(drop=True)
-    th['disp_title'] = th['title'].fillna(th.get('Name'))
-    render_milestones(th, 'disp_title', 'poster', "🍿 Milestone Theatre Watches",
-                      sub_fn=lambda r: (str(int(r['Year']))
-                                        if pd.notna(pd.to_numeric(r.get('Year'), errors='coerce'))
-                                        else None),
-                      empty_msg="No theatre-watch list found.")
-    st.divider()
+st.divider()
 
 # 2. TIME, LENGTH & SEASONALITY
 st.subheader("⏳ Time & Duration")
-t_dec, t_run, t_sea, t_time = st.tabs(["Decades", "Runtime", "Release Season", "Ratings over Time"])
+t_dec, t_run, t_sea, t_time = st.tabs(["Over Time", "Runtime", "Release Season", "Ratings over Time"])
 
 with t_dec:
+    # Continuous by release year rather than decade buckets — decade bars hide
+    # where inside a decade your taste actually clusters.
+    src = df.dropna(subset=['year']).copy()
+    src['_year'] = src['year'].astype(int)
+
+    per_year = (src.groupby('_year')
+                .agg(Count=('user_rating', 'size'), avg_rating=('user_rating', 'mean'))
+                .reindex(range(int(src['_year'].min()), int(src['_year'].max()) + 1),
+                         fill_value=0)
+                .reset_index().rename(columns={'index': '_year'}))
+    per_year['avg_rating'] = per_year['avg_rating'].round(2)
+
     dec_ent = calculate_entropy(df['decade'])
-    st.caption(f"**Decade Diversity (Entropy):** {dec_ent:.2f}")
-    
-    df_decade = df.groupby('decade').agg(Count=('user_rating', 'size'), avg_rating=('user_rating', 'mean')).reset_index()
-    df_decade['avg_rating'] = df_decade['avg_rating'].round(3)
-    fig = px.bar(df_decade, x='decade', y='Count', hover_data={'avg_rating': ':.3f'}, title="Movies per Decade", color_discrete_sequence=[HUB_PALETTE[0]])
-    update_bar_trace(fig)
+    st.caption(f"**Decade Diversity (Entropy):** {dec_ent:.2f} — "
+               f"{len(src):,} films across "
+               f"{per_year['_year'].max() - per_year['_year'].min() + 1} years.")
+
+    fig = px.area(per_year, x='_year', y='Count', title="Films per release year",
+                  hover_data={'avg_rating': ':.2f'},
+                  labels={'_year': 'Year', 'Count': 'Films'},
+                  color_discrete_sequence=[HUB_PALETTE[0]])
+    fig.update_traces(mode='lines', line_shape='spline', line_width=2,
+                      fillcolor='rgba(0,224,84,0.16)')
+    rated = per_year[per_year['Count'] > 0]
+    fig.add_scatter(x=rated['_year'], y=rated['avg_rating'], name='Avg rating',
+                    yaxis='y2', mode='lines+markers', line=dict(width=1.5, dash='dot'),
+                    marker=dict(size=4), line_color=HUB_PALETTE[2 % len(HUB_PALETTE)])
+    fig.update_layout(
+        yaxis2=dict(title='Avg rating', overlaying='y', side='right',
+                    range=[0, 5], showgrid=False),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, x=0),
+        hovermode='x unified')
     st.plotly_chart(fig, use_container_width=True)
 
 with t_run:
@@ -489,15 +505,78 @@ with t_time:
         )
         st.plotly_chart(fig, use_container_width=True)
         
-        # Summary by Month/Year
-        st.markdown("#### Monthly Rating Volume")
-        df_diary_filtered['month_year'] = df_diary_filtered['Watched Date'].dt.to_period('M').astype(str)
-        monthly_agg = df_diary_filtered.groupby('month_year').size().reset_index(name='Count')
-        fig_monthly = px.bar(monthly_agg, x='month_year', y='Count', 
-                             title="Movies Watched per Month",
-                             color_discrete_sequence=[HUB_PALETTE[2]])
-        update_bar_trace(fig_monthly)
-        st.plotly_chart(fig_monthly, use_container_width=True)
+        # ONE watch-volume chart, not two. This block previously drew a fixed
+        # "Movies Watched per Month" bar chart AND a second granularity-selectable
+        # one directly underneath it -- the same 381 watches plotted twice, once
+        # locked to months and once not. Merged: the granularity selector covers
+        # the monthly case, so the fixed chart had nothing left to add.
+        st.markdown("#### Watch Volume Over Time")
+
+        # freq alias, and the noun used in the title/caption.
+        watch_grains = {
+            "Daily":   ("D", "Day"),
+            "Weekly":  ("W", "Week"),
+            "Monthly": ("M", "Month"),
+            "Yearly":  ("Y", "Year"),
+        }
+        grain = st.radio("Bucket size", list(watch_grains), index=2, horizontal=True,
+                         key="movies_watch_volume_grain")
+        freq, unit = watch_grains[grain]
+
+        dated = df_diary_filtered.dropna(subset=['Watched Date'])
+        if dated.empty:
+            st.info("No dated diary entries to count.")
+        else:
+            counts = dated['Watched Date'].dt.to_period(freq).value_counts().sort_index()
+            # Reindex onto the COMPLETE period range before plotting: groupby only
+            # emits periods that actually occur, so a month you watched nothing
+            # would simply be absent, and an absent bucket is indistinguishable
+            # from one that was never in range. A month off the films is signal.
+            counts = counts.reindex(
+                pd.period_range(counts.index.min(), counts.index.max(), freq=freq),
+                fill_value=0)
+            vol = pd.DataFrame({
+                'Period': counts.index.to_timestamp(),
+                'Films': counts.to_numpy(),
+            })
+
+            nonzero = vol[vol['Films'] > 0]
+            busiest = vol.loc[vol['Films'].idxmax()]
+            st.caption(
+                f"**{int(vol['Films'].sum()):,} films** across {len(vol):,} "
+                f"{unit.lower()}s — {len(nonzero):,} with at least one watch, "
+                f"{int((vol['Films'] == 0).sum()):,} with none. Busiest "
+                f"{unit.lower()}: **{busiest['Period'].strftime('%Y-%m-%d')}** "
+                f"with {int(busiest['Films'])}. Drag the slider under the chart to zoom.")
+
+            fig_vol = px.bar(vol, x='Period', y='Films',
+                             title=f"Movies Watched per {unit}",
+                             labels={'Period': unit, 'Films': 'Movies watched'},
+                             color_discrete_sequence=[HUB_PALETTE[1]])
+            # A DATE axis, not a categorical one: it keeps the 2020 gap the right
+            # width instead of squeezing every bucket to equal spacing, and it is
+            # what makes the range slider below work. The zero-filled buckets stay
+            # in the data so the bar widths and the caption counts stay honest.
+            fig_vol.update_layout(
+                xaxis=dict(
+                    rangeselector=dict(
+                        buttons=list([
+                            dict(count=1, label="1m", step="month", stepmode="backward"),
+                            dict(count=6, label="6m", step="month", stepmode="backward"),
+                            dict(count=1, label="YTD", step="year", stepmode="todate"),
+                            dict(count=1, label="1y", step="year", stepmode="backward"),
+                            dict(step="all")
+                        ]),
+                        bgcolor="#2C343F",
+                        activecolor="#ff8000"
+                    ),
+                    rangeslider=dict(visible=True, thickness=0.05),
+                    type="date"
+                ),
+                bargap=0.15, height=520,
+            )
+            update_bar_trace(fig_vol)
+            st.plotly_chart(fig_vol, use_container_width=True)
     else:
         st.info("No watch date data available for the selected period.")
 
@@ -607,6 +686,24 @@ with t1:
                    f"({leader['% Same']}% within half a star, avg gap {leader['Avg |diff|']}★).")
     else:
         st.info("No critic scores available to compare.")
+
+    st.divider()
+    # --- Added: the same comparison at TITLE level, not just in aggregate. The
+    # bars above say how OFTEN you agree; these two say WHERE you disagree.
+    render_critic_delta(
+        df=df,
+        title_col='title',
+        user_col='user_rating',
+        critic_sources=[
+            ('IMDb', df.get('imdb_rating'), 10),
+            ('TMDB', df.get('vote_average'), 10),
+            ('Metacritic', df.get('metascore'), 100),
+            # OMDb stores RT as a percent STRING ("92%"); to_five strips the
+            # sign, so this is a real source with 949 of 1062 films scored.
+            ('Rotten Tomatoes', df.get('rotten_tomatoes_rating'), 100),
+        ],
+        key='movies_cd',
+    )
 
 with t2:
     if 'box_office' in df.columns:
@@ -758,6 +855,119 @@ with c2:
 st.divider()
 
 # 11. GENRE & MATURITY ANALYSIS
+st.subheader("🏷️ Theme Keywords")
+st.caption("TMDB keywords are far finer-grained than genre — 'time loop', 'heist', "
+           "'found family'. Genre says what shelf a film sits on; keywords say what "
+           "it is actually about.")
+
+if 'keywords' in df.columns and df['keywords'].notna().any():
+    kw_rows = []
+    for _, r in df.iterrows():
+        if pd.isna(r.get('keywords')) or pd.isna(r.get('user_rating')):
+            continue
+        for k in str(r['keywords']).split(','):
+            k = k.strip()
+            if k:
+                kw_rows.append({'keyword': k, 'rating': r['user_rating'],
+                                'title': r.get('title')})
+    kw_df = pd.DataFrame(kw_rows)
+    if not kw_df.empty:
+        MIN_N = 5
+        agg = (kw_df.groupby('keyword')
+               .agg(Films=('rating', 'size'), AvgRating=('rating', 'mean'))
+               .query('Films >= @MIN_N')
+               .sort_values('AvgRating', ascending=False))
+        agg['AvgRating'] = agg['AvgRating'].round(2)
+        overall = df['user_rating'].mean()
+
+        t_kw_top, t_kw_common, t_kw_search, t_kw_all = st.tabs(
+            ["Best & Worst Themes", "Most Common", "🔎 Search by Keyword", "All Keywords"])
+        with t_kw_top:
+            c_hi, c_lo = st.columns(2)
+            with c_hi:
+                top = agg.head(12).reset_index()
+                fig = px.bar(top.sort_values('AvgRating'), x='AvgRating', y='keyword',
+                             orientation='h', hover_data=['Films'],
+                             title=f"Themes you rate highest (≥{MIN_N} films)",
+                             color_discrete_sequence=[HUB_PALETTE[1]])
+                fig.add_vline(x=overall, line_dash="dot", line_color="#99AABB")
+                fig.update_layout(yaxis_title=None, height=420)
+                st.plotly_chart(fig, use_container_width=True)
+            with c_lo:
+                bot = agg.tail(12).reset_index()
+                fig = px.bar(bot.sort_values('AvgRating'), x='AvgRating', y='keyword',
+                             orientation='h', hover_data=['Films'],
+                             title=f"Themes you rate lowest (≥{MIN_N} films)",
+                             color_discrete_sequence=[HUB_PALETTE[0]])
+                fig.add_vline(x=overall, line_dash="dot", line_color="#99AABB")
+                fig.update_layout(yaxis_title=None, height=420)
+                st.plotly_chart(fig, use_container_width=True)
+            st.caption(f"Dotted line = your overall average ({overall:.2f}★). "
+                       f"{len(agg)} keywords appear on at least {MIN_N} films.")
+        with t_kw_common:
+            common = agg.sort_values('Films', ascending=False).head(20).reset_index()
+            fig = px.scatter(common, x='Films', y='AvgRating', text='keyword',
+                             title="Your most frequent themes vs how you rate them",
+                             color='AvgRating', color_continuous_scale='RdYlGn')
+            fig.add_hline(y=overall, line_dash="dot", line_color="#99AABB")
+            fig.update_traces(textposition='top center', marker=dict(size=12))
+            fig.update_layout(height=520)
+            st.plotly_chart(fig, use_container_width=True)
+        with t_kw_search:
+            # Every keyword is searchable here, not just the ones that clear the
+            # ≥5-film bar used for the aggregate charts.
+            all_kws = sorted(kw_df['keyword'].unique(), key=str.lower)
+            st.caption(f"Search any of your {len(all_kws):,} keywords and see every "
+                       f"film carrying it, with your rating.")
+            q = st.text_input("Keyword", placeholder="e.g. time loop, heist, dystopia",
+                              key="kw_search_box").strip().lower()
+            if q:
+                matches = [k for k in all_kws if q in k.lower()]
+                if not matches:
+                    st.warning(f"No keyword matches “{q}”.")
+                else:
+                    pick = matches[0] if len(matches) == 1 else st.selectbox(
+                        f"{len(matches)} matching keywords", matches, key="kw_pick")
+                    hits = (kw_df[kw_df['keyword'] == pick]
+                            .merge(df[['title', 'year', 'user_rating', 'poster',
+                                       'director_list', 'genre_list']],
+                                   left_on='title', right_on='title', how='left')
+                            .drop_duplicates('title')
+                            .sort_values('rating', ascending=False))
+                    avg = hits['rating'].mean()
+                    delta = avg - df['user_rating'].mean()
+                    m1, m2, m3 = st.columns(3)
+                    with m1: lb_metric("Films", len(hits))
+                    with m2: lb_metric("Your Avg", f"{avg:.2f}")
+                    with m3: lb_metric("vs Overall", f"{delta:+.2f}",
+                                       help_text=f"Your library average is "
+                                                 f"{df['user_rating'].mean():.2f}.")
+                    show = hits[['title', 'year', 'rating']].rename(
+                        columns={'title': 'Film', 'year': 'Year', 'rating': 'Your Rating'})
+                    show['Year'] = show['Year'].astype('Int64')
+                    st.dataframe(show, use_container_width=True, hide_index=True,
+                                 height=min(520, 60 + 35 * len(show)))
+                    posters = hits[hits['poster'].notna()].head(10)
+                    if not posters.empty:
+                        st.caption("Highest rated first")
+                        for col, (_, r) in zip(st.columns(len(posters)), posters.iterrows()):
+                            with col:
+                                st.image(f"https://image.tmdb.org/t/p/w185{r['poster']}")
+                                st.caption(f"{r['rating']:.1f}★")
+            else:
+                st.info("Type a keyword above to see every film that carries it.")
+
+        with t_kw_all:
+            st.dataframe(agg.reset_index().rename(
+                columns={'keyword': 'Keyword', 'AvgRating': 'Avg Rating'}),
+                use_container_width=True, hide_index=True, height=420)
+    else:
+        st.info("No keywords parsed yet.")
+else:
+    st.info("Keywords not ingested yet — run `python -m src.movies.enrich_extended --apply`.")
+
+st.divider()
+
 st.subheader("🎭 Genre & Maturity Analysis")
 st.caption("Identify which specific categories drive your ratings up or down.")
 
@@ -817,12 +1027,15 @@ with t_genre:
             
         with cg2:
             st.write("**Rating Spread per Genre (Influence)**")
-            st.caption("Look at the median line (inside the box) to see true genre influence.")
-            valid_genres = genre_stats[genre_stats['Count'] >= 5]['genre_list']
-            filtered_genre_df = df_genre_exp[df_genre_exp['genre_list'].isin(valid_genres)]
-            fig = px.box(filtered_genre_df, x="genre_list", y="user_rating", color="genre_list", color_discrete_sequence=HUB_PALETTE)
-            fig.update_layout(showlegend=False, xaxis_title="Genre", yaxis_title="Your Rating", height=740, margin=dict(l=0, r=0, t=40, b=0))
-            st.plotly_chart(fig, use_container_width=True)
+            st.caption(SPREAD_CAPTION.format(noun="film"))
+            fig = genre_spread_figure(
+                df_genre_exp, 'genre_list', 'user_rating', 'title', HUB_PALETTE,
+                min_count=5, x_title="Genre", y_title="Your Rating",
+                year_col='year', height=740, noun="film(s)")
+            if fig is not None:
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Not enough genre-tagged ratings to draw the spread.")
 
 with t_rated:
     if 'rated' in df.columns:
@@ -974,55 +1187,14 @@ if df_theatre is not None:
 
         with t_tab3:
             st.markdown("**Theatre Tag Analysis**")
-            st.caption("Extracted from the list description (separated by spaces or commas).")
-            
-            # Parse tags from description and associate with ratings
-            tag_data = []
-            for _, row in df_theatre.dropna(subset=['Description']).iterrows():
-                # Split by comma or space
-                tags = re.split(r'[,\s]+', str(row['Description']))
-                for t in tags:
-                    t = t.strip().title()
-                    if t and len(t) > 1:
-                        tag_data.append({'Tag': t, 'Rating': row['user_rating']})
-            
-            if tag_data:
-                df_tag_full = pd.DataFrame(tag_data)
-                # Group by Tag to get Count and Average Rating
-                df_tags_stats = df_tag_full.groupby('Tag').agg(
-                    Count=('Tag', 'count'),
-                    Avg_Rating=('Rating', 'mean')
-                ).reset_index()
-                
-                ct1, ct2 = st.columns(2)
-                
-                with ct1:
-                    # Sort by count and take top 15
-                    df_freq_tags = df_tags_stats.sort_values('Count', ascending=False).head(15)
-                    fig_freq = px.bar(df_freq_tags, x='Count', y='Tag', orientation='h', 
-                                     title="Most Frequent Theatre Tags", 
-                                     color='Count', color_continuous_scale='Bluered',
-                                     hover_data={'Count': True, 'Avg_Rating': ':.2f'})
-                    fig_freq.update_layout(yaxis={'categoryorder':'total ascending'})
-                    update_bar_trace(fig_freq)
-                    st.plotly_chart(fig_freq, use_container_width=True)
-                
-                with ct2:
-                    # Sort by Avg_Rating, require at least 2 watches for "Highly Rated"
-                    df_rated_tags = df_tags_stats[df_tags_stats['Count'] >= 2].sort_values('Avg_Rating', ascending=False).head(15)
-                    if not df_rated_tags.empty:
-                        fig_rated = px.bar(df_rated_tags, x='Avg_Rating', y='Tag', orientation='h', 
-                                         title="Highest Rated Theatre Tags (Min 2 Watches)", 
-                                         color='Avg_Rating', color_continuous_scale='Viridis',
-                                         range_x=[0, 5],
-                                         hover_data={'Count': True, 'Avg_Rating': ':.2f'})
-                        fig_rated.update_layout(yaxis={'categoryorder':'total ascending'})
-                        update_bar_trace(fig_rated)
-                        st.plotly_chart(fig_rated, use_container_width=True)
-                    else:
-                        st.info("Not enough tag data for 'Highest Rated' analysis (needs tags with 2+ watches).")
-            else:
-                st.info("No tags found in theatre descriptions.")
+            # The description is a comma-separated bag mixing six dimensions
+            # (company, people, venue, city, time, format). Splitting it on
+            # whitespace as well as commas — as this used to — broke every
+            # multi-word tag apart, so 'harsh gupta' and 'harsh modi' became the
+            # same person. app/theatre_tags.py splits on commas only and
+            # classifies each tag into its own dimension.
+            render_theatre_tag_analytics(df_theatre, HUB_PALETTE,
+                                         style_fn=update_bar_trace)
 
         with t_tab4:
             st.markdown("**Top Cast & Crew in Theatres**")

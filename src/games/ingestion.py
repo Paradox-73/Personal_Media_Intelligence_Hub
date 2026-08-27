@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common.parsing import read_media_csv
 
 # Load Environment Variables
 load_dotenv()
@@ -143,19 +144,15 @@ def enrich_game_data(merge=True):
         print(f"❌ Raw data not found at {raw_path}")
         return
 
-    try:
-        df = pd.read_csv(raw_path, encoding='utf-8')
-    except UnicodeDecodeError:
-        df = pd.read_csv(raw_path, encoding='latin1')
+    # read_media_csv repairs mojibake if it has to fall back to latin-1, instead of
+    # writing the corruption back out one level deeper on every run.
+    df = read_media_csv(raw_path)
     print(f"📊 Loaded {len(df)} games from raw data.")
 
     # Merge: preserve existing cleaned rows, enrich only games new to the raw list.
     existing_by_name = {}
     if merge and config.GAMES_ENRICHED_DATA_PATH.exists():
-        try:
-            ex = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH)
-        except Exception:
-            ex = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH, encoding='latin1')
+        ex = read_media_csv(config.GAMES_ENRICHED_DATA_PATH)
         if not ex.empty and 'name' in ex.columns:
             existing_by_name = {str(r['name']).strip().lower(): r.to_dict()
                                 for _, r in ex.iterrows()}

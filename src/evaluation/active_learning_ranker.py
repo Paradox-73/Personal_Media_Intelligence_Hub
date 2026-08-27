@@ -105,13 +105,27 @@ def run_active_learning_ranking():
         
         # Conformal Interval (Vanilla Split-Conformal 80% coverage)
         # Measured from OOF residuals
+        # Widths are recomputed from OOF residuals every time a domain model is
+        # retrained, so reading them from model_meta.joblib keeps this table from
+        # going stale as the library grows (the hardcoded book width had drifted
+        # from the model's real 0.92 to a published 1.01). The literals below are
+        # only the fallback for domains whose trainer writes no metadata.
         conformal_widths = {
-            'book': 1.01,  # retrained on Hardcover-library data (model_meta: 1.005)
+            'book': 1.01,
             'game': 1.23,
             'movie': 0.78,
             'tv': 1.10,
-            'music': 0.80 # Fallback
+            'music': 0.80  # Fallback
         }
+        for _dom, _dir in (('book', config.BOOKS_MODEL_DIR),
+                           ('game', config.GAMES_MODEL_DIR)):
+            try:
+                _meta = joblib.load(_dir / "model_meta.joblib")
+                _w = float(_meta["conformal_width_80"])
+                if _w > 0:
+                    conformal_widths[_dom] = _w
+            except Exception:  # noqa: BLE001 - keep the literal fallback
+                pass
         
         def get_interval(row):
             w = conformal_widths.get(row['media_type'], 1.0)

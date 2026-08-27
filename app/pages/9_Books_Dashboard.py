@@ -14,7 +14,10 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
 from src import config
 from ridgeline import genre_rating_ridgeline
+from genre_spread import genre_spread_figure, SPREAD_CAPTION
+from rating_distribution import render_rating_distribution
 
+from critic_delta import render_critic_delta
 from mobile import apply_mobile_css
 st.set_page_config(page_title="Books Dashboard", page_icon="📚", layout="wide")
 apply_mobile_css()
@@ -92,12 +95,12 @@ with c4: st.metric("Unique Authors", int(n_unique_authors))
 col_left, col_right = st.columns([1, 1])
 
 with col_left:
-    st.subheader("⭐ My Rating Distribution")
-    rating_counts = df['my_rating'].value_counts().reset_index()
-    rating_counts.columns = ['Rating', 'Count']
-    fig = px.bar(rating_counts.sort_values('Rating'), x='Rating', y='Count',
-                 color_discrete_sequence=[HUB_PALETTE[2]])
-    st.plotly_chart(fig, use_container_width=True)
+    st.subheader("⭐ Rating Distribution")
+    render_rating_distribution(
+        df['my_rating'],
+        critic_sources=[('Hardcover readers', df.get('averageRating'), 5)],
+        key="books_dist", user_color=HUB_PALETTE[2], critic_color=HUB_PALETTE[0],
+        show_text=False)
 
 with col_right:
     st.subheader("📖 Page Count Distribution")
@@ -108,8 +111,98 @@ with col_right:
 st.divider()
 
 # Detailed Analysis Tabs
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["Categories", "Authors", "Taste vs Critics", "Reading Profile", "Full List"])
+tab1, tab_tags, tab2, tab3, tab4, tab5 = st.tabs(
+    ["Categories", "🏷️ Moods & Tags", "Authors", "Taste vs Critics",
+     "Reading Profile", "Full List"])
+
+with tab_tags:
+    st.subheader("🏷️ Moods, Tags & Content Warnings")
+    st.caption("Hardcover tags every book on four axes. Ingestion used to read only "
+               "`Genre` — these three were fetched in the same payload and discarded. "
+               "**Mood** is the closest thing Books has to a taste fingerprint.")
+
+    TAG_FIELDS = [("moods", "Mood", "reflective, dark, funny, emotional…"),
+                  ("hc_tags", "Tag", "Plot driven, Strong Character Development…"),
+                  ("content_warnings", "Content Warning", "violence, death, grief…")]
+    available = [(c, lbl, eg) for c, lbl, eg in TAG_FIELDS
+                 if c in df.columns and df[c].notna().any()]
+
+    if not available:
+        st.info("Not ingested yet — run `python -m src.books.enrich_extended --apply`.")
+    else:
+        long_rows = []
+        for col, label, _ in available:
+            for _, r in df.iterrows():
+                if pd.isna(r.get(col)) or pd.isna(r.get('my_rating')):
+                    continue
+                for t in str(r[col]).split(','):
+                    t = t.strip()
+                    if t:
+                        long_rows.append({'tag': t, 'kind': label,
+                                          'rating': r['my_rating'], 'title': r['title']})
+        tag_df = pd.DataFrame(long_rows)
+        overall = df['my_rating'].mean()
+
+        cov = " · ".join(f"**{lbl}** {df[c].notna().mean():.0%}" for c, lbl, _ in available)
+        st.caption(f"Coverage — {cov}. Library average {overall:.2f}★.")
+
+        MIN_N = 3
+        for col, label, eg in available:
+            sub = tag_df[tag_df['kind'] == label]
+            if sub.empty:
+                continue
+            agg = (sub.groupby('tag')
+                   .agg(Books=('rating', 'size'), AvgRating=('rating', 'mean'))
+                   .query('Books >= @MIN_N').sort_values('AvgRating', ascending=False))
+            if agg.empty:
+                st.caption(f"_{label}: no value appears on ≥{MIN_N} books yet._")
+                continue
+            agg['AvgRating'] = agg['AvgRating'].round(2)
+            st.markdown(f"**{label}** — _{eg}_")
+            d = agg.reset_index()
+            fig = px.bar(d.sort_values('AvgRating'), x='AvgRating', y='tag',
+                         orientation='h', hover_data=['Books'],
+                         labels={'tag': '', 'AvgRating': 'Your avg rating'},
+                         color='AvgRating', color_continuous_scale='RdYlGn',
+                         range_color=[max(0, overall - 1.5), min(5, overall + 1.5)])
+            fig.add_vline(x=overall, line_dash="dot", line_color="#99AABB")
+            fig.update_layout(height=max(240, 26 * len(d)), coloraxis_showscale=False,
+                              margin=dict(l=0, r=0, t=10, b=10))
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("##### 🔎 Search by Mood / Tag")
+        all_tags = sorted(tag_df['tag'].unique(), key=str.lower)
+        st.caption(f"Search any of your {len(all_tags):,} book tags.")
+        q = st.text_input("Tag", placeholder="e.g. dark, emotional, plot driven",
+                          key="book_tag_search").strip().lower()
+        if q:
+            matches = [t for t in all_tags if q in t.lower()]
+            if not matches:
+                st.warning(f"No tag matches “{q}”.")
+            else:
+                pick = matches[0] if len(matches) == 1 else st.selectbox(
+                    f"{len(matches)} matching tags", matches, key="book_tag_pick")
+                hits = (tag_df[tag_df['tag'] == pick]
+                        .merge(df[['title', 'authors', 'thumbnail']], on='title', how='left')
+                        .drop_duplicates('title').sort_values('rating', ascending=False))
+                m1, m2, m3 = st.columns(3)
+                with m1: st.metric("Books", len(hits))
+                with m2: st.metric("Your Avg", f"{hits['rating'].mean():.2f}")
+                with m3: st.metric("vs Overall", f"{hits['rating'].mean() - overall:+.2f}")
+                st.dataframe(
+                    hits[['title', 'authors', 'rating']].rename(
+                        columns={'title': 'Book', 'authors': 'Author',
+                                 'rating': 'Your Rating'}),
+                    use_container_width=True, hide_index=True,
+                    height=min(480, 60 + 35 * len(hits)))
+                covers = hits[hits['thumbnail'].notna()].head(8)
+                if not covers.empty:
+                    for c, (_, r) in zip(st.columns(len(covers)), covers.iterrows()):
+                        with c:
+                            st.image(r['thumbnail'])
+                            st.caption(f"{r['rating']:.1f}★")
+        else:
+            st.info("Type a mood or tag above to see every book that carries it.")
 
 with tab1:
     st.subheader("🏷️ Top Categories")
@@ -121,6 +214,17 @@ with tab1:
     fig = px.bar(cat_counts, x='Count', y='Category', orientation='h', color='Count', color_continuous_scale='Viridis')
     fig.update_layout(yaxis={'categoryorder': 'total ascending'})
     st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("**Rating Spread per Category (Min 3 Books)**")
+    st.caption(SPREAD_CAPTION.format(noun="book"))
+    _fig_spread = genre_spread_figure(
+        df_cats, 'cat_list', 'my_rating', 'title', HUB_PALETTE,
+        min_count=3, x_title="Category", y_title="My Rating", height=520, noun="book(s)",
+        max_genres=15)
+    if _fig_spread is not None:
+        st.plotly_chart(_fig_spread, use_container_width=True)
+    else:
+        st.info("Not enough category-tagged ratings to draw the spread.")
 
     st.markdown("**🎚️ Rating Distribution by Category (Ridgeline)**")
     st.caption("Each curve is a smoothed distribution of your ratings within that category; warmer "
@@ -174,6 +278,19 @@ with tab3:
                 st.caption(f"{r['title']} ({r['delta']:+.1f})")
     else:
         st.info("Not enough overlapping Hardcover ratings to compare.")
+
+    st.divider()
+    # --- Added: the same comparison at TITLE level, not just in aggregate. The
+    # bars above say how OFTEN you agree; these two say WHERE you disagree.
+    render_critic_delta(
+        df=df,
+        title_col='title',
+        user_col='my_rating',
+        critic_sources=[
+            ('Hardcover readers', df.get('averageRating'), 5),
+        ],
+        key='books_cd',
+    )
 
 with tab4:
     st.subheader("📚 Reading Profile")

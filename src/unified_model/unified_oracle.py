@@ -77,29 +77,100 @@ def _load():
     return _CACHE
 
 
+def _join(*vals):
+    """Comma-join the non-empty values, matching how the batch builder concatenates
+    a domain's several tag columns into the single shared `tags` slot."""
+    parts = []
+    for v in vals:
+        if v is None:
+            continue
+        s = ", ".join(str(x) for x in v) if isinstance(v, (list, tuple)) else str(v)
+        s = s.strip().strip(",").strip()
+        if s and s.lower() != "nan":
+            parts.append(s)
+    return ", ".join(parts)
+
+
+def _first(raw: dict, *keys):
+    """First key that is actually PRESENT, rather than first truthy value.
+
+    `raw.get("rating") or raw.get("imdb_rating")` silently discards a legitimate
+    0 (an unrated game, a zero metascore) and falls through to a missing key,
+    which then gets median-imputed as if the item had no score at all.
+    """
+    for k in keys:
+        v = raw.get(k)
+        if v is None:
+            continue
+        if isinstance(v, str) and not v.strip():
+            continue
+        try:
+            if v != v:  # NaN
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        return v
+    return None
+
+
 def _to_backbone(raw: dict, media_type: str) -> dict:
-    """Map a domain Oracle's metadata dict onto the unified backbone keys."""
+    """Map a domain Oracle's metadata dict onto the unified backbone keys.
+
+    The `tags` and `country` slots matter as much as the scores: the batch builder
+    fills both for every row, so leaving them empty here changed the embedded text
+    and blanked the ctry_* one-hot block relative to training.
+    """
     m = dict(raw)
+    # Movies arrive on backbone names already; union in the writers so the creator
+    # set matches what the batch builder encodes (see UNIFIED_ENCODE).
+    if media_type == "movie" and raw.get("writer"):
+        m["director"] = _join(raw.get("director"), raw.get("writer"))
+    # The studio/publisher/network axis is one shared column, exactly like `director`.
+    # Movies have no branch below (they already arrive on backbone names), so seed it
+    # here and let each domain override.
+    m.setdefault("studio", _first(raw, "production", "production_companies", "studio", "publisher"))
     if media_type == "tv":
         m.setdefault("title", raw.get("name"))
-        m["director"] = raw.get("created_by") or raw.get("director")
+        m["director"] = _join(raw.get("created_by") or raw.get("director"), raw.get("writer"))
+        m["studio"] = _first(raw, "network", "networks", "production_companies", "studio")
         m["genre"] = raw.get("genres") or raw.get("genre")
         m["rated"] = raw.get("age_rating") or raw.get("rated")
+        m["tags"] = _join(raw.get("keywords"), raw.get("tvdb_tags"))
+        # The batch builder appends the season-by-season narrative to a show's
+        # overview; match it here by tmdb_id or this path embeds a shorter string
+        # than the one the model was fitted on.
+        try:
+            from src.shows.season_data import season_overview_by_show
+            _sn = season_overview_by_show().get(
+                int(float(raw.get("tmdb_id") or raw.get("id") or 0)), "")
+        except Exception:
+            _sn = ""
+        if _sn:
+            m["overview"] = (str(raw.get("overview") or "").strip() + " " + _sn).strip()
     elif media_type == "game":
-        m["title"] = raw.get("name") or raw.get("title")
-        m["director"] = raw.get("developers") or raw.get("developer")
-        m["genre"] = raw.get("genres") or raw.get("genre")
-        m["overview"] = raw.get("description_raw") or raw.get("overview")
-        m["metascore"] = raw.get("metacritic") or raw.get("metascore")
-        m["imdb_rating"] = raw.get("rating") or raw.get("imdb_rating")  # 0-5 scale
-        m["imdb_votes"] = raw.get("ratings_count") or raw.get("imdb_votes")
+        m["title"] = _first(raw, "name", "title")
+        m["director"] = _first(raw, "developers", "developer")
+        m["studio"] = _first(raw, "publishers", "publisher", "studio")
+        m["genre"] = _first(raw, "genres", "genre")
+        m["overview"] = _first(raw, "description_raw", "overview")
+        m["metascore"] = _first(raw, "metacritic", "metascore")
+        m["imdb_rating"] = _first(raw, "rating", "imdb_rating")  # 0-5 scale
+        m["imdb_votes"] = _first(raw, "ratings_count", "imdb_votes")
+        m["rated"] = _first(raw, "age_rating", "esrb_rating", "rated")
+        m["year"] = _first(raw, "year", "released")
+        m["tags"] = _join(raw.get("tags"))
     elif media_type == "book":
-        m["director"] = raw.get("authors") or raw.get("author") or raw.get("director")
-        m["genre"] = raw.get("categories") or raw.get("genre")
-        m["overview"] = raw.get("description") or raw.get("overview")
-        m["imdb_rating"] = raw.get("averageRating") or raw.get("imdb_rating")  # 0-5 scale
-        m["imdb_votes"] = raw.get("ratingsCount") or raw.get("imdb_votes")
-        m["runtime"] = raw.get("pageCount") or raw.get("runtime")
+        m["director"] = _first(raw, "authors", "author", "director")
+        m["studio"] = _first(raw, "publisher", "publishers", "studio")
+        m["genre"] = _first(raw, "categories", "genre")
+        m["overview"] = _first(raw, "description", "overview")
+        m["imdb_rating"] = _first(raw, "averageRating", "imdb_rating")  # 0-5 scale
+        m["imdb_votes"] = _first(raw, "ratingsCount", "imdb_votes")
+        m["runtime"] = _first(raw, "pageCount", "runtime")
+        # Books store the year as `publishedDate`; without this the unified path saw
+        # no year at all and median-imputed it.
+        m["year"] = _first(raw, "year", "publishedDate", "released")
+        m["tags"] = _join(raw.get("moods"), raw.get("hc_tags"))
     elif media_type == "music":
         # Mirror the music mapping used to build the unified training data
         # (name->title, artists->director, artist_genres->genre, popularity->imdb_rating,
@@ -116,7 +187,10 @@ def _to_backbone(raw: dict, media_type: str) -> dict:
             m["runtime"] = float(length_ms) / 60000
         except (TypeError, ValueError):
             m["runtime"] = 0
-    # movie: keys already match the backbone
+        m["tags"] = _join(raw.get("mb_tags"))
+    else:
+        # movie: keys already match the backbone; `keywords` is its tag channel.
+        m["tags"] = _join(raw.get("tags"), raw.get("keywords"))
     return m
 
 

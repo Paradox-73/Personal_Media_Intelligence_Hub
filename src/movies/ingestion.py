@@ -12,6 +12,7 @@ from tmdbv3api import TMDb, Movie
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common.parsing import canon_genres
 
 # Load Environment Variables
 load_dotenv()
@@ -80,6 +81,17 @@ def fetch_omdb_direct(imdb_id=None, title=None, year=None):
     except: pass
     return None
 
+def _crew_names(credits, jobs):
+    """Names for the given TMDB crew jobs, de-duplicated, order preserved."""
+    if not credits:
+        return []
+    out = []
+    for c in getattr(credits, 'crew', []) or []:
+        if c.get('job') in jobs and c.get('name') not in out:
+            out.append(c['name'])
+    return out
+
+
 def smart_search_tmdb(title, target_year):
     if not target_year: return None
     try:
@@ -146,7 +158,24 @@ def fetch_movie_details_by_tmdb_id(tmdb_id):
         genres = [g.name for g in m.genres] if hasattr(m, 'genres') else []
         prod = [p.name for p in getattr(m, 'production_companies', [])]
 
+        # Keywords + franchise: the Oracle shows these and uses them to explain
+        # similarity. Same fields src/movies/enrich_extended.py stores in the CSV.
+        keywords, collection = [], None
+        try:
+            kw = requests.get(f"https://api.themoviedb.org/3/movie/{int(tmdb_id)}/keywords",
+                              params={"api_key": TMDB_KEY}, timeout=8).json()
+            keywords = [w['name'] for w in kw.get('keywords', [])]
+        except Exception:  # noqa: BLE001
+            pass
+        coll = getattr(m, 'belongs_to_collection', None)
+        if isinstance(coll, dict):
+            collection = coll.get('name')
+
         return {
+            'keywords': keywords,
+            'collection_name': collection,
+            'revenue': getattr(m, 'revenue', None),
+            'budget': getattr(m, 'budget', None),
             'tmdb_id': m.id,
             'imdb_id': getattr(m, 'imdb_id', None),
             'title': m.title,
@@ -213,10 +242,33 @@ def get_movie_metadata(title, year, tmdb_id=None, imdb_id=None):
             'cast': get_names(getattr(credits, 'cast', [])),
             'director': [c['name'] for c in getattr(credits, 'crew', []) if c['job'] == 'Director'] if credits else [],
             'writer': [c['name'] for c in getattr(credits, 'crew', []) if c['department'] == 'Writing'] if credits else [],
+            # The rest of the crew was already in this payload and thrown away.
+            # People-features are the only genuinely personal signal in the model
+            # (target encoding is the one non-crowd block that helps), and a
+            # composer/DP is a taste marker as much as a director is.
+            'composer': _crew_names(credits, ('Original Music Composer', 'Music')),
+            'cinematographer': _crew_names(credits, ('Director of Photography',)),
+            'editor': _crew_names(credits, ('Editor',)),
+            'producer': _crew_names(credits, ('Producer',))[:3],
             'vote_average': getattr(target, 'vote_average', 0),
             'vote_count': getattr(target, 'vote_count', 0),
             'original_language': getattr(target, 'original_language', ''),
         }
+
+        # Keywords + franchise: finer-grained "aboutness" than genre. Fetched here
+        # so the Oracle and batch ingestion get the same fields as
+        # src/movies/enrich_extended.py writes into the CSV.
+        try:
+            kw = requests.get(
+                f"https://api.themoviedb.org/3/movie/{target.id}/keywords",
+                params={"api_key": TMDB_KEY}, timeout=8).json()
+            tmdb_data['keywords'] = [w['name'] for w in kw.get('keywords', [])]
+        except Exception:  # noqa: BLE001
+            tmdb_data['keywords'] = []
+        coll = getattr(target, 'belongs_to_collection', None)
+        tmdb_data['collection_name'] = coll.get('name') if isinstance(coll, dict) else None
+        tmdb_data['revenue'] = getattr(target, 'revenue', None)
+        tmdb_data['budget'] = getattr(target, 'budget', None)
 
     # --- B. FETCH OMDB ---
     oid = tmdb_data.get('imdb_id') or imdb_id
@@ -261,7 +313,9 @@ def get_movie_metadata(title, year, tmdb_id=None, imdb_id=None):
         'director': pick(tmdb_data.get('director'), omdb_data.get('director')),
         'writer': pick(tmdb_data.get('writer'), omdb_data.get('writer')),
         'actors': pick(tmdb_data.get('cast'), omdb_data.get('actors')),
-        'genre': pick(tmdb_data.get('genres'), omdb_data.get('genre')),
+        # OMDb is the fallback here and speaks IMDb's taxonomy, so canonicalise
+        # before the row is written rather than in every reader downstream.
+        'genre': canon_genres(pick(tmdb_data.get('genres'), omdb_data.get('genre'))),
         'imdb_rating': clean_float(omdb_data.get('imdb_rating')),
         'imdb_votes': clean_int(omdb_data.get('imdb_votes')),
         'metascore': clean_int(omdb_data.get('metascore')),
@@ -277,7 +331,15 @@ def get_movie_metadata(title, year, tmdb_id=None, imdb_id=None):
         'awards': omdb_data.get('awards'),
         'box_office': omdb_data.get('box_office'),
         'production': pick(tmdb_data.get('production'), None),
-        'poster': getattr(target, 'poster_path', None) if target else None 
+        'poster': getattr(target, 'poster_path', None) if target else None,
+        'keywords': tmdb_data.get('keywords', []),
+        'collection_name': tmdb_data.get('collection_name'),
+        'revenue': tmdb_data.get('revenue'),
+        'budget': tmdb_data.get('budget'),
+        'composer': tmdb_data.get('composer', []),
+        'cinematographer': tmdb_data.get('cinematographer', []),
+        'editor': tmdb_data.get('editor', []),
+        'producer': tmdb_data.get('producer', []),
     }
 
 def fetch_fresh_data(row, tmdb_cache, omdb_cache):
@@ -345,16 +407,41 @@ def sync_letterboxd_data():
     # Use Letterboxd URI as primary key
     enriched_uris = set(df_enriched['letterboxd_uri'].dropna()) if not df_enriched.empty and 'letterboxd_uri' in df_enriched.columns else set()
 
+    # Secondary key: title/year. letterboxd_rss_sync.py adds films keyed on TMDB id
+    # and stores the RSS *diary-entry* link in letterboxd_uri, not the boxd.it
+    # shortlink the export carries. Without this fallback, every film the RSS sync
+    # added since the last export looks new here and gets appended a second time.
+    ty_index = {}
+    if not df_enriched.empty:
+        for i, r in df_enriched.iterrows():
+            for nm in (r.get('letterboxd_name'), r.get('title')):
+                if pd.notna(nm):
+                    ty_index.setdefault((str(nm).strip().lower(), clean_year(r.get('year'))), i)
+
+    def find_row(uri, name, year):
+        """Index of the matching enriched row, or None."""
+        if uri in enriched_uris:
+            hits = df_enriched.index[df_enriched['letterboxd_uri'] == uri]
+            if len(hits):
+                return hits[0]
+        return ty_index.get((str(name).strip().lower(), clean_year(year)))
+
     for _, row in df_raw.iterrows():
         uri = row.get('Letterboxd URI')
         rating = row.get('Rating')
         date = row.get('Date')
         is_liked = 1 if uri in liked_uris else 0
 
+        idx = find_row(uri, row.get('Name'), row.get('Year'))
+
         # Check Enriched Data
-        if uri in enriched_uris:
-            mask = df_enriched['letterboxd_uri'] == uri
+        if idx is not None:
+            mask = df_enriched.index == idx
             changed = False
+            # Adopt the export's shortlink so the next sync matches by URI directly.
+            if df_enriched.at[idx, 'letterboxd_uri'] != uri:
+                df_enriched.loc[mask, 'letterboxd_uri'] = uri
+                changed = True
             if df_enriched.loc[mask, 'user_rating'].iloc[0] != rating:
                 df_enriched.loc[mask, 'user_rating'] = rating
                 changed = True

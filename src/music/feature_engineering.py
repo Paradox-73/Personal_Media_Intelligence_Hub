@@ -10,14 +10,17 @@ the Books / Movies pipelines do it:
   * semantic embeddings : SentenceTransformers over (title + genres + lyric snippet),
                           reduced with PCA
 
+Music is UNSUPERVISED here — there is no star-rating target. The matrix feeds the
+taste-profile clustering + song-to-song similarity engine (profile_builder.py /
+affinity.py), not a rating regressor.
+
 Outputs:
   data/processed/music_processed.csv   merged human-readable table
-  data/processed/music_features.npz    X, y, feature_names
+  data/processed/music_features.npz    X, feature_names (y is an empty placeholder)
   models/music/preprocessors.joblib    fitted scaler / pca / encoders (for inference)
 
 Run:
     python src/music/feature_engineering.py
-    python src/music/feature_engineering.py --ratings data/raw/my_ratings.csv
 """
 
 import argparse
@@ -36,7 +39,7 @@ TOP_ARTISTS = 40
 PCA_COMPONENTS = 32
 
 
-def load_and_merge(ratings_path=None) -> pd.DataFrame:
+def load_and_merge() -> pd.DataFrame:
     df = pd.read_csv(config.LIBRARY_CSV)
     for path in (config.MUSICBRAINZ_CSV, config.LYRICS_CSV, config.EXTRA_CSV):
         if path.exists():
@@ -49,17 +52,12 @@ def load_and_merge(ratings_path=None) -> pd.DataFrame:
         df["primary_artist"] = (df.get("artists", pd.Series([""] * len(df)))
                                 .fillna("").astype(str).str.split(",").str[0].str.strip())
 
-    # Optional: real user ratings override the synthesised implicit rating.
-    if ratings_path:
-        r = pd.read_csv(ratings_path)
-        cols = {c.lower(): c for c in r.columns}
-        id_col = cols.get("track_id") or cols.get("id")
-        rate_col = cols.get("rating") or cols.get("stars") or cols.get("score")
-        if id_col and rate_col:
-            r = r[[id_col, rate_col]].rename(columns={id_col: "track_id", rate_col: "rating_user"})
-            df = df.merge(r, on="track_id", how="left")
-            df["rating"] = df["rating_user"].fillna(df.get("rating", np.nan))
-            df.drop(columns=["rating_user"], inplace=True)
+    # Music has no star ratings and we deliberately don't synthesise one — the
+    # engineered matrix is unsupervised, consumed by the taste-profile clustering
+    # + song-to-song similarity engine (profile_builder.py / affinity.py), not a
+    # rating regressor. Drop any stale `rating` column left by an older ingestion
+    # so it never leaks downstream (into music_processed.csv or the dashboards).
+    df = df.drop(columns=[c for c in ("rating", "rating_user") if c in df.columns])
     return df
 
 
@@ -192,10 +190,9 @@ def transform(df: pd.DataFrame, bundle: dict) -> np.ndarray:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ratings", default=None, help="optional CSV of real star ratings")
     args = ap.parse_args()
 
-    df = load_and_merge(args.ratings)
+    df = load_and_merge()
     df.to_csv(config.MASTER_CSV, index=False)
     print(f"Merged table -> {config.MASTER_CSV}  ({len(df)} tracks)")
 
@@ -233,8 +230,11 @@ def main():
                    artist_mh.reset_index(drop=True),
                    emb_df.reset_index(drop=True)], axis=1)
                    
-    y = df["rating"].astype(float).values if "rating" in df else np.array([])
-    
+    # No supervised target: music is unsupervised (taste-profile clustering +
+    # similarity). `y` is persisted as an empty array purely to keep the .npz
+    # schema stable for readers that unpack three keys.
+    y = np.array([])
+
     # Feature group map
     meta_cols = ["duration_min", "release_year", "track_age", "popularity", "artist_popularity", "artist_followers_log", "album_total_tracks", "track_number", "explicit"]
     audio_cols = config.AUDIO_FEATURE_COLS + [f"{c}_missing" for c in config.AUDIO_FEATURE_COLS]

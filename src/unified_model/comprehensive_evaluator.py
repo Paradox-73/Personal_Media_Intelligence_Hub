@@ -84,48 +84,6 @@ def dedup_per_item(oof):
                .agg(target_reg=('target_reg', 'first'), pred=('pred', 'mean')))
 
 
-def full_pool_with_music(df_full, registry):
-    """
-    Secondary, footnoted row: train on the FULL pool (incl. 3,688 music PU
-    pseudo-labels) and evaluate INCLUDING music. Music has no frozen registry,
-    so this row uses a separate RepeatedKFold(5x1) over the full pool and is NOT
-    a frozen-fold / actual-taste metric -- it exists only to show transparently
-    what the pooled headline (~0.50) actually measures.
-
-    Uses an XGBoost proxy (not the full XGB+CatBoost ensemble): the rated-only
-    ablation showed the CatBoost member contributes a significant-but-trivial
-    delta-MAE < 0.01, and this is a secondary/footnoted row, so the proxy is
-    faithful and keeps the 4,952-item pass tractable.
-    """
-    pca_cols = [c for c in df_full.columns if c.startswith('pca_')]
-    X_cols = [c for c in df_full.columns if c not in
-              ['target_reg', 'target_ordinal', 'target_class', 'source_id',
-               'media_type', 'rating_date', 'global_id']]
-    df = df_full.reset_index(drop=True)
-    rkf = RepeatedKFold(n_splits=5, n_repeats=1, random_state=42)
-    preds_accum = np.zeros(len(df))
-    counts = np.zeros(len(df))
-    for tr_idx, te_idx in rkf.split(df):
-        X_train = df.loc[tr_idx, X_cols].copy()
-        X_test = df.loc[te_idx, X_cols].copy()
-        y_train = df.loc[tr_idx, 'target_reg']
-        m_train = df.loc[tr_idx, 'media_type']
-        m_test = df.loc[te_idx, 'media_type']
-        d_train = pd.to_datetime(df.loc[tr_idx, 'rating_date'])
-        aligner = DomainAligner(method='centroid')
-        aligner.fit(X_train[pca_cols].values, m_train)
-        X_train.loc[:, pca_cols] = aligner.transform(X_train[pca_cols].values, m_train)
-        X_test.loc[:, pca_cols] = aligner.transform(X_test[pca_cols].values, m_test)
-        w_train = compute_temporal_weights(d_train, lambda_decay=LAMBDA_DECAY)
-        model = xgb.XGBRegressor(n_estimators=300, learning_rate=0.03, max_depth=6,
-                                 random_state=42)
-        model.fit(X_train, y_train, sample_weight=w_train)
-        preds_accum[te_idx] += model.predict(X_test)
-        counts[te_idx] += 1
-    per_item = preds_accum / np.maximum(counts, 1)
-    return get_metrics(df['target_reg'], per_item), len(df)
-
-
 def load_unified_params():
     """Report the params actually deployed in the evaluated ensemble.
 
@@ -160,7 +118,14 @@ def run_master_evaluation():
 
     df = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
     df['global_id'] = df['media_type'] + "_" + df['source_id'].astype(str)
-    df_rated = df[df['media_type'] != 'music'].copy()
+    # Unrated items carry target_reg == 0.0, NOT NaN: unified_feature_engineering
+    # does `.fillna(0)` on user_rating, and 6 games have status 'Incomplete'.
+    # 0.0 is off the bottom of the 0.5-5.0 star grid, so training on it teaches
+    # the model an impossible label and evaluating on it charged the game slice
+    # 0.87 MAE where the truth is 0.64. Excluding them here also makes the
+    # unified-vs-standalone game comparison run on the same 66 items, which the
+    # rendered docs already claim it does.
+    df_rated = df[(df['media_type'] != 'music') & (df['target_reg'] > 0)].copy()
 
     with open(config.UNIFIED_MODEL_DIR / "fold_registry.json") as f:
         registry = json.load(f)
@@ -195,10 +160,6 @@ def run_master_evaluation():
         slices.append({"Domain": domain, "N": int(len(d)),
                        **get_metrics(d['target_reg'], d['pred'])})
 
-    # 2) Unified full pool (incl. music PU pseudo-labels) -- secondary, footnoted
-    print("📊 Unified (full pool incl. music pseudo-labels) -- secondary CV...")
-    met_full, n_full = full_pool_with_music(df, registry)
-
     # 3) Standalone per-domain benchmarks on registry folds (genuine local models).
     #    NOTE: these are honest for Games/Books (SVR = the deployed model) but are
     #    SIMPLIFIED PROXIES for Movies (plain XGB) and TV (manual simplex). Kept for
@@ -221,8 +182,6 @@ def run_master_evaluation():
     benchmarks = [
         prod_by_domain['movie'],
         {"Domain": "unified_rated", "N": int(n_rated), "Model": "Mean Ensemble", **met_rated},
-        {"Domain": "unified_full", "N": int(n_full),
-         "Model": "Mean Ensemble (+music pool)", **met_full},
         prod_by_domain['tv'],
         standalone_by_domain['game'],
         standalone_by_domain['book'],
@@ -271,9 +230,6 @@ def run_master_evaluation():
             "dedup": "per-item: raw predictions averaged across 5 CV repeats, then rounded to 0.5",
             "standalone_models": {"movie": "XGBoost", "tv": "Simplex-Stack",
                                   "game": "Local SVR (no prior)", "book": "Local SVR (no prior)"},
-            "unified_full": ("trained on rated + 3,688 music PU pseudo-labels and evaluated "
-                             "INCLUDING music via RepeatedKFold(5x1), XGB proxy; not a frozen-fold / "
-                             "actual-taste metric -- secondary line only"),
         },
     }
 

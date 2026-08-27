@@ -13,41 +13,91 @@ from sklearn.metrics.pairwise import cosine_similarity
 # Add Project Root to Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common.parsing import (  # canonical shared parsers
+    parse_list, people_key, sanitize_col, clean_money, canon_genres)
+# categorize_rating lives in src/common/parsing.py. Three copies of it had drifted;
+# two used a bare `'R' in r` test that read 'Not Rated'/'Unrated'/'Approved' as
+# Adult, mislabelling 12.4% of the movie library.
+from src.common.parsing import categorize_rating, norm_language
+from src.common import taste_features as tf
+from src.common.text_embedding import encode_pooled, encode_pooled_single
+
+def _movie_header(raw):
+    """The per-item prefix repeated on every window. One definition, shared by
+    training, single-item inference and the scoring pipeline, so they cannot drift."""
+    def g(k):
+        v = raw.get(k, '')
+        # NaN is not None: `str(float('nan'))` is the literal "nan", and 121 of 1062
+        # movies have a NaN tagline, so 11% of the corpus was embedded ending in
+        # ". Tagline: nan." while the Oracle -- whose metadata dict returns '' --
+        # produced ". Tagline: ." for the same film. _show_header already guards this.
+        if v is None or (isinstance(v, float) and v != v):
+            return ''
+        return str(v)
+    return ("Title: " + (g('title') or 'Unknown') +
+            ". Genre: " + people_key(raw.get('genre')) +
+            ". Directed by: " + (people_key(raw.get('director')) or 'Unknown') +
+            ". Written by: " + people_key(raw.get('writer')) +
+            ". Starring: " + people_key(raw.get('actors')) +
+            ". Tagline: " + g('tagline') + ".")
+
+
+def _movie_body(raw):
+    def g(k):
+        v = raw.get(k, '')
+        if v is None or (isinstance(v, float) and v != v):
+            return ''
+        return str(v)
+    return (g('plot') + " " + g('overview')).strip()
+
+
+def _movie_text(raw):
+    return f"{_movie_header(raw)} {_movie_body(raw)}"
+
 
 # --- CONFIG ---
-PCA_COMPONENTS = 25
+PCA_COMPONENTS = 40  # raised from 25: richer text carries more taste signal in higher comps
+
+# Bayesian smoothing prior for every entity target encoding. Was 10, which on a
+# library where the median director has 1-2 credits pinned the encoding to the
+# global mean (observed std 0.05-0.13). Measured sweep on movies, 10-fold with
+# inner OOF: m=0 0.4769 | m=1 0.4732 | m=2 0.4694 | m=3 0.4765 | m=5 0.4713 |
+# m=10 0.4802 | m=20 0.4769.  See reports/crew_te_experiment.json.
+TE_PRIOR = 2
+
+# (enriched column, how many names to keep). The cast list is ordered by billing,
+# so the top 3 carry the signal; crew columns are short already.
+# Leave-one-out rho against user_rating: writer .563, director .460, producer .424,
+# cinematographer .418, composer .390, editor .385, production .352.
+# `country` is deliberately absent -- it measured rho 0.017, pure noise.
+CREW_ENCODE = [
+    ("director", 2), ("actors", 3), ("writer", 3), ("composer", 1),
+    ("cinematographer", 1), ("editor", 2), ("producer", 3), ("production", 2),
+]
+
+
+def tf_neighbors_cache():
+    """TMDB neighbour graph, or {} if it has not been fetched yet.
+
+    Populate with `python -m src.common.tmdb_neighbors`. Absent cache degrades
+    gracefully: every neighbour feature falls back to the global mean.
+    """
+    import json
+    p = config.CACHE_DIR / "tmdb_neighbors.json"
+    if not p.exists():
+        print("   ⚠️ TMDB neighbour cache missing -- run "
+              "`python -m src.common.tmdb_neighbors` for the item-item features.")
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
 
 # --- HELPERS ---
-def clean_money(x):
-    if pd.isna(x): return 0
-    if isinstance(x, (int, float)): return x
-    x = str(x).replace('$', '').replace(',', '').strip()
-    try: return float(x)
-    except: return 0
 
-def parse_list(x):
-    if isinstance(x, (list, np.ndarray)):
-        return x if isinstance(x, list) else x.tolist()
-    if pd.isna(x): return []
-    s = str(x).strip()
-    if not s: return []
-    try:
-        if s.startswith('[') and s.endswith(']'):
-            return ast.literal_eval(s)
-        return [item.strip() for item in s.split(',')]
-    except (ValueError, SyntaxError):
-        return [s]
 
-def categorize_rating(r):
-    r = str(r).upper()
-    if 'R' in r or 'NC-17' in r or 'TV-MA' in r: return 'Adult'
-    if 'PG' in r or 'TV-14' in r: return 'Teen'
-    return 'General'
 
-def sanitize_col(col_name):
-    return re.sub(r"[\[\]<']", "", str(col_name))
 
-# --- MAIN TRAINING FUNCTION ---
 def process_features():
     print("🛠️ Starting Movie Feature Engineering (v2)...")
 
@@ -63,8 +113,18 @@ def process_features():
     df = df.drop(columns=['type', 'website'], errors='ignore')
 
     # 2. Clean and Engineer Numerical Features
-    if df['rotten_tomatoes_rating'].dtype == 'object':
-        df['rotten_tomatoes_rating'] = df['rotten_tomatoes_rating'].str.replace('%', '', regex=False).astype(float)
+    # OMDb ships Rotten Tomatoes as a percent STRING ("92%"). Coerce unconditionally.
+    # The old guard was `if df['rotten_tomatoes_rating'].dtype == 'object'`, which
+    # stopped firing once pandas began inferring an Arrow-backed `str` dtype for text
+    # columns. The strings then survived into `critic_scores.mean(axis=1)` below and
+    # raised `TypeError: unsupported operand type(s) for +: 'float' and 'str'`, taking
+    # the whole movie feature build down. It fails loudly rather than dropping RT
+    # quietly, so this is a pandas-upgrade regression, not silent long-running data
+    # loss -- under the older dtype the guard fired and RT parsed fine. Coercing
+    # without a dtype test means no future dtype change can reintroduce either failure.
+    df['rotten_tomatoes_rating'] = pd.to_numeric(
+        df['rotten_tomatoes_rating'].astype('string').str.replace('%', '', regex=False),
+        errors='coerce')
 
     df['box_office_clean'] = df['box_office'].apply(clean_money)
     df['box_office_log'] = np.log1p(df['box_office_clean'])
@@ -91,6 +151,29 @@ def process_features():
     for col in num_cols:
         if col not in df.columns:
             df[col] = 0
+        # Strip thousands separators and stray % before coercing. OMDb returns
+        # `imdb_votes` grouped ("7,13,701"), so a bare to_numeric turned 756 of
+        # 1,062 movies into NaN and then into the median — 71% of the column was
+        # a constant, while transform_single_movie's safe_num() parsed the real
+        # value. The model trained on the median and was served the truth.
+        # Clean UNCONDITIONALLY -- never gate on dtype. This was `if df[col].dtype
+        # == object`, which stopped firing when pandas began inferring an Arrow
+        # `str` dtype for text columns, silently RE-introducing the very bug the
+        # comment above describes as fixed: 747 of 1,062 imdb_votes values carry
+        # thousands separators, bare to_numeric salvaged only 306 of them, and the
+        # other 756 were median-filled while transform_single_movie's safe_num()
+        # parsed the true value. Same failure mode as the rotten_tomatoes_rating
+        # guard above. A no-op on already-numeric columns, so there is no reason
+        # to gate it at all.
+        df[col] = (df[col].astype('string')
+                   .str.replace(',', '', regex=False)
+                   .str.replace('%', '', regex=False)
+                   # OMDb returns runtime as "87 min" -- 95 of 1062 films (8.9%).
+                   # Without stripping the unit those coerce to NaN and collapse onto
+                   # the median (116), which is exactly what imdb_votes was doing with
+                   # its thousands separators. Strip any trailing non-numeric unit.
+                   .str.replace(r'\s*(min|mins|minutes|hrs|h)\.?$', '', regex=True)
+                   .str.strip())
         numeric_series = pd.to_numeric(df[col], errors='coerce')
         median_val = numeric_series.median()
         df[col] = numeric_series.fillna(median_val)
@@ -98,6 +181,12 @@ def process_features():
     X_num = df[num_cols].reset_index(drop=True)
 
     # 3. Language One-Hot Encoding
+    # Normalise BEFORE picking the top 3. The column mixes TMDB ISO codes with OMDb
+    # English names, so 'en' (839) and 'English' (23) became two orthogonal one-hots
+    # for one language, while Japanese split 25/6 and never made the top 3 at all --
+    # 65 rows fell to lang_Other. The serve path inherits this: an OMDb-only title
+    # sets lang_English, a column only 40 training rows ever had.
+    df['language'] = df['language'].astype('string').apply(norm_language)
     top_3_languages = df['language'].str.split(', ').explode().value_counts().nlargest(3).index.tolist()
     def map_language(lang_str):
         if pd.isna(lang_str): return 'Other'
@@ -111,11 +200,22 @@ def process_features():
 
     # 4. Upgraded Text Representation (Sentence Transformers)
     print("   Generating text embeddings...")
-    df['text_content'] = "Title: " + df['title'].fillna('Unknown') + \
-                         ". Directed by: " + df['director'].fillna('Unknown') + \
-                         ". " + df['plot'].fillna('')
+    # Richer text: include cast, writer, genre, tagline, overview (previously only
+    # Title+Director+Plot). text_lift.py showed this ~doubles the text-only taste signal
+    # for movies (crew/cast/theme carry personal preference the crowd scores don't).
+    # people_key() so "['Nolan']" and "Nolan" embed as the same sentence.
+    # Header + plot/overview are embedded SEPARATELY so any long synopsis is split
+    # into sentence windows and read in full, and so the vectors are L2-normalised the
+    # same way every other domain's now are. Movie text is short (max 244 tokens today)
+    # so nothing was being truncated here -- this is for parity: the unified model and
+    # the books/games pipelines pool, and a movie vector has to live in the same space.
+    _records = df.to_dict('records')
+    df['text_header'] = [_movie_header(r) for r in _records]
+    _body = pd.Series([_movie_body(r) for r in _records], index=df.index)
+    df['text_content'] = df['text_header'] + " " + _body
     transformer_model = SentenceTransformer('all-MiniLM-L6-v2')
-    text_embeddings = transformer_model.encode(df['text_content'].tolist(), show_progress_bar=True)
+    text_embeddings = encode_pooled(df['text_header'].tolist(), _body.tolist(),
+                                    transformer_model, show_progress_bar=True)
 
     print("   Applying PCA to embeddings...")
     pca = PCA(n_components=PCA_COMPONENTS)
@@ -123,7 +223,7 @@ def process_features():
     X_text = pd.DataFrame(X_text_pca, columns=[f'pca_{i}' for i in range(PCA_COMPONENTS)])
 
     # 5. Genres
-    df['genre_list'] = df['genre'].apply(parse_list)
+    df['genre_list'] = df['genre'].apply(canon_genres)
     mlb = MultiLabelBinarizer()
     X_genre = pd.DataFrame(mlb.fit_transform(df['genre_list']), columns=[f"gen_{c}" for c in mlb.classes_], index=df.index)
 
@@ -139,12 +239,14 @@ def process_features():
         kf = KFold(n_splits=5, shuffle=True, random_state=42)
         encoded = pd.Series(index=train_df.index, dtype=float)
         
-        # Flatten creators if it's a list (for directors/actors)
+        # Flatten creators if it's a list (for directors/actors).
+        # ALWAYS go through parse_list. This used to pick a branch by inspecting
+        # row 0 only -- if row 0 happened to be comma-form, every bracket-form row
+        # ("['Christopher Nolan', 'X']", which is 967 of 1062 director cells) was
+        # sent through .str.split(', ') and shredded into keys like "['Christopher".
+        # parse_list handles both storage shapes, so the branch was never needed.
         temp_df = train_df[[col, target]].copy()
-        if isinstance(temp_df[col].iloc[0], (list, str)) and '[' in str(temp_df[col].iloc[0]):
-             temp_df[col] = temp_df[col].apply(parse_list)
-        elif isinstance(temp_df[col].iloc[0], str):
-             temp_df[col] = temp_df[col].str.split(', ')
+        temp_df[col] = temp_df[col].apply(parse_list)
 
         # Function to get mean for a set of items (e.g. multiple directors)
         def get_item_mean(items, mapping, g_mean):
@@ -164,16 +266,59 @@ def process_features():
         
         return encoded.fillna(global_mean)
 
-    df['director_encoded'] = target_encode(df, 'director')
-    df['actors_encoded'] = target_encode(df, 'actors')
-    
     # 5.2 Director x Genre Interaction
     # Simplification: Top genre x Director encoding
     df['primary_genre'] = df['genre_list'].apply(lambda x: x[0] if x else 'Unknown')
-    df['dir_genre_key'] = df['director'].astype(str) + "_" + df['primary_genre']
-    df['dir_genre_encoded'] = target_encode(df, 'dir_genre_key')
+    # Canonical key (not the raw cell) so a repr-list row and a comma-string row for
+    # the same director produce the SAME key here and at inference.
+    df['dir_genre_key'] = df['director'].apply(people_key) + "_" + df['primary_genre']
 
-    X_te = df[['director_encoded', 'actors_encoded', 'dir_genre_encoded']].reset_index(drop=True)
+    # 5.3 CREW + neighbour taste block (see src/common/taste_features.py).
+    # The old matrix encoded only director and actors, at m=10 -- which on a library
+    # where the median entity has 1-2 credits smoothed the encoding onto the global
+    # mean and made it worthless. enrich_extended.py had already fetched composer /
+    # cinematographer / editor / producer and nothing ever read them; `writer` was
+    # never encoded for movies at all despite being the STRONGEST entity signal here
+    # (leave-one-out rho 0.563 vs 0.460 for director).
+    y_rating = df['user_rating'].astype(float).values
+    te_artifacts = {}
+    te_frames = {}
+    for col, limit in CREW_ENCODE:
+        if col not in df.columns:
+            continue
+        enc, sup, art = tf.oof_entity_encode(df[col].tolist(), y_rating,
+                                             m=TE_PRIOR, limit=limit)
+        te_frames[f'{col}_encoded'] = enc
+        te_frames[f'{col}_n'] = sup
+        te_artifacts[col] = art
+    # Composite key: pass it pre-wrapped as a one-element list so parse_people does
+    # not split "A, B_Action" (a two-director cell) on its comma.
+    enc, sup, art = tf.oof_entity_encode([[k] for k in df['dir_genre_key']],
+                                         y_rating, m=TE_PRIOR)
+    te_frames['dir_genre_encoded'] = enc
+    te_artifacts['dir_genre'] = art
+
+    # director_encoded / actors_encoded keep their exact old names -- predict_ratings,
+    # the Streamlit app and the unified feature builder all reference them.
+    assert 'director_encoded' in te_frames and 'actors_encoded' in te_frames, \
+        "CREW_ENCODE must keep director and actors: downstream code depends on these names"
+
+    X_te = pd.DataFrame(te_frames).reset_index(drop=True)
+
+    # 5.4 TMDB item-item neighbours -- the only collaborative signal in the project.
+    nb_cache = tf_neighbors_cache()
+    tmdb_ids = pd.to_numeric(df.get('tmdb_id'), errors='coerce').tolist()
+    nb_frames, nb_artifacts = {}, {}
+    for endpoint in ('similar', 'recommendations'):
+        lists = tf.load_neighbor_lists(nb_cache, 'movie', tmdb_ids, endpoint)
+        enc, sup, art = tf.oof_neighbor_encode(tmdb_ids, lists, y_rating)
+        nb_frames[f'nb_{endpoint}_mean'] = enc
+        nb_frames[f'nb_{endpoint}_n'] = sup
+        nb_artifacts[endpoint] = art
+    X_nb = pd.DataFrame(nb_frames).reset_index(drop=True)
+
+    # 5.5 Numerics that were fetched into enriched_data.csv and never read.
+    X_extra = tf.movie_numeric_extras(df).reset_index(drop=True)
 
     # 6. MPAA Rating
     df['mpaa_cat'] = df['rated'].apply(categorize_rating)
@@ -181,7 +326,8 @@ def process_features():
 
     # 7. Combine Final Features
     print("   Combining all features...")
-    X_final = pd.concat([X_num, X_lang, X_genre, X_te, X_mpaa, X_text], axis=1)
+    X_final = pd.concat([X_num, X_lang, X_genre, X_te, X_nb, X_extra, X_mpaa, X_text],
+                        axis=1)
     X_final.columns = [sanitize_col(col) for col in X_final.columns]
     X_final = X_final.loc[:, ~X_final.columns.duplicated()]
 
@@ -200,16 +346,31 @@ def process_features():
 
     # 9. Save Data and Preprocessor State
     # Compute global mappings for inference
-    def get_global_mapping(train_df, col, target='user_rating', m=10):
+    def get_global_mapping(train_df, col, target='user_rating', m=10, split=True):
+        """Saved lookup table for inference. MUST be keyed the same way inference
+        looks it up (apply_te -> parse_list -> individual names).
+
+        `split=True` parses the cell into its individual names first. Without that
+        parse, .explode() on a column of *strings* is a no-op and the keys end up
+        being whole cells ("['Denis Villeneuve']"), which inference never asks for
+        -- so every lookup missed and the encoding silently flattened to the mean.
+        `split=False` for composite keys (dir_genre) that are looked up whole.
+        """
         global_mean = train_df[target].mean()
-        temp_df = train_df[[col, target]].copy().explode(col)
+        temp_df = train_df[[col, target]].copy()
+        if split:
+            temp_df[col] = temp_df[col].apply(parse_list)
+        temp_df = temp_df.explode(col)
         stats = temp_df.groupby(col)[target].agg(['count', 'mean'])
         mapping = (stats['count'] * stats['mean'] + m * global_mean) / (stats['count'] + m)
         return mapping.to_dict(), global_mean
 
-    dir_map, dir_mean = get_global_mapping(df, 'director')
-    act_map, act_mean = get_global_mapping(df, 'actors')
-    dg_map, dg_mean = get_global_mapping(df, 'dir_genre_key')
+    # Legacy inference maps. `te_artifacts` (built by taste_features with the SAME
+    # parser used here) is now the authoritative source; these three are kept so an
+    # older joblib state or a caller reading state['target_encodings'] still works.
+    dir_map, dir_mean = get_global_mapping(df, 'director', m=TE_PRIOR)
+    act_map, act_mean = get_global_mapping(df, 'actors', m=TE_PRIOR)
+    dg_map, dg_mean = get_global_mapping(df, 'dir_genre_key', m=TE_PRIOR, split=False)
 
     X_final.to_csv(config.TRAINING_DATA_PATH, index=False)
     state = {
@@ -223,7 +384,14 @@ def process_features():
             'director': {'map': dir_map, 'mean': dir_mean},
             'actors': {'map': act_map, 'mean': act_mean},
             'dir_genre': {'map': dg_map, 'mean': dg_mean}
-        }
+        },
+        # Authoritative serve-time artifacts, produced by the same code path that
+        # built the training columns. Every entry is {map, counts, mean, m, limit}.
+        'te_artifacts': te_artifacts,
+        'crew_encode': CREW_ENCODE,
+        'te_prior': TE_PRIOR,
+        # {endpoint: {"index": {tmdb_id: rating}, "mean": float}}
+        'neighbor_artifacts': nb_artifacts,
     }
     joblib.dump(state, config.PREPROCESSOR_STATE)
     print(f"✅ Features processed. Shape: {X_final.shape}")
@@ -294,7 +462,9 @@ def transform_single_movie(movie_data, state):
     lang_col = sanitize_col(f'lang_{lang}')
     if lang_col in final_df.columns: final_df[lang_col] = 1.0
 
-    genres = parse_list(movie_data.get('genre', []))
+    genres = canon_genres(movie_data.get('genre', []))
+    # Only labels the fitted binarizer knows: an unseen one makes transform raise.
+    genres = [g for g in genres if g in set(state['mlb_genre'].classes_)]
     gen_vec = state['mlb_genre'].transform([genres])
     for i, gen_name in enumerate(state['mlb_genre'].classes_):
         col_name = sanitize_col(f"gen_{gen_name}")
@@ -316,19 +486,71 @@ def transform_single_movie(movie_data, state):
 
     final_df['director_encoded'] = apply_te(movie_data.get('director'), te.get('director'))
     final_df['actors_encoded'] = apply_te(movie_data.get('actors'), te.get('actors'))
-    
-    primary_genre = parse_list(movie_data.get('genre', []))
-    primary_genre = primary_genre[0] if primary_genre else 'Unknown'
-    dir_genre_key = str(movie_data.get('director')) + "_" + primary_genre
-    final_df['dir_genre_encoded'] = apply_te(dir_genre_key, te.get('dir_genre'))
 
-    # Match predict_ratings.py text_content construction exactly
-    text_content = "Title: " + str(movie_data.get('title', 'Unknown')) + \
-                   ". Directed by: " + str(movie_data.get('director', 'Unknown')) + \
-                   ". " + str(movie_data.get('plot', ''))
-    
+    primary_genre = canon_genres(movie_data.get('genre', []))
+    primary_genre = primary_genre[0] if primary_genre else 'Unknown'
+    # Composite key: canonicalised like training, and looked up WHOLE (splitting it
+    # on commas would ask for "B_Action" instead of "A, B_Action").
+    dir_genre_key = people_key(movie_data.get('director')) + "_" + primary_genre
+    dg = te.get('dir_genre')
+    final_df['dir_genre_encoded'] = (
+        dg['map'].get(dir_genre_key, dg['mean']) if dg else 0.0)
+
+    # --- crew / neighbour / numeric block, applied through the SAME helper that
+    # built the training columns. Doing it by hand here is exactly how the
+    # creator/actor encodings drifted out of sync on the shows side twice.
+    arts = state.get('te_artifacts') or {}
+    for col, limit in state.get('crew_encode', CREW_ENCODE):
+        art = arts.get(col)
+        if not art:
+            continue
+        enc, sup = tf.apply_entity_map(movie_data.get(col), art['map'],
+                                       art.get('counts', {}), art['mean'],
+                                       art.get('limit', limit))
+        if f'{col}_encoded' in final_df.columns:
+            final_df[f'{col}_encoded'] = enc
+        if f'{col}_n' in final_df.columns:
+            final_df[f'{col}_n'] = sup
+    dg_art = arts.get('dir_genre')
+    if dg_art and 'dir_genre_encoded' in final_df.columns:
+        enc, _ = tf.apply_entity_map([dir_genre_key], dg_art['map'],
+                                     dg_art.get('counts', {}), dg_art['mean'])
+        final_df['dir_genre_encoded'] = enc
+
+    nb_arts = state.get('neighbor_artifacts') or {}
+    if nb_arts:
+        nb_cache = tf_neighbors_cache()
+        tid = movie_data.get('tmdb_id')
+        rec = {}
+        try:
+            rec = nb_cache.get(f"movie:{int(float(tid))}") or {}
+        except (TypeError, ValueError):
+            rec = {}
+        for endpoint, art in nb_arts.items():
+            enc, sup = tf.apply_neighbor_map(rec.get(endpoint) or [],
+                                             art['index'], art['mean'], self_id=tid)
+            if f'nb_{endpoint}_mean' in final_df.columns:
+                final_df[f'nb_{endpoint}_mean'] = enc
+            if f'nb_{endpoint}_n' in final_df.columns:
+                final_df[f'nb_{endpoint}_n'] = sup
+
+    extras = tf.movie_numeric_extras(pd.DataFrame([{
+        'revenue': movie_data.get('revenue'), 'budget': movie_data.get('budget'),
+        'vote_count': movie_data.get('vote_count'),
+        'released': movie_data.get('released'),
+        'rating_date': movie_data.get('rating_date'),
+    }]))
+    for c in extras.columns:
+        if c in final_df.columns:
+            final_df[c] = float(extras[c].iloc[0])
+
+    # Richer text — MUST match the training recipe in process_features() above,
+    # which is now guaranteed by sharing _movie_header/_movie_body rather than by
+    # keeping two hand-copied f-strings in sync.
+    text_content = _movie_text(movie_data)
     transformer_model = SentenceTransformer(state['sentence_transformer'])
-    embedding = transformer_model.encode([text_content])
+    embedding = encode_pooled_single(_movie_header(movie_data), _movie_body(movie_data),
+                                     transformer_model)
     pca_vec = state['pca'].transform(embedding)
     for i in range(pca_vec.shape[1]):
         col_name = f'pca_{i}'
@@ -360,6 +582,8 @@ def find_similar_movies(movie_data, input_df, state, top_n=3):
                 'score': sim_scores[idx],
                 'director': row.get('director', 'Unknown'),
                 'genre': row.get('genre', 'Unknown'),
+                'keywords': row.get('keywords', ''),
+                'collection_name': row.get('collection_name'),
             })
         return similar_movies
     except Exception as e:
@@ -380,7 +604,20 @@ def explain_similarity(target_movie, similar_movie):
     common_genres = target_genres.intersection(sim_genres)
     if common_genres and 'Unknown' not in common_genres:
         shared.append(f"Genres ({', '.join(common_genres)})")
-        
+
+    # Same franchise is the strongest possible "shared" signal — say it first.
+    tc, sc = target_movie.get('collection_name'), similar_movie.get('collection_name')
+    if tc and sc and str(tc) == str(sc):
+        shared.insert(0, f"Franchise ({tc})")
+
+    # TMDB keywords are far more specific than genre ("time loop", "heist",
+    # "found family"), so they explain a semantic match much better.
+    tk = {k.strip().lower() for k in parse_list(target_movie.get('keywords', []))}
+    sk = {k.strip().lower() for k in parse_list(similar_movie.get('keywords', []))}
+    common_kw = {k for k in (tk & sk) if k}
+    if common_kw:
+        shared.append(f"Themes ({', '.join(sorted(common_kw)[:4])})")
+
     if shared:
         return " & ".join(shared)
     

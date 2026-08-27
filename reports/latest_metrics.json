@@ -2,96 +2,88 @@
     "benchmarks": [
         {
             "Domain": "movie",
-            "N": 1000,
-            "Model": "Prod Stacking (edge+Cat+SVR+Ord)",
-            "MAE": 0.503,
-            "R2": 0.5009655641961944,
-            "Acc": 75.5
+            "N": 1062,
+            "Model": "Prod Mean-Ensemble (edge+Cat+SVR+Ord, residual)",
+            "MAE": 0.4919962335216573,
+            "R2": 0.5200918034767523,
+            "Acc": 76.74199623352166
         },
         {
             "Domain": "unified_rated",
-            "N": 1322,
+            "N": 1407,
             "Model": "Mean Ensemble",
-            "MAE": 0.5302571860816944,
-            "R2": 0.4672518963899991,
-            "Acc": 75.49167927382754
-        },
-        {
-            "Domain": "unified_full",
-            "N": 1322,
-            "Model": "Mean Ensemble (+music pool)",
-            "MAE": 0.5472768532526475,
-            "R2": 0.44239790722585726,
-            "Acc": 74.05446293494705
+            "MAE": 0.531272210376688,
+            "R2": 0.46793910610903566,
+            "Acc": 74.4136460554371
         },
         {
             "Domain": "tv",
-            "N": 162,
+            "N": 173,
             "Model": "Prod Simplex-Stack (edge+Cat+SVR)",
-            "MAE": 0.6481481481481481,
-            "R2": 0.28016937191249114,
-            "Acc": 66.66666666666666
+            "MAE": 0.6676300578034682,
+            "R2": 0.2879478122972682,
+            "Acc": 64.73988439306359
         },
         {
             "Domain": "game",
             "N": 66,
             "Model": "Local SVR",
-            "MAE": 0.5984848484848485,
-            "R2": 0.3829571845411779,
-            "Acc": 65.15151515151516
+            "MAE": 0.5151515151515151,
+            "R2": 0.47335199190138744,
+            "Acc": 74.24242424242425
         },
         {
             "Domain": "book",
-            "N": 88,
+            "N": 100,
             "Model": "Local SVR",
-            "MAE": 0.4772727272727273,
-            "R2": 0.33178301931564724,
-            "Acc": 79.54545454545455
+            "MAE": 0.305,
+            "R2": 0.7328338042009581,
+            "Acc": 89.0
         }
     ],
     "slices": [
         {
             "Domain": "movie",
-            "N": 1000,
-            "MAE": 0.4795,
-            "R2": 0.5632774315857507,
-            "Acc": 79.0
+            "N": 1062,
+            "MAE": 0.4792843691148776,
+            "R2": 0.5634464342853799,
+            "Acc": 78.53107344632768
         },
         {
             "Domain": "tv",
-            "N": 162,
-            "MAE": 0.6574074074074074,
-            "R2": 0.2815808045165843,
-            "Acc": 64.19753086419753
+            "N": 173,
+            "MAE": 0.708092485549133,
+            "R2": 0.2156202695884093,
+            "Acc": 57.22543352601156
         },
         {
             "Domain": "game",
             "N": 72,
-            "MAE": 0.9722222222222222,
-            "R2": 0.11280465173821608,
-            "Acc": 52.77777777777778
+            "MAE": 0.9236111111111112,
+            "R2": 0.13240133613757266,
+            "Acc": 54.166666666666664
         },
         {
             "Domain": "book",
-            "N": 88,
-            "MAE": 0.5113636363636364,
-            "R2": 0.2399031844715488,
+            "N": 100,
+            "MAE": 0.495,
+            "R2": 0.4257462228227492,
             "Acc": 75.0
         }
     ],
     "ablation": [
         {
             "Protocol": "Base XGB (Aligned)",
-            "MAE": 0.5369894099848714,
-            "R2": 0.45560277475123334,
+            "MAE": 0.5427860696517413,
+            "R2": 0.45689600315537093,
             "EffectSize": "ref",
             "p": "ref"
         },
         {
             "Protocol": "Mean Ensemble (XGB+Cat)",
-            "MAE": 0.5294251134644478,
-            "R2": 0.46630327084938294,
-            "EffectSize": "d=0.077 (trivial)",
+            "MAE": 0.5344705046197583,
+            "R2": 0.46657619150399476,
+            "EffectSize": "d=0.056 (trivial)",
             "p": "0.0000"
         },
         {
@@ -112,20 +104,20 @@
     "distillation": [
         {
             "Domain": "game",
-            "MAE_NoPrior": 0.5848484848484848,
-            "Skill_NoPrior": 0.25984892504357926,
-            "MAE_WithPrior": 0.5969696969696969,
-            "Skill_WithPrior": 0.24450900639163275,
-            "p_value": 0.05934643879191985,
+            "MAE_NoPrior": 0.5954545454545455,
+            "Skill_NoPrior": 0.24642649622312607,
+            "MAE_WithPrior": 0.603030303030303,
+            "Skill_WithPrior": 0.2368390470656595,
+            "p_value": 0.31731050786291415,
             "Verdict": "DROP"
         },
         {
             "Domain": "book",
-            "MAE_NoPrior": 0.46704545454545454,
-            "Skill_NoPrior": 0.3013714506470928,
-            "MAE_WithPrior": 0.4693181818181818,
-            "Skill_WithPrior": 0.29797179833880627,
-            "p_value": 0.7054569861112734,
+            "MAE_NoPrior": 0.353,
+            "Skill_NoPrior": 0.5121614151464897,
+            "MAE_WithPrior": 0.347,
+            "Skill_WithPrior": 0.5204532891100055,
+            "p_value": 0.3545394797735013,
             "Verdict": "DROP"
         }
     ],
@@ -143,9 +135,8 @@
             "tv": "Simplex-Stack",
             "game": "Local SVR (no prior)",
             "book": "Local SVR (no prior)"
-        },
-        "unified_full": "trained on rated + 3,688 music PU pseudo-labels and evaluated INCLUDING music via RepeatedKFold(5x1), XGB proxy; not a frozen-fold / actual-taste metric -- secondary line only"
+        }
     },
-    "generated_at": "2026-06-26T12:41:52",
-    "git_hash": "9e847ae7a94ea16637ce65fc3b34b7d48d6b8fbd"
+    "generated_at": "2026-08-22T18:15:34",
+    "git_hash": "4972d1546d1f3898cc386d0506d47812850f87e5"
 }

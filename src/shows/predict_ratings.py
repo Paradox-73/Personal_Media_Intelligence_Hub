@@ -12,6 +12,8 @@ import seaborn as sns
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common import taste_features as tf
+from src.shows.feature_engineering import _neighbors_cache
 
 def safe_eval(val):
     if pd.isna(val) or val == "": return []
@@ -20,6 +22,22 @@ def safe_eval(val):
         if "[" in str(val): return ast.literal_eval(str(val))
         return [str(val)]
     except: return []
+
+def parse_people(val):
+    """Same person-list parsing as src/shows/feature_engineering.py — the CSV
+    mixes "['A', 'B']" and "A, B" forms, so both must be handled identically on
+    the train and serve sides or the target-encoding keys will not match."""
+    if pd.isna(val) or str(val).strip() == "":
+        return []
+    s = str(val).strip()
+    if s.startswith('['):
+        try:
+            lst = ast.literal_eval(s)
+            return [str(x).strip() for x in lst if str(x).strip()]
+        except (ValueError, SyntaxError):
+            pass
+    return [x.strip() for x in s.split(',') if x.strip()]
+
 
 def get_primary_network(val):
     if pd.isna(val) or val == "": return "Other"
@@ -96,13 +114,17 @@ def run_consolidated_predictions():
     # Text features: mirror feature_engineering exactly (MiniLM embeddings -> fitted PCA).
     if 'pca' in state and 'pca_cols' in state:
         from sentence_transformers import SentenceTransformer
-        text_content = ("Title: " + df['name'].fillna('Unknown') +
-                        ". Network: " + df['primary_network'].fillna('Unknown') +
-                        ". Creator: " + df['created_by'].fillna('').astype(str).str.slice(0, 80) +
-                        ". Cast: " + df['actors'].fillna('').astype(str).str.slice(0, 120) +
-                        ". " + df['overview'].fillna(''))
+        from src.common.text_embedding import encode_pooled
+        from src.shows.feature_engineering import _show_header, _show_body
+        from src.shows.season_data import attach_season_narrative
+        # Same chunk-pooled, L2-normalised recipe the PCA in `state` was fit on --
+        # including the season narrative, which training now embeds.
+        df = attach_season_narrative(df)
+        _records = df.to_dict('records')
+        _headers = [_show_header(r) for r in _records]
+        _bodies = [_show_body(r) for r in _records]
         _stm = SentenceTransformer(state.get('sentence_transformer', 'all-MiniLM-L6-v2'))
-        _emb = _stm.encode(text_content.tolist(), show_progress_bar=False)
+        _emb = encode_pooled(_headers, _bodies, _stm, show_progress_bar=False)
         _pca = state['pca'].transform(_emb)
         pca_df = pd.DataFrame(_pca, columns=state['pca_cols'], index=df.index)
         df = pd.concat([df, pca_df], axis=1)
@@ -111,6 +133,53 @@ def run_consolidated_predictions():
         tfidf_matrix = state['tfidf_model'].transform(df['overview'])
         tfidf_df = pd.DataFrame(tfidf_matrix.toarray(), columns=state['tfidf_cols'], index=df.index)
         df = pd.concat([df, tfidf_df], axis=1)
+
+    # People target-encodings. feature_engineering fits these leakage-safely
+    # (OOF) at train time and stores the *global* smoothed maps in
+    # state['target_encodings'] precisely so serving can reproduce the columns.
+    # Applying them was missing here, so the three encoded columns simply were
+    # not in the frame and the reindex below raised KeyError.
+    _te = state.get('target_encodings', {})
+    if _te:
+        _g = _te.get('global_mean', 3.5)
+
+        def _encode(raw_col, map_key):
+            mapping = _te.get(map_key, {})
+            people = df[raw_col].apply(parse_people) if raw_col in df.columns \
+                else pd.Series([[]] * len(df), index=df.index)
+            return people.apply(
+                lambda items: float(np.mean([mapping.get(i, _g) for i in items]))
+                if items else _g)
+
+        df['creator_encoded'] = _encode('created_by', 'creator')
+        df['actors_encoded'] = _encode('actors', 'actors')
+        df['writer_encoded'] = _encode('writer', 'writer')
+        df['prodco_encoded'] = _encode('production_companies', 'prodco')
+
+    # Crowd block (tvdb_score / tvmaze_rating / tvmaze_weight / critic_avg_5 / ...)
+    # and the TMDB neighbour means. Built through the SAME helper as training so the
+    # two sides cannot drift -- the reason this file raised KeyError twice before.
+    for _c, _v in tf.show_numeric_extras(df).items():
+        df[_c] = _v
+    _nb = state.get('neighbor_artifacts') or {}
+    if _nb:
+        _cache = _neighbors_cache()
+        _ids = pd.to_numeric(df.get('tmdb_id'), errors='coerce').tolist()
+        for _ep, _art in _nb.items():
+            _lists = tf.load_neighbor_lists(_cache, 'tv', _ids, _ep)
+            _pairs = [tf.apply_neighbor_map(_l, _art['index'], _art['mean'], self_id=_i)
+                      for _l, _i in zip(_lists, _ids)]
+            df[f'nb_{_ep}_mean'] = [p[0] for p in _pairs]
+            df[f'nb_{_ep}_n'] = [p[1] for p in _pairs]
+
+    # Any column the trained model expects but this frame lacks -> explicit 0 rather
+    # than a KeyError, and say so, so a silent all-zero column cannot hide.
+    _missing = [c for c in state['features_columns'] if c not in df.columns]
+    if _missing:
+        print(f"   ⚠️ {len(_missing)} expected feature(s) absent, filled with 0: "
+              f"{_missing[:8]}{' ...' if len(_missing) > 8 else ''}")
+        for c in _missing:
+            df[c] = 0.0
 
     X = df[state['features_columns']].fillna(0)
 
@@ -126,7 +195,7 @@ def run_consolidated_predictions():
             preds = np.sum(probs * present_bucket_vals, axis=1)
         else:
             preds = model.predict(X)
-        df[f'pred_{name.lower()}'] = np.round(np.clip(preds, 0, 5) * 2) / 2
+        df[f'pred_{name.lower()}'] = np.round(np.clip(preds, 0.5, 5.0) * 2) / 2
 
     # Main prediction column (Using Stacking for best accuracy)
     df['predicted_rating'] = df['pred_stacking']

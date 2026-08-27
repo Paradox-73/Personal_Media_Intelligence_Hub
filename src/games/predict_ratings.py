@@ -10,6 +10,11 @@ from sentence_transformers import SentenceTransformer
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common.parsing import (  # canonical shared parsers
+    parse_list, people_key, sanitize_col, clean_money)
+from src.common import taste_features as tf
+from src.common.text_embedding import encode_pooled
+from src.games.feature_engineering import _game_header, _game_body
 
 def clean_year(val):
     try:
@@ -23,19 +28,7 @@ def clean_year(val):
     except:
         return 0
 
-def parse_list(x):
-    if pd.isna(x) or x == "": return []
-    try:
-        if isinstance(x, list): return x
-        s = str(x).strip()
-        if s.startswith('[') and s.endswith(']'):
-            return ast.literal_eval(s)
-        return [item.strip() for item in s.split(',')]
-    except:
-        return [str(x)]
 
-def sanitize_col(col_name):
-    return re.sub(r"[\[\]<']", "", str(col_name))
 
 def batch_predict_games():
     print("🚀 Starting Game Batch Prediction...")
@@ -71,20 +64,35 @@ def batch_predict_games():
                            columns=[f"gen_{sanitize_col(c)}" for c in state['mlb_genre'].classes_], 
                            index=df.index)
     
-    df['dev_list'] = df['developers'].apply(parse_list)
-    dev_encoded = state['mlb_dev'].transform(df['dev_list'])
-    X_dev = pd.DataFrame(dev_encoded[:, state['valid_dev_indices']], 
-                         columns=[f"dev_{sanitize_col(state['mlb_dev'].classes_[i])}" for i in state['valid_dev_indices']], 
-                         index=df.index)
+    # Developer / publisher / tag target encodings, through the same helper that
+    # built the training columns. The old hand-rolled multi-hot here would silently
+    # zero-fill every real feature once training moved to encodings.
+    _arts = state.get('te_artifacts') or {}
+    _enc_cols = {}
+    for _col, _lim in state.get('game_encode', []):
+        _art = _arts.get(_col)
+        if not _art:
+            continue
+        _pairs = [tf.apply_entity_map(v, _art['map'], _art.get('counts', {}),
+                                      _art['mean'], _art.get('limit', _lim))
+                  for v in df.get(_col, pd.Series('', index=df.index))]
+        _enc_cols[f'{_col}_encoded'] = [p[0] for p in _pairs]
+        _enc_cols[f'{_col}_n'] = [p[1] for p in _pairs]
+    _enc_cols['playtime'] = pd.to_numeric(df.get('playtime'), errors='coerce').fillna(0).values
+    X_dev = pd.DataFrame(_enc_cols, index=df.index)
 
     print("   Generating text embeddings...")
-    df['text_content'] = "Name: " + df['name'].fillna('') + \
-                         ". Genres: " + df['genres'].fillna('') + \
-                         ". Tags: " + df['tags'].fillna('') + \
-                         ". Description: " + df['description_raw'].fillna('')
-    
+    # MUST match feature_engineering.process_features(): the PCA in `state` was fit
+    # on chunk-pooled, L2-normalised vectors. A plain `.encode()` here would score
+    # every game in a different space from the one the model was trained in.
+    _records = df.to_dict('records')
+    df['text_header'] = [_game_header(r) for r in _records]
+    _body = pd.Series([_game_body(r) for r in _records], index=df.index)
+    df['text_content'] = df['text_header'] + " " + _body
+
     transformer_model = SentenceTransformer('all-MiniLM-L6-v2')
-    text_embeddings = transformer_model.encode(df['text_content'].tolist(), show_progress_bar=True)
+    text_embeddings = encode_pooled(df['text_header'].tolist(), _body.tolist(),
+                                    transformer_model, show_progress_bar=True)
     X_text_pca = state['pca'].transform(text_embeddings)
     X_text = pd.DataFrame(X_text_pca, columns=[f'pca_{i}' for i in range(X_text_pca.shape[1])])
 
@@ -97,6 +105,10 @@ def batch_predict_games():
     for col in state['training_columns']:
         if col in X_final.columns:
             X_inf[col] = X_final[col]
+    _missing = [c for c in state['training_columns'] if c not in X_final.columns]
+    if _missing:
+        print(f"   ⚠️ {len(_missing)} model feature(s) not built here, left at 0: "
+              f"{_missing[:8]}{' ...' if len(_missing) > 8 else ''}")
     
     # Predict
     preds = np.asarray(model.predict(X_inf), dtype=float)
@@ -106,7 +118,7 @@ def batch_predict_games():
     _r = pd.to_numeric(df['my_rating'], errors='coerce')
     _rated = (_r > 0).values
     preds = calibrate_to_ratings(preds, preds[_rated], _r.values[_rated])
-    df['predicted_rating'] = np.round(np.clip(preds, 0, 5) * 2) / 2
+    df['predicted_rating'] = np.round(np.clip(preds, 0.5, 5.0) * 2) / 2
     
     # Save Results
     results_path = config.BASE_DIR / "results" / "games" / "game_predictions_detailed.csv"

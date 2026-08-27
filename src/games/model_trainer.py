@@ -16,6 +16,13 @@ from sklearn.pipeline import Pipeline
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 
+# C=3.0, not the old frozen 1.0. Every domain measured ~95% bias-dominated, which
+# is the regime where more capacity helps. Chosen by NESTED CV (hyperparameter
+# selected on an inner 3-fold of each training fold, scored on the untouched outer
+# fold) -- reports/capacity_tuning.json. A naive same-folds sweep picked C=10, but
+# that was winner's curse; the honest optimum is 3.0.
+SVR_C = 3.0
+
 def get_unified_predictions(df, media_type='game'):
     """
     Helper to get predictions from the Unified Model to use as a feature (distillation).
@@ -38,7 +45,17 @@ def get_unified_predictions(df, media_type='game'):
         
         return None
     except Exception as e:
-        print(f"   ⚠️ Error getting unified predictions: {e}")
+        # Do NOT silently train without the prior. The lookup key is stale --
+        # predict_unified_ratings writes `pred_MeanEnsemble`, not `pred_Stacking`
+        # -- so this branch has ALWAYS been taken and distillation has never
+        # actually run. Renaming the key alone is not enough: `unified_prior`
+        # would become a column that is not in state['training_columns'], and
+        # the fitted scaler (n_features_in_ = 51) would reject it at serve time.
+        # Enabling distillation needs the column plumbed into the preprocessor
+        # state as well; until then this prints loudly instead of whispering.
+        print(f"   ⚠️  DISTILLATION DISABLED — unified prior unavailable: {e}")
+        print("      (expected column 'pred_Stacking'; the file provides "
+              "'pred_MeanEnsemble'. Training WITHOUT the unified prior.)")
         return None
 
 def calculate_skill_score(y_true, y_pred, y_train_mean):
@@ -83,11 +100,11 @@ def train_models():
 
     # --- 1. SVR (Distilled) ---
     # With N<100, we freeze hyperparameters as recommended
-    print(f"   Training Distilled SVR (Frozen HPs: C=1.0, kernel=rbf)...")
+    print(f"   Training Distilled SVR (nested-CV tuned: C={SVR_C}, kernel=rbf)...")
     
     svr_pipe = Pipeline([
         ('scaler', StandardScaler()),
-        ('svr', SVR(kernel='rbf', C=1.0, gamma='scale', epsilon=0.1))
+        ('svr', SVR(kernel='rbf', C=SVR_C, gamma='scale', epsilon=0.1))
     ])
     svr_pipe.fit(X_train, y_train)
     

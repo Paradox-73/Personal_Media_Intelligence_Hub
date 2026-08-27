@@ -71,10 +71,20 @@ def _metrics(y_true, y_pred_raw):
 
 # ---- per-domain model builders -------------------------------------------------
 
+# depth 8 / 600 trees, not the old depth 6 / 200. Movies measured ~95% bias-dominated
+# (reports/bias_variance.json), which is exactly the regime where more capacity helps.
+# Chosen by NESTED CV -- setting picked on an inner 3-fold of each training fold and
+# scored on the untouched outer fold, so this is not winner's curse:
+#     frozen depth6/n300   MAE 0.4746  R2 0.5628
+#     nested-tuned         MAE 0.4655  R2 0.5788   (modal choice depth8/n600, 15/30)
+# See reports/capacity_tuning.json.
+XGB_DEPTH, XGB_TREES = 8, 600
+
+
 def _fit_predict_xgb(X_tr, y_tr, X_te):
     w = _balanced_weights(y_tr)
     m = xgb.XGBRegressor(
-        n_estimators=200, learning_rate=0.03, max_depth=6,
+        n_estimators=XGB_TREES, learning_rate=0.03, max_depth=XGB_DEPTH,
         subsample=0.8, colsample_bytree=0.8,
         objective="reg:absoluteerror", random_state=42,
     )
@@ -82,10 +92,17 @@ def _fit_predict_xgb(X_tr, y_tr, X_te):
     return _maybe_calibrate(m.predict(X_tr), y_tr, m.predict(X_te))
 
 
+# Must track src/{books,games}/model_trainer.py SVR_C -- this module exists to
+# benchmark the DEPLOYED local model, so a divergence here would republish numbers
+# for a model that is not shipped (the exact failure the movie RidgeCV-vs-mean
+# mismatch caused). Nested-CV tuned; see reports/capacity_tuning.json.
+SVR_C = 3.0
+
+
 def _fit_predict_svr(X_tr, y_tr, X_te):
     m = Pipeline([
         ("scaler", StandardScaler()),
-        ("svr", SVR(kernel="rbf", C=1.0, gamma="scale", epsilon=0.1)),
+        ("svr", SVR(kernel="rbf", C=SVR_C, gamma="scale", epsilon=0.1)),
     ])
     m.fit(X_tr, y_tr, svr__sample_weight=_balanced_weights(y_tr))
     return _maybe_calibrate(m.predict(X_tr), y_tr, m.predict(X_te))

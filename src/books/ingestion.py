@@ -37,6 +37,23 @@ query BookByIsbn($isbn: String!) {
 """
 
 
+def _tag_names(tags, category, limit=10):
+    """Pull one `cached_tags` category ("Genre" / "Mood" / "Tag" / "Content Warning").
+
+    Hardcover returns all four in the same blob. Ingestion originally read only
+    "Genre", which is why `moods` / `hc_tags` had to be backfilled by a separate
+    script and were missing entirely for any newly-added book.
+    """
+    if not isinstance(tags, dict):
+        return []
+    out = []
+    for t in (tags.get(category) or [])[:limit]:
+        name = t.get("tag") if isinstance(t, dict) else t
+        if name and name not in out:
+            out.append(str(name))
+    return out
+
+
 def _auth_header():
     if not HARDCOVER_TOKEN:
         return None
@@ -62,10 +79,8 @@ def fetch_hardcover(isbn):
 
         authors = [c["author"]["name"] for c in book.get("contributions", []) if c.get("author")]
 
-        genres = []
         tags = book.get("cached_tags") or {}
-        if isinstance(tags, dict):
-            genres = [t.get("tag") for t in tags.get("Genre", []) if t.get("tag")]
+        genres = _tag_names(tags, "Genre")
 
         slug = book.get("slug")
         return {
@@ -78,6 +93,13 @@ def fetch_hardcover(isbn):
             "description": book.get("description") or "",
             "publishedDate": str(book.get("release_year") or ""),
             "infoLink": f"https://hardcover.app/books/{slug}" if slug else "",
+            # The taste channels. `moods` and `hc_tags` are model features
+            # (moods_encoded / hc_tags_encoded, and the shared unified tag slot),
+            # so the Oracle has to fetch them or it scores a book on fields the
+            # trainer had and it does not.
+            "moods": ", ".join(_tag_names(tags, "Mood")),
+            "hc_tags": ", ".join(_tag_names(tags, "Tag")),
+            "content_warnings": ", ".join(_tag_names(tags, "Content Warning")),
         }
     except Exception as e:
         print(f"  ⚠️ Hardcover error for {isbn}: {e}")
@@ -178,6 +200,10 @@ def fetch_book_details_by_id(book_id, fallback=None):
                                        str(fallback.get("year", ""))),
             "thumbnail": _coalesce(ol.get("thumbnail"), fallback.get("poster_path"), ""),
             "infoLink": _coalesce(hc.get("infoLink"), ol.get("infoLink"), ""),
+            "moods": hc.get("moods", ""),
+            "hc_tags": hc.get("hc_tags", ""),
+            "content_warnings": hc.get("content_warnings", ""),
+            "language": _coalesce(ol.get("language"), "English"),
         }
     else:
         # Open Library work key -> work JSON (description + subjects only)
@@ -198,6 +224,8 @@ def fetch_book_details_by_id(book_id, fallback=None):
                 "publishedDate": str(fallback.get("year", "")),
                 "thumbnail": fallback.get("poster_path", ""),
                 "infoLink": f"https://openlibrary.org{book_id}",
+                "moods": "", "hc_tags": "", "content_warnings": "",
+                "language": "English",
             }
         except Exception as e:
             print(f"  ⚠️ Open Library work fetch error: {e}")
@@ -278,9 +306,7 @@ def _gql(query, variables=None):
 
 def _genres_from_cached_tags(tags):
     """Extract the 'Genre' tag names from a Hardcover cached_tags blob."""
-    if not isinstance(tags, dict):
-        return []
-    return [t.get("tag") for t in tags.get("Genre", []) if t.get("tag")]
+    return _tag_names(tags, "Genre")
 
 
 def _shape_user_book(ub):
@@ -295,7 +321,8 @@ def _shape_user_book(ub):
     book = ub.get("book") or {}
     edition = ub.get("edition") or {}
     authors = [c["author"]["name"] for c in book.get("contributions", []) if c.get("author")]
-    genres = _genres_from_cached_tags(book.get("cached_tags"))
+    cached = book.get("cached_tags")
+    genres = _genres_from_cached_tags(cached)
     book_edition = (book.get("editions") or [{}])
     book_edition = book_edition[0] if book_edition else {}
 
@@ -322,6 +349,11 @@ def _shape_user_book(ub):
         "thumbnail": (book.get("image") or {}).get("url") or "",
         "infoLink": f"https://hardcover.app/books/{slug}" if slug else "",
         "language": language,
+        # Taste channels — model features, so they come from the SAME record as
+        # the rating instead of needing a separate enrich_extended backfill.
+        "moods": ", ".join(_tag_names(cached, "Mood")),
+        "hc_tags": ", ".join(_tag_names(cached, "Tag")),
+        "content_warnings": ", ".join(_tag_names(cached, "Content Warning")),
     }
 
 

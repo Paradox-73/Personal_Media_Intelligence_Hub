@@ -1,0 +1,222 @@
+{
+  "movie": {
+    "N": 1062,
+    "k": 108,
+    "learning_curve": {
+      "0.25": {
+        "val_mae": 0.5056,
+        "train_mae": 0.051,
+        "val_r2": 0.5085
+      },
+      "0.5": {
+        "val_mae": 0.4851,
+        "train_mae": 0.0839,
+        "val_r2": 0.5421
+      },
+      "0.75": {
+        "val_mae": 0.4771,
+        "train_mae": 0.1097,
+        "val_r2": 0.5514
+      },
+      "1.0": {
+        "val_mae": 0.4746,
+        "train_mae": 0.1349,
+        "val_r2": 0.5628
+      }
+    },
+    "tail_slope": -0.0025,
+    "capacity": {
+      "small": {
+        "val_mae": 0.5024,
+        "train_mae": 0.4185,
+        "val_r2": 0.5156
+      },
+      "default": {
+        "val_mae": 0.4741,
+        "train_mae": 0.136,
+        "val_r2": 0.5597
+      },
+      "large": {
+        "val_mae": 0.4654,
+        "train_mae": 0.0025,
+        "val_r2": 0.5796
+      }
+    }
+  },
+  "tv": {
+    "N": 173,
+    "k": 56,
+    "learning_curve": {
+      "0.25": {
+        "val_mae": 0.7746,
+        "train_mae": 0.0184,
+        "val_r2": 0.073
+      },
+      "0.5": {
+        "val_mae": 0.7264,
+        "train_mae": 0.0299,
+        "val_r2": 0.1986
+      },
+      "0.75": {
+        "val_mae": 0.6965,
+        "train_mae": 0.0414,
+        "val_r2": 0.2214
+      },
+      "1.0": {
+        "val_mae": 0.6724,
+        "train_mae": 0.0559,
+        "val_r2": 0.2593
+      }
+    },
+    "tail_slope": -0.0241,
+    "capacity": {
+      "small": {
+        "val_mae": 0.6922,
+        "train_mae": 0.3874,
+        "val_r2": 0.2237
+      },
+      "default": {
+        "val_mae": 0.6763,
+        "train_mae": 0.0554,
+        "val_r2": 0.2593
+      },
+      "large": {
+        "val_mae": 0.6864,
+        "train_mae": 0.0,
+        "val_r2": 0.2524
+      }
+    }
+  },
+  "game": {
+    "N": 66,
+    "k": 51,
+    "learning_curve": {
+      "0.25": {
+        "val_mae": 0.7348,
+        "train_mae": 0.1467,
+        "val_r2": 0.0921
+      },
+      "0.5": {
+        "val_mae": 0.6641,
+        "train_mae": 0.1506,
+        "val_r2": 0.2126
+      },
+      "0.75": {
+        "val_mae": 0.6212,
+        "train_mae": 0.143,
+        "val_r2": 0.2873
+      },
+      "1.0": {
+        "val_mae": 0.6035,
+        "train_mae": 0.1411,
+        "val_r2": 0.3699
+      }
+    },
+    "tail_slope": -0.0177,
+    "capacity": {
+      "small": {
+        "val_mae": 0.6856,
+        "train_mae": 0.4751,
+        "val_r2": 0.1766
+      },
+      "default": {
+        "val_mae": 0.5909,
+        "train_mae": 0.1413,
+        "val_r2": 0.3908
+      },
+      "large": {
+        "val_mae": 0.5492,
+        "train_mae": 0.0,
+        "val_r2": 0.436
+      }
+    }
+  },
+  "book": {
+    "N": 93,
+    "k": 29,
+    "learning_curve": {
+      "0.25": {
+        "val_mae": 0.552,
+        "train_mae": 0.0984,
+        "val_r2": 0.143
+      },
+      "0.5": {
+        "val_mae": 0.4659,
+        "train_mae": 0.0905,
+        "val_r2": 0.3703
+      },
+      "0.75": {
+        "val_mae": 0.4283,
+        "train_mae": 0.0797,
+        "val_r2": 0.4422
+      },
+      "1.0": {
+        "val_mae": 0.3674,
+        "train_mae": 0.0819,
+        "val_r2": 0.5728
+      }
+    },
+    "tail_slope": -0.0609,
+    "capacity": {
+      "small": {
+        "val_mae": 0.4489,
+        "train_mae": 0.2811,
+        "val_r2": 0.3749
+      },
+      "default": {
+        "val_mae": 0.3602,
+        "train_mae": 0.081,
+        "val_r2": 0.5807
+      },
+      "large": {
+        "val_mae": 0.3468,
+        "train_mae": 0.0,
+        "val_r2": 0.6179
+      }
+    }
+  },
+  "unified": {
+    "N": 1400,
+    "k": 235,
+    "learning_curve": {
+      "0.25": {
+        "val_mae": 0.5856,
+        "train_mae": 0.0898,
+        "val_r2": 0.3769
+      },
+      "0.5": {
+        "val_mae": 0.5635,
+        "train_mae": 0.1435,
+        "val_r2": 0.4108
+      },
+      "0.75": {
+        "val_mae": 0.5506,
+        "train_mae": 0.1795,
+        "val_r2": 0.4374
+      },
+      "1.0": {
+        "val_mae": 0.5438,
+        "train_mae": 0.2034,
+        "val_r2": 0.4452
+      }
+    },
+    "tail_slope": -0.0068,
+    "capacity": {
+      "small": {
+        "val_mae": 0.5698,
+        "train_mae": 0.5152,
+        "val_r2": 0.3854
+      },
+      "default": {
+        "val_mae": 0.5471,
+        "train_mae": 0.2044,
+        "val_r2": 0.4402
+      },
+      "large": {
+        "val_mae": 0.5382,
+        "train_mae": 0.0096,
+        "val_r2": 0.4624
+      }
+    }
+  }
+}

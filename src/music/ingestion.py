@@ -256,40 +256,14 @@ def fetch_audio_features(track_ids) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# 5. Implicit rating
+# 5. Flatten to a row
 # --------------------------------------------------------------------------- #
-def implicit_rating(row_meta: dict) -> float:
-    """
-    Spotify has no star ratings, so we synthesise a 1.0-5.0 affinity score from
-    behavioural signals. This is the target the model learns to predict. If you
-    keep your own ratings elsewhere, drop a `rating` column into music_library.csv
-    after this step and it will be used instead (see feature_engineering.py).
-
-    Signal weights (transparent on purpose, tune to taste):
-      saved (Liked Song)        +1.5
-      appears in a playlist     +0.4 each, capped at +1.0
-      top track (any window)    rank 0 -> +2.0 decaying to ~0 by rank 99
-      track popularity (0-100)  scaled to +0.0..+0.5
-    """
-    score = 2.5  # neutral baseline
-    if row_meta.get("_source_saved"):
-        score += 1.5
-    n_pl = len(row_meta.get("_playlists", []))
-    score += min(n_pl * 0.4, 1.0)
-
-    ranks = row_meta.get("_top_ranks", {})
-    if ranks:
-        best = min(ranks.values())
-        score += 2.0 * max(0.0, 1.0 - best / 99.0)
-
-    pop = row_meta.get("popularity") or 0
-    score += (pop / 100.0) * 0.5
-
-    return round(max(1.0, min(5.0, score)), 2)
-
-
-# --------------------------------------------------------------------------- #
-# 6. Flatten to a row
+# NOTE: Music has no star ratings, and we deliberately DO NOT synthesise one.
+# The behavioural signals (saved / playlist membership / top-track rank / play
+# popularity) are kept as raw feature columns below (`is_saved`, `playlists`,
+# `top_*`, `popularity`) and feed the taste-profile clustering + song-to-song
+# similarity engine (see src/music/profile_builder.py + affinity.py). A single
+# fabricated "star rating" was misleading, so it was removed.
 # --------------------------------------------------------------------------- #
 def build_row(t, artists, albums, audio, top_ranks, saved_meta, playlist_meta):
     tid = t["id"]
@@ -299,13 +273,6 @@ def build_row(t, artists, albums, audio, top_ranks, saved_meta, playlist_meta):
     genres = sorted({g for a in art_objs for g in a.get("genres", [])})
     rel_date = alb.get("release_date", "") or ""
     rel_year = int(rel_date[:4]) if rel_date[:4].isdigit() else None
-
-    meta_for_rating = {
-        "_source_saved": tid in saved_meta,
-        "_playlists": playlist_meta.get(tid, {}).get("_playlists", []),
-        "_top_ranks": top_ranks.get(tid, {}),
-        "popularity": t.get("popularity"),
-    }
 
     row = {
         "track_id": tid,
@@ -338,7 +305,6 @@ def build_row(t, artists, albums, audio, top_ranks, saved_meta, playlist_meta):
         "top_short": top_ranks.get(tid, {}).get("short_term"),
         "top_medium": top_ranks.get(tid, {}).get("medium_term"),
         "top_long": top_ranks.get(tid, {}).get("long_term"),
-        "rating": implicit_rating(meta_for_rating),
     }
 
     feats = audio.get(tid) or {}
@@ -401,7 +367,8 @@ def main():
             print(f"  Warning: track {t.get('id')} failed schema validation ({e}); saving raw.")
             rows.append(row)
 
-    df = pd.DataFrame(rows).sort_values("rating", ascending=False).reset_index(drop=True)
+    # Sort by play popularity (highest first); no synthesised rating column exists.
+    df = pd.DataFrame(rows).sort_values("popularity", ascending=False).reset_index(drop=True)
 
     df.to_csv(config.LIBRARY_CSV, index=False)
     have_af = df["has_audio_features"].sum()

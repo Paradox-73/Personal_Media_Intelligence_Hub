@@ -24,9 +24,21 @@ st.markdown("Predict your rating for any book using a Local Regressor, a Tiered 
 
 # --- HELPERS ---
 def parse_list(x):
+    """List-ify a field that may arrive as a real list, a repr of one, or a plain
+    comma string.
+
+    `fetch_book_details_by_id` returns `authors` as "Bryan Lee O'Malley" — a plain
+    string. `ast.literal_eval` raises on that, and the old bare `except: return []`
+    turned every author into an empty list, which the page rendered as "N/A".
+    """
     if isinstance(x, list): return x
-    try: return ast.literal_eval(str(x))
-    except: return []
+    if x is None: return []
+    s = str(x).strip()
+    if not s or s.lower() == 'nan': return []
+    if s[:1] in '[(':
+        try: return list(ast.literal_eval(s))
+        except (ValueError, SyntaxError): pass
+    return [p.strip() for p in s.split(',') if p.strip()]
 
 
 # --- LOAD ARTIFACTS ---
@@ -41,6 +53,12 @@ def load_artifacts():
         return reg, clf, state, meta
     except FileNotFoundError:
         return None, None, None, {}
+
+
+@st.cache_resource
+def _get_books_text_oracle():
+    from src.books.text_similarity import BooksTextOracle
+    return BooksTextOracle()
 
 
 regressor, classifier, state, meta = load_artifacts()
@@ -148,7 +166,20 @@ if st.session_state['selected_book_raw_data']:
 
                 def round_half(x): return max(0.5, min(5.0, np.round(np.clip(x, 0, 5) * 2) / 2))
 
-                final_score = round_half(regressor.predict(input_df)[0])
+                # Headline prediction = the deployed TEXT-SIMILARITY model (embedding-kNN
+                # over plot/author/description). It scores skill 0.43 for Books vs 0.24 for
+                # the feature SVR — your book taste lives in the text. See TEXT_VS_CROWD_ANALYSIS.md.
+                text_pred, text_nbrs = None, []
+                try:
+                    from src.books.text_similarity import BooksTextOracle
+                    _bto = _get_books_text_oracle()
+                    text_pred = round_half(_bto.predict(raw_data, state))
+                    text_nbrs = _bto.similar(raw_data, state, n=4)
+                except Exception:
+                    pass
+
+                feat_score = round_half(regressor.predict(input_df)[0])
+                final_score = text_pred if text_pred is not None else feat_score
                 pred_probs = classifier.predict_proba(input_df)[0]
                 classes = ["Skip it ❌", "Worth a Read 📖", "Must-Read ⭐"]
                 verdict = classes[int(np.argmax(pred_probs))]
@@ -157,10 +188,18 @@ if st.session_state['selected_book_raw_data']:
                 st.markdown("### The Verdict")
                 c1, c2, c3 = st.columns(3)
                 q80 = meta.get('conformal_width_80')
+                label = "Predicted Rating (text-similarity)" if text_pred is not None else "Predicted Rating"
                 if q80:
-                    c1.metric("Predicted Rating", f"⭐ {final_score:.1f}", f"±{q80:.2f} (80% CI)", delta_color="off")
+                    c1.metric(label, f"⭐ {final_score:.1f}", f"±{q80:.2f} (80% CI)", delta_color="off")
                 else:
-                    c1.metric("Predicted Rating", f"⭐ {final_score:.1f}")
+                    c1.metric(label, f"⭐ {final_score:.1f}")
+                if text_pred is not None:
+                    st.caption(f"Text-similarity model (skill 0.43) · feature model says ⭐ {feat_score:.1f}.")
+                    if text_nbrs:
+                        st.markdown("**Because you rated these similarly-written books:**")
+                        for nb in text_nbrs:
+                            st.write(f"• **{nb['your_rating']:.1f}★** {nb['title']} — {nb['authors']}  "
+                                     f"(sim {nb['similarity']:.2f})")
                 c2.metric("Verdict", verdict)
                 c3.metric("Confidence", f"{confidence:.1f}%")
                 if q80:

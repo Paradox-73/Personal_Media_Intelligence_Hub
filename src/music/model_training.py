@@ -1,154 +1,109 @@
 """
-model_trainer.py — Stage 5 of the Music pipeline.
+model_training.py — Stage 5 of the Music pipeline: the Taste / Similarity Oracle.
 
-Trains a personalised model that predicts your star rating for any track, then
-exposes an Oracle-style recommender (same idea as the Movies/Books Oracles):
+Music has NO star ratings and we deliberately do not synthesise one. Instead of a
+rating regressor, this exposes an unsupervised taste engine over the engineered
+feature matrix:
 
-  * predict_rating(track_id)  -> your likely 1-5 rating for a track
-  * similar_to(track_id, n)   -> n most similar tracks you own, with why
+  * similar_to(track_id, n)   -> n most similar tracks you own (cosine), with why
+  * cluster_of(track_id)      -> which taste "persona" (KMeans cluster) a track
+                                 belongs to, and the cluster's signature genres
   * discover(seed_ids, n)     -> NEW tracks via ReccoBeats recommendation API
                                  (fills the gap left by Spotify's removed
                                   /v1/recommendations endpoint)
 
-Model: a Stacking Ensemble (XGBoost + SVR, plus CatBoost when installed) with a
-Ridge meta-learner — consistent with the Unified model's stacking approach.
-
-Outputs:
-  models/music/model.joblib       trained ensemble
-  prints a performance report in the project's standard format
+The clustering + PU-affinity taste profile itself is built by
+`src/music/profile_builder.py` (saved to models/music/profile.joblib); this module
+is the thin query layer the app's Music Oracle page talks to. There is no
+model.joblib rating regressor anymore.
 
 Run:
-    python src/music/model_trainer.py
-    python src/music/model_trainer.py --similar 3n3Ppam7vgaVa1iaRUc9Lp
-    python src/music/model_trainer.py --predict 3n3Ppam7vgaVa1iaRUc9Lp
-    python src/music/model_trainer.py --discover 3n3Ppam7vgaVa1iaRUc9Lp,7ouMYWpwJ422jRcDASZB7P
+    python -m src.music.model_training                 # library + profile summary
+    python -m src.music.model_training --similar <id>
+    python -m src.music.model_training --cluster <id>
+    python -m src.music.model_training --discover <id1>,<id2>
 """
 
 import argparse
+import sys
+from dataclasses import dataclass, field
+from typing import Any
 
 import joblib
 import numpy as np
 import pandas as pd
 import requests
-from sklearn.ensemble import StackingRegressor
-from sklearn.linear_model import Ridge
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
-from sklearn.svm import SVR
-from xgboost import XGBRegressor
 
 from src.music import config
 
-MODEL_PATH = config.MODELS_DIR / "model.joblib"
+PROFILE_PATH = config.MODELS_DIR / "profile.joblib"
 
 
-# --------------------------------------------------------------------------- #
-# Data
-# --------------------------------------------------------------------------- #
-def load_features():
-    if not config.FEATURES_NPZ.exists():
-        raise SystemExit("Run feature_engineering.py first (music_features.npz missing).")
-    d = np.load(config.FEATURES_NPZ, allow_pickle=True)
-    return d["X"], d["y"], list(d["feature_names"])
+@dataclass
+class MusicProfile:
+    """Container for the taste profile (mirror of profile_builder.MusicProfile).
+
+    Defined here too so the pickled profile.joblib loads regardless of how it was
+    built. profile_builder.py is usually run as a script, so its objects pickle
+    under ``__main__.MusicProfile``; we register this compatible class into
+    ``__main__`` before joblib.load so unpickling resolves it (see Oracle.__init__)."""
+    centroids: Any = None
+    cluster_labels: Any = None
+    cluster_meta: Any = None
+    X_lib: Any = None
+    pu_model: Any = None
+    pool_score_dist: Any = None
+    top_genres: Any = None
+    audio_fingerprint: Any = None
+    feature_names: Any = None
+    feature_groups: Any = None
 
 
-def build_estimator():
-    base = [
-        ("xgb", XGBRegressor(
-            n_estimators=400, max_depth=4, learning_rate=0.05,
-            subsample=0.85, colsample_bytree=0.85, reg_lambda=1.0,
-            random_state=42, n_jobs=-1)),
-        ("svr", SVR(C=3.0, epsilon=0.1, kernel="rbf")),
-    ]
+def _load_profile():
+    """Load the taste profile, tolerating the __main__/module pickle-path quirk."""
+    if not PROFILE_PATH.exists():
+        return None
+    main_mod = sys.modules.get("__main__")
+    injected = main_mod is not None and not hasattr(main_mod, "MusicProfile")
+    if injected:
+        main_mod.MusicProfile = MusicProfile
     try:
-        from catboost import CatBoostRegressor
-        base.append(("cat", CatBoostRegressor(
-            iterations=400, depth=5, learning_rate=0.05, verbose=0, random_state=42)))
-    except ImportError:
-        print("(CatBoost not installed — using XGBoost + SVR only.)")
-    return StackingRegressor(estimators=base, final_estimator=Ridge(alpha=1.0), n_jobs=-1)
+        return joblib.load(PROFILE_PATH)
+    except Exception:
+        return None
+    finally:
+        if injected:
+            del main_mod.MusicProfile
 
 
 # --------------------------------------------------------------------------- #
-# Train + report
-# --------------------------------------------------------------------------- #
-def train():
-    X, y, names = load_features()
-    print(f"Training on {X.shape[0]} tracks x {X.shape[1]} features\n")
-
-    X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, random_state=42)
-    model = build_estimator()
-    model.fit(X_tr, y_tr)
-
-    pred = np.clip(model.predict(X_te), 1.0, 5.0)
-    mae = mean_absolute_error(y_te, pred)
-    rmse = np.sqrt(mean_squared_error(y_te, pred))
-    r2 = r2_score(y_te, pred)
-    err = np.abs(pred - y_te)
-    exact = np.mean(err <= 1e-6) * 100
-    half = np.mean(err <= 0.5) * 100
-    one = np.mean((err > 0.5) & (err <= 1.0)) * 100
-
-    print("📊 PERFORMANCE REPORT: 🎵 MUSIC STACKING ENSEMBLE 🎵")
-    print("=" * 50)
-    print(f"   📉 [TEST SET] Regressor MAE:  {mae:.4f}")
-    print(f"   📉 [TEST SET] Regressor RMSE: {rmse:.4f}")
-    print(f"   📈 [TEST SET] Regressor R²:   {r2:.4f}")
-    print("   " + "-" * 40)
-    print(f"   Exact (0.0):  {exact:.1f}%")
-    print(f"   ±0.5 Stars:   {half:.1f}%")
-    print(f"   ±1.0 Stars:   {one:.1f}%")
-    print("=" * 50)
-
-    # Refit on all data before saving (more signal for inference)
-    model.fit(X, y)
-    joblib.dump({"model": model, "feature_names": names}, MODEL_PATH)
-    print(f"\nSaved model -> {MODEL_PATH}")
-
-
-# --------------------------------------------------------------------------- #
-# Recommender (Oracle)
+# Taste / Similarity Oracle (unsupervised — no rating model)
 # --------------------------------------------------------------------------- #
 class Oracle:
     def __init__(self):
+        if not config.FEATURES_NPZ.exists():
+            raise SystemExit("Run feature_engineering.py first (music_features.npz missing).")
         d = np.load(config.FEATURES_NPZ, allow_pickle=True)
         self.X = d["X"]
+        self.feature_names = list(d["feature_names"])
         self.df = pd.read_csv(config.MASTER_CSV)
-        bundle = joblib.load(MODEL_PATH)
-        self.model = bundle["model"]
-        # Fail loudly (and actionably) if the feature pipeline has drifted ahead
-        # of the saved model — e.g. the one-hot artist/genre vocabulary changed
-        # after the library was re-ingested. Otherwise this surfaces as a cryptic
-        # "Feature shape mismatch" from deep inside XGBoost at predict time.
-        expected = getattr(self.model, "n_features_in_", self.X.shape[1])
-        if self.X.shape[1] != expected:
-            raise ValueError(
-                f"Music model expects {expected} features but music_features.npz "
-                f"has {self.X.shape[1]}. The feature pipeline changed after the "
-                f"model was trained — retrain with: python -m src.music.model_training"
-            )
         # L2-normalise rows once so dot product == cosine similarity
         norms = np.linalg.norm(self.X, axis=1, keepdims=True)
         self._Xn = self.X / np.clip(norms, 1e-9, None)
         self._idx = {tid: i for i, tid in enumerate(self.df["track_id"])}
+        # Optional taste profile (clusters/personas) — degrade gracefully if absent.
+        self.profile = _load_profile()
 
-    def predict_rating(self, track_id):
-        i = self._idx.get(track_id)
-        if i is None:
-            raise KeyError(f"{track_id} not in library")
-        pred = float(np.clip(self.model.predict(self.X[i:i + 1])[0], 1.0, 5.0))
-        row = self.df.iloc[i]
-        print(f"\n🎯 {row['name']} — {row['artists']}")
-        print(f"   Predicted rating: {pred:.2f} / 5.00   (current: {row['rating']:.2f})")
-        return pred
-
+    # ---- song-to-song similarity ------------------------------------------
     def similar_to(self, track_id, n=10):
         i = self._idx.get(track_id)
         if i is None:
             raise KeyError(f"{track_id} not in library")
         sims = self._Xn @ self._Xn[i]
-        order = np.argsort(-sims)
-        order = [j for j in order if j != i][:n]
+        order = [j for j in np.argsort(-sims) if j != i][:n]
+        out = self.df.iloc[order].copy()
+        out["similarity"] = sims[order]
+        out["shared_tags"] = [self._explain(i, j) for j in order]
         seed = self.df.iloc[i]
         print(f"\n🔮 Because you have: {seed['name']} — {seed['artists']}\n")
         for j in order:
@@ -156,7 +111,7 @@ class Oracle:
             shared = self._explain(i, j)
             print(f"  {sims[j]:.3f}  {r['name']} — {r['artists']}"
                   + (f"   [{shared}]" if shared else ""))
-        return self.df.iloc[order]
+        return out
 
     def _explain(self, i, j):
         """Cheap, readable reason: overlapping genre tags."""
@@ -164,15 +119,38 @@ class Oracle:
             t = str(self.df.iloc[idx].get("artist_genres", "")) + "," + \
                 str(self.df.iloc[idx].get("mb_tags", ""))
             return {x.strip().lower() for x in t.replace(";", ",").split(",") if x.strip()}
-        shared = tags(i) & tags(j)
-        return ", ".join(sorted(shared)[:3])
+        return ", ".join(sorted(tags(i) & tags(j))[:3])
 
+    # ---- taste-cluster ("persona") assignment -----------------------------
+    def cluster_of(self, track_id):
+        """Assign a track to its nearest taste-profile cluster and describe it.
+        Returns a dict {id, label, genres, similarity} or None if no profile."""
+        if self.profile is None:
+            return None
+        i = self._idx.get(track_id)
+        if i is None:
+            raise KeyError(f"{track_id} not in library")
+        from src.music import affinity
+        sims = affinity.cosine_similarity(self.X[i:i + 1], self.profile.centroids)[0]
+        cid = int(np.argmax(sims))
+        meta = self.profile.cluster_meta[cid]
+        row = self.df.iloc[i]
+        print(f"\n🧬 {row['name']} — {row['artists']}")
+        print(f"   Taste persona: {meta['label']}  (cluster {cid}, match {sims[cid]:.2f})")
+        print(f"   Signature genres: {', '.join(meta['genres'])}")
+        return {"id": cid, "label": meta["label"], "genres": meta["genres"],
+                "similarity": float(sims[cid])}
+
+    def taste_personas(self):
+        """The full set of taste clusters (personas) from the profile."""
+        if self.profile is None:
+            return []
+        return self.profile.cluster_meta
+
+    # ---- cold-start discovery outside the library -------------------------
     def discover(self, seed_ids, n=15):
-        """
-        Cold-start discovery of tracks OUTSIDE your library using ReccoBeats'
-        recommendation endpoint (Spotify's own /recommendations is deprecated).
-        seed_ids: list of Spotify track IDs.
-        """
+        """Discovery of tracks OUTSIDE your library via ReccoBeats' recommendation
+        endpoint (Spotify's own /recommendations is deprecated). seed_ids: track IDs."""
         try:
             r = requests.get(
                 f"{config.RECCOBEATS_BASE}/track/recommendation",
@@ -194,22 +172,35 @@ class Oracle:
         return content
 
 
+def _summary():
+    """Default action: report the library + taste-profile state (nothing to 'train'
+    — the similarity index is the feature matrix and the clusters live in the profile)."""
+    o = Oracle()
+    print(f"🎵 Music taste engine ready: {len(o.df)} tracks × {o.X.shape[1]} features.")
+    if o.profile is not None:
+        print(f"   Taste personas ({len(o.profile.cluster_meta)} clusters):")
+        for m in o.profile.cluster_meta:
+            print(f"     - {m['label']}  ({m['size']} tracks; {', '.join(m['genres'][:3])})")
+    else:
+        print("   No taste profile yet — run: python -m src.music.profile_builder")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--similar")
-    ap.add_argument("--predict")
+    ap.add_argument("--cluster")
     ap.add_argument("--discover", help="comma-separated Spotify track IDs")
     ap.add_argument("--n", type=int, default=10)
     args = ap.parse_args()
 
     if args.similar:
         Oracle().similar_to(args.similar, args.n)
-    elif args.predict:
-        Oracle().predict_rating(args.predict)
+    elif args.cluster:
+        Oracle().cluster_of(args.cluster)
     elif args.discover:
         Oracle().discover(args.discover.split(","), args.n)
     else:
-        train()
+        _summary()
 
 
 if __name__ == "__main__":

@@ -12,7 +12,8 @@ from src import config
 
 # Import ingestion & engineering tools
 from src.movies.ingestion import search_movies_by_query, get_movie_metadata
-from src.movies.feature_engineering import find_similar_movies, explain_similarity
+from src.movies.feature_engineering import (find_similar_movies, explain_similarity,
+                                            transform_single_movie)
 from src.unified_model.unified_oracle import predict_unified
 from sentence_transformers import SentenceTransformer
 import re
@@ -22,6 +23,10 @@ import re
 # trainer's entrypoint), which is app/main.py inside Streamlit.
 from src.movies.advanced_movie_model_trainer import OrdinalExpectedValueRegressor as _OEVR
 setattr(sys.modules['__main__'], 'OrdinalExpectedValueRegressor', _OEVR)
+from src.movies.advanced_movie_model_trainer import MeanMetaRegressor as _MMR
+setattr(sys.modules['__main__'], 'MeanMetaRegressor', _MMR)
+from src.movies.advanced_movie_model_trainer import AnchoredRegressor as _AR
+setattr(sys.modules['__main__'], 'AnchoredRegressor', _AR)
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
 from mobile import apply_mobile_css
@@ -30,95 +35,67 @@ apply_mobile_css()
 
 # --- PARITY TRANSFORMATION ---
 def transform_for_parity(movie_data, state):
+    """Featurise exactly like training.
+
+    This used to be a third hand-maintained copy of the featurisation logic and it
+    had drifted badly from the trained model: it built the OLD text recipe
+    (Title+Director+Plot, while the model's PCA was fit on the richer
+    Title+Genre+Director+Writer+Cast+Tagline+plot+overview), it never produced the
+    three *_encoded target-encoding columns at all (so they sat at 0 for every
+    Oracle prediction, off the ~3.24 scale the model was trained on), and its list
+    parser only understood "['A','B']" so comma-string cells collapsed to one item.
+    It now delegates to the single canonical implementation, which the batch
+    predictor and the watch-next queue also use.
     """
-    Replicates the EXACT logic in src/movies/predict_ratings.py 
-    to ensure parity between batch and real-time predictions.
+    return transform_single_movie(movie_data, state)
+
+
+def align_to_model(X, model):
+    """Reindex to whatever column set THIS estimator was actually fit on.
+
+    The ensemble members can be refit at different times; aligning per model
+    means a stale member degrades instead of raising "feature names should match".
     """
-    df = pd.DataFrame([movie_data])
-    
-    # 1. Numerical Cleaning
-    if 'rotten_tomatoes_rating' in df.columns:
-        df['rotten_tomatoes_rating'] = df['rotten_tomatoes_rating'].astype(str).str.replace('%', '', regex=False)
-        df['rotten_tomatoes_rating'] = pd.to_numeric(df['rotten_tomatoes_rating'], errors='coerce')
-        
-    def clean_money_local(x):
-        if pd.isna(x): return 0
-        if isinstance(x, (int, float)): return x
-        x = str(x).replace('$', '').replace(',', '').strip()
-        try: return float(x)
-        except: return 0
+    m = getattr(model, "clf", model)
+    names = getattr(m, "feature_names_in_", None)
+    if names is None and hasattr(m, "named_steps"):
+        for step in m.named_steps.values():
+            if hasattr(step, "feature_names_in_"):
+                names = step.feature_names_in_
+                break
+    if names is None:
+        try:
+            names = m.get_booster().feature_names
+        except Exception:
+            names = None
+    if names is None and getattr(m, "feature_names_", None):
+        names = m.feature_names_
+    if names is None:
+        # A fitted StackingRegressor exposes no feature_names_in_ of its own, so the
+        # old code passed X straight through and any vintage mismatch surfaced as a
+        # raw "feature_names mismatch" dump from inside XGBoost. Fall back to the
+        # column set its base estimators were actually fit on.
+        for attr in ("estimators_", "named_estimators_"):
+            members = getattr(m, attr, None)
+            if not members:
+                continue
+            for est in (members.values() if hasattr(members, "values") else members):
+                inner = getattr(est, "base_", est)
+                n = getattr(inner, "feature_names_in_", None)
+                if n is None:
+                    try:
+                        n = inner.get_booster().feature_names
+                    except Exception:  # noqa: BLE001
+                        n = None
+                if n is not None:
+                    names = n
+                    break
+            if names is not None:
+                break
+    if names is None:
+        return X
+    return X.reindex(columns=list(names), fill_value=0)
 
-    df['box_office_clean'] = df['box_office'].apply(clean_money_local)
-    df['box_office_log'] = np.log1p(df['box_office_clean'])
-    
-    df['total_wins'] = df['awards'].astype(str).str.extract(r'(\d+)\s+win', flags=re.IGNORECASE)[0].astype(float).fillna(0)
-    df['total_nominations'] = df['awards'].astype(str).str.extract(r'(\d+)\s+nomination', flags=re.IGNORECASE)[0].astype(float).fillna(0)
-    
-    df['imdb_rating_100'] = pd.to_numeric(df['imdb_rating'], errors='coerce') * 10
-    df['vote_average_100'] = pd.to_numeric(df['vote_average'], errors='coerce') * 10
-    
-    # Critic scores mean ignores NaNs (matches batch script)
-    critic_scores = df[['imdb_rating_100', 'metascore', 'rotten_tomatoes_rating', 'vote_average_100']]
-    df['critic_avg_100'] = critic_scores.mean(axis=1)
-    df['critic_avg_5'] = (df['critic_avg_100'] / 100) * 5
-    
-    # FIXED: Ensure imdb_votes is present (matching training and batch fix)
-    if 'imdb_votes' not in df.columns and 'vote_count' in df.columns:
-        df.rename(columns={'vote_count': 'imdb_votes'}, inplace=True)
-    
-    # 2. Fill Medians (Numerical alignment)
-    for col, med_val in state['median_values'].items():
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(med_val)
-        else:
-            df[col] = med_val
-            
-    # 3. Text Embeddings (String construction must be exact)
-    df['text_content'] = "Title: " + df['title'].fillna('Unknown').astype(str) + \
-                         ". Directed by: " + df['director'].fillna('Unknown').astype(str) + \
-                         ". " + df['plot'].fillna('').astype(str)
-    
-    transformer_model = SentenceTransformer(state.get('sentence_transformer', 'all-MiniLM-L6-v2'))
-    text_embeddings = transformer_model.encode(df['text_content'].tolist())
-    pca_vec = state['pca'].transform(text_embeddings)
-    X_text = pd.DataFrame(pca_vec, columns=[f'pca_{i}' for i in range(pca_vec.shape[1])], index=df.index)
-
-    # 4. One-Hot Features
-    def map_language_local(lang_str):
-        if pd.isna(lang_str): return 'Other'
-        langs = [l.strip() for l in str(lang_str).split(',')]
-        for lang in langs:
-            if lang in state['top_languages']: return lang
-        return 'Other'
-    df['language_cleaned'] = df['language'].apply(map_language_local)
-    X_lang = pd.get_dummies(df['language_cleaned'], prefix='lang')
-    
-    def parse_list_local(x):
-        if isinstance(x, list): return x
-        try: return ast.literal_eval(str(x))
-        except: return []
-    df['genre_list'] = df['genre'].apply(parse_list_local)
-    genre_encoded = state['mlb_genre'].transform(df['genre_list'])
-    X_genre = pd.DataFrame(genre_encoded, columns=[f"gen_{c}" for c in state['mlb_genre'].classes_], index=df.index)
-
-    def categorize_rating_local(r):
-        r = str(r).upper()
-        if 'R' in r or 'NC-17' in r or 'TV-MA' in r: return 'Adult'
-        if 'PG' in r or 'TV-14' in r: return 'Teen'
-        return 'General'
-    df['mpaa_cat'] = df['rated'].apply(categorize_rating_local)
-    X_mpaa = pd.get_dummies(df['mpaa_cat'], prefix='rated')
-
-    # 5. Final Alignment
-    X_temp = pd.concat([df[list(state['median_values'].keys())], X_lang, X_genre, X_mpaa, X_text], axis=1)
-    X_temp.columns = [re.sub(r"[\[\]<']", "", str(col)) for col in X_temp.columns]
-    X_temp = X_temp.loc[:, ~X_temp.columns.duplicated()]
-
-    X_final = pd.DataFrame(0.0, index=df.index, columns=state['training_columns'])
-    common_cols = list(set(X_temp.columns) & set(state['training_columns']))
-    X_final[common_cols] = X_temp[common_cols]
-
-    return X_final
 
 st.header("🔮 The Oracle")
 st.markdown("Predict your rating for any movie using a Stacking Ensemble, Ordinal Probability Engine, and Semantic Text Embeddings.")
@@ -157,10 +134,30 @@ def load_artifacts():
             
     except FileNotFoundError as e:
         st.warning(f"Could not load all artifacts. Missing: {e.filename}")
-        
+
+    # Stamp the artifacts' mtimes so a retrain that happens while this app is
+    # running can be detected. @st.cache_resource keeps the models loaded for the
+    # life of the process, so after `run_pipeline.py` the cached models and the
+    # freshly written preprocessor state are different vintages, and the mismatch
+    # used to surface as an unreadable XGBoost feature-name dump.
+    ensemble_dir = config.MODEL_DIR / "movies" / "ensemble"
+    stamps = [config.PREPROCESSOR_STATE, ensemble_dir / "stacking_ensemble_regressor.joblib"]
+    artifacts['_mtimes'] = tuple(p.stat().st_mtime for p in stamps if p.exists())
     return artifacts
 
+
 artifacts = load_artifacts()
+
+_ensemble_dir = config.MODEL_DIR / "movies" / "ensemble"
+_now = tuple(p.stat().st_mtime for p in
+             [config.PREPROCESSOR_STATE, _ensemble_dir / "stacking_ensemble_regressor.joblib"]
+             if p.exists())
+if artifacts.get('_mtimes') and _now != artifacts['_mtimes']:
+    st.warning("♻️ The models on disk were retrained after this page loaded. "
+               "Reloading them so predictions match the current feature set.")
+    load_artifacts.clear()
+    artifacts = load_artifacts()
+
 state = artifacts['state']
 
 if not artifacts['stacking']:
@@ -234,7 +231,18 @@ if st.session_state['selected_movie_raw_data']:
         st.write(f"**Director:** {', '.join(dirs)}")
         st.write(f"**Rotten Tomatoes:** {raw_data.get('rotten_tomatoes_rating', 'N/A')}")
         st.write(f"**Metascore:** {raw_data.get('metascore', 'N/A')}")
+        if raw_data.get('collection_name'):
+            st.write(f"**Franchise:** {raw_data['collection_name']}")
         st.caption(raw_data.get('overview'))
+
+        # TMDB keywords — finer-grained "what it's about" than genre.
+        kws = parse_list(raw_data.get('keywords'))
+        if kws:
+            chips = " ".join(
+                f"<span style='background:#2C343F;color:#99AABB;padding:2px 8px;"
+                f"border-radius:10px;font-size:0.75em;margin:2px;display:inline-block'>"
+                f"{k}</span>" for k in kws[:14])
+            st.markdown(f"**Keywords:** {chips}", unsafe_allow_html=True)
         
         consult_btn = st.button("Consult the Oracle 🔮", type="primary", use_container_width=True)
 
@@ -247,16 +255,16 @@ if st.session_state['selected_movie_raw_data']:
                 # 1. Base Models & Stacking Predictions
                 def round_half(x): return np.round(np.clip(x, 0, 5) * 2) / 2
                 
-                v_stack = round_half(artifacts['stacking'].predict(input_df)[0])
-                v_svr = round_half(artifacts['svr'].predict(input_df)[0])
-                v_cat = round_half(artifacts['cat'].predict(input_df)[0])
-                v_xgb = round_half(artifacts['xgb'].predict(input_df)[0])
+                v_stack = round_half(artifacts['stacking'].predict(align_to_model(input_df, artifacts['stacking']))[0])
+                v_svr = round_half(artifacts['svr'].predict(align_to_model(input_df, artifacts['svr']))[0])
+                v_cat = round_half(artifacts['cat'].predict(align_to_model(input_df, artifacts['cat']))[0])
+                v_xgb = round_half(artifacts['xgb'].predict(align_to_model(input_df, artifacts['xgb']))[0])
                 
                 # 2. Ordinal Classifier Probabilities & Expected Value
                 ord_probs = None
                 v_ordinal_ev = None
                 if artifacts['ordinal']:
-                    ord_probs = artifacts['ordinal'].predict_proba(input_df)[0]
+                    ord_probs = artifacts['ordinal'].predict_proba(align_to_model(input_df, artifacts['ordinal']))[0]
                     bucket_vals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])
                     v_ordinal_ev = round_half(np.sum(ord_probs * bucket_vals))
                 
@@ -264,7 +272,7 @@ if st.session_state['selected_movie_raw_data']:
                 verdict = "N/A"
                 if artifacts['clf']:
                     try:
-                        p_class = artifacts['clf'].predict(input_df)[0]
+                        p_class = artifacts['clf'].predict(align_to_model(input_df, artifacts['clf']))[0]
                         if p_class == 0: verdict = "Skip it ❌"
                         elif p_class == 1: verdict = "Watchable 🍿"
                         elif p_class == 2: verdict = "Masterpiece ⭐"

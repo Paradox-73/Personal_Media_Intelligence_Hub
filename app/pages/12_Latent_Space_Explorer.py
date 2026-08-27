@@ -19,6 +19,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 import umap
 from sklearn.preprocessing import StandardScaler
@@ -59,60 +60,129 @@ def _is_excluded(col: str) -> bool:
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
-@st.cache_data
-def load_title_lookup() -> pd.DataFrame | None:
-    """Build a (source_id, title) lookup from each enriched dataset.
+# Per-domain enriched CSV, its title column, and whether that domain drops
+# unrated rows — this MUST mirror build_universal_dataset() in
+# unified_feature_engineering.py, because `source_id` there is simply the row
+# position in the movie→tv→game→book→music concatenation (df.index), and the
+# enriched CSVs carry no source_id column of their own. Movies/TV drop rows with
+# a null user_rating; games/books/music keep every row.
+DOMAIN_TITLE_SPECS = [
+    ("movie", getattr(config, "MOVIES_ENRICHED_DATA_PATH", None), "title", True),
+    ("tv", getattr(config, "TV_SHOWS_ENRICHED_DATA_PATH", None), "name", True),
+    ("game", getattr(config, "GAMES_ENRICHED_DATA_PATH", None), "name", False),
+    ("book", getattr(config, "BOOKS_ENRICHED_DATA_PATH", None), "title", False),
+]
 
-    Joins later happen strictly on source_id — positional alignment between
-    independently loaded CSVs is never assumed.
-    """
-    frames = []
-    specs = [
-        (getattr(config, "MOVIES_ENRICHED_DATA_PATH", None), "title", "movie"),
-        (getattr(config, "TV_SHOWS_ENRICHED_DATA_PATH", None), "name", "tv"),
-        (getattr(config, "GAMES_ENRICHED_DATA_PATH", None), "name", "game"),
-        (getattr(config, "BOOKS_ENRICHED_DATA_PATH", None), "title", "book"),
-    ]
-    for path, title_col, media in specs:
+
+@st.cache_data
+def load_domain_titles() -> dict[str, list[str]]:
+    """{media_type: [titles in build order]} reconstructing the exact row set/order
+    unified_feature_engineering used, so the k-th unified item of a domain (in
+    source_id order) is the k-th title here. Robust to later CSV growth because
+    new items are appended after the frozen rows."""
+    out: dict[str, list[str]] = {}
+    for media, path, col, drop_unrated in DOMAIN_TITLE_SPECS:
         if path is None or not Path(path).exists():
             continue
         try:
             d = pd.read_csv(path)
         except UnicodeDecodeError:
             d = pd.read_csv(path, encoding="latin1")
-        if "source_id" not in d.columns or title_col not in d.columns:
-            continue
-        sub = d[["source_id", title_col]].rename(columns={title_col: "title"})
-        sub["media_type"] = media
-        frames.append(sub)
+        if drop_unrated and "user_rating" in d.columns:
+            d = d.dropna(subset=["user_rating"])
+        if col in d.columns:
+            out[media] = d[col].astype(str).tolist()
 
     music_path = getattr(config, "MUSIC_ENRICHED_DATA_PATH", None)
     if music_path is not None and Path(music_path).exists():
         d = pd.read_csv(music_path)
-        if "source_id" in d.columns and {"name", "artists"} <= set(d.columns):
-            sub = d[["source_id"]].copy()
-            sub["title"] = d["name"].astype(str) + " — " + d["artists"].astype(str)
-            sub["media_type"] = "music"
-            frames.append(sub)
-
-    if not frames:
-        return None
-    lookup = pd.concat(frames, ignore_index=True)
-    return lookup.drop_duplicates(subset=["source_id", "media_type"])
+        if {"name", "artists"} <= set(d.columns):
+            out["music"] = (d["name"].astype(str) + " — " + d["artists"].astype(str)).tolist()
+    return out
 
 
 @st.cache_data
-def load_unified() -> pd.DataFrame | None:
+def load_music_points() -> pd.DataFrame | None:
+    """Project the music library into the SAME 10-D vibe basis as the other
+    domains, using the LYRICS as each track's description. Embeds lyrics with the
+    unified pipeline's saved MiniLM model, transforms with its fitted PCA, and
+    centres music on the shared global centroid so it lands in the same space —
+    all read-only, without regenerating the frozen training features."""
+    mpath = getattr(config, "MUSIC_ENRICHED_DATA_PATH", None)
+    if mpath is None or not Path(mpath).exists() or not Path(config.UNIFIED_PREPROCESSOR_STATE).exists():
+        return None
+    state = joblib.load(config.UNIFIED_PREPROCESSOR_STATE)
+    pca = state.get("pca")
+    st_name = state.get("sentence_transformer", "all-MiniLM-L6-v2")
+    if pca is None:
+        return None
+
+    d = pd.read_csv(mpath)
+    if "lyric_embed_text" not in d.columns:
+        return None
+    d = d[d["lyric_embed_text"].astype(str).str.len() > 3].copy()
+    if d.empty:
+        return None
+
+    # Same text recipe as the frozen space (Title + Genre + description), with the
+    # LYRICS standing in as the description.
+    gen = (d.get("artist_genres", pd.Series([""] * len(d), index=d.index)).fillna("")
+           .astype(str).str.replace(r"[\[\]']", "", regex=True).str.slice(0, 80))
+    desc = d["lyric_embed_text"].fillna("").astype(str).apply(lambda s: " ".join(s.split()[:40]))
+    txt = ("Title: " + d["name"].fillna("").astype(str).str.slice(0, 120)
+           + ". Genre: " + gen + ". " + desc)
+
+    from sentence_transformers import SentenceTransformer
+    emb = SentenceTransformer(st_name).encode(txt.tolist(), normalize_embeddings=True,
+                                               show_progress_bar=False)
+    vibe = pca.transform(emb)  # (n, 10) in the shared basis
+
+    # Centre music on the shared global centroid (CORAL-style) so cross-domain
+    # proximity is meaningful rather than a per-domain offset.
+    if Path(ALIGNMENT_TRANSFORM_PATH).exists():
+        tf = joblib.load(ALIGNMENT_TRANSFORM_PATH)
+        gc = np.asarray(tf.get("global_centroid", vibe.mean(axis=0))) if isinstance(tf, dict) else vibe.mean(axis=0)
+    else:
+        gc = vibe.mean(axis=0)
+    vibe = vibe - vibe.mean(axis=0) + gc
+
+    out = pd.DataFrame(vibe, columns=[f"pca_{i}" for i in range(vibe.shape[1])])
+    out["media_type"] = "music"
+    out["title"] = d["name"].astype(str).values + " — " + d["artists"].astype(str).values
+    out["target_reg"] = np.nan  # music is de-rated: no explicit rating
+    yr = pd.to_numeric(d.get("release_year", d.get("year")), errors="coerce")
+    out["year"] = yr.values if yr is not None else np.nan
+    return out
+
+
+@st.cache_data
+def load_unified(include_music: bool = False) -> pd.DataFrame | None:
     path = config.UNIFIED_TRAINING_DATA_PATH
     if not Path(path).exists():
         return None
-    df = pd.read_csv(path)
-    lookup = load_title_lookup()
-    if lookup is not None and "source_id" in df.columns:
-        df = df.merge(lookup, on=["source_id", "media_type"], how="left")
-        df["title"] = df["title"].fillna(df["source_id"].astype(str))
-    else:
-        df["title"] = df.get("source_id", pd.Series(range(len(df)))).astype(str)
+    df = pd.read_csv(path).reset_index(drop=True)
+    # Fallback label = raw source_id; overwritten below where a name resolves.
+    df["title"] = df.get("source_id", pd.Series(range(len(df)))).astype(str)
+
+    if {"media_type", "source_id"} <= set(df.columns):
+        titles_by_domain = load_domain_titles()
+        unmatched = 0
+        for media, titles in titles_by_domain.items():
+            # Rows of this domain, in source_id (= build) order.
+            order = df.index[df["media_type"] == media]
+            order = df.loc[order].sort_values("source_id").index
+            for pos, ridx in enumerate(order):
+                if pos < len(titles):
+                    df.at[ridx, "title"] = titles[pos]
+                else:
+                    unmatched += 1
+        df.attrs["unmatched_titles"] = unmatched
+
+    if include_music:
+        music = load_music_points()
+        if music is not None and len(music):
+            df = pd.concat([df, music], ignore_index=True)
+            df.attrs["n_music"] = len(music)
     return df
 
 
@@ -138,15 +208,19 @@ def apply_alignment(X: np.ndarray, media_types: pd.Series) -> tuple[np.ndarray, 
 
 
 @st.cache_data
-def compute_projection(view: str, align: bool, n_neighbors: int, min_dist: float):
-    df = load_unified()
+def compute_projection(view: str, align: bool, n_neighbors: int, min_dist: float,
+                       include_music: bool = False):
+    """Returns (df_with_umap, error, hidim) where hidim = {'X', 'metric'} is the
+    HIGH-DIMENSIONAL matrix actually fed to UMAP. Similarity should be read off
+    hidim['X'] (faithful), not the 2-D umap coords (UMAP distorts global distance)."""
+    df = load_unified(include_music=include_music)
     if df is None:
-        return None, None
+        return None, None, None
 
     if view == "Shared vibe space (semantic only)":
         cols = [c for c in df.columns if _is_vibe_col(c) and not _is_excluded(c)]
         if not cols:
-            return df, "NO_VIBE_COLS"
+            return df, "NO_VIBE_COLS", None
         X = np.nan_to_num(df[cols].to_numpy(dtype=float))
         aligned = False
         if align:
@@ -166,7 +240,28 @@ def compute_projection(view: str, align: bool, n_neighbors: int, min_dist: float
     emb = reducer.fit_transform(X)
     df["umap_1"], df["umap_2"] = emb[:, 0], emb[:, 1]
     df.attrs["n_features_used"] = len(cols)
-    return df, None
+    return df, None, {"X": X, "metric": metric}
+
+
+def _pairwise_distance(X, metric):
+    """Full pairwise distance matrix in the ORIGINAL feature space."""
+    if metric == "cosine":
+        Xn = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-12)
+        return 1.0 - (Xn @ Xn.T)  # cosine distance in [0, 2]
+    diff = X[:, None, :] - X[None, :, :]
+    return np.linalg.norm(diff, axis=-1)
+
+
+def _neighbors_in_true_space(X, metric, query_pos, k=8):
+    """Indices (into X) of the k nearest items to row `query_pos`, true space."""
+    if metric == "cosine":
+        Xn = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-12)
+        d = 1.0 - Xn @ Xn[query_pos]
+    else:
+        d = np.linalg.norm(X - X[query_pos], axis=1)
+    order = np.argsort(d)
+    order = order[order != query_pos]
+    return order[:k], d
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +322,13 @@ with c2:
                             help="Neighborhood size: low preserves local clusters, high emphasizes global structure.")
     min_dist = st.slider("UMAP min_dist", 0.0, 0.9, 0.1,
                          help="Minimum spacing between points: 0 = tight clumps, 0.9 = spread out.")
+    include_music = st.checkbox("🎵 Include music (lyrics as description)", value=False,
+                                help="Project your music library into the same vibe space, using each "
+                                     "track's lyrics as its description. ~3,700 tracks — first run embeds "
+                                     "them (slower), then it's cached. Music has no rating.")
 
-df, err = compute_projection(view, align, n_neighbors, min_dist)
+with st.spinner("Embedding lyrics + projecting…" if include_music else "Projecting…"):
+    df, err, hidim = compute_projection(view, align, n_neighbors, min_dist, include_music)
 
 if df is None:
     st.error("Unified training data not found. Run feature engineering first.")
@@ -258,9 +358,26 @@ with c2:
                        "the training pipeline to enable it.")
     st.info(f"{df.attrs.get('n_features_used', '?')} features in projection · "
             f"{(df['media_type'].isin(media_filter)).sum()} items shown")
+    search = st.text_input(
+        "🔎 Find & highlight items",
+        placeholder="God of War, Percy Jackson",
+        help="Comma-separated title fragments. Every match (across all domains) is "
+             "ringed and labelled on the map so you can see whether they cluster "
+             "together or sit apart.")
 
-mask = df["media_type"].isin(media_filter) & (df["target_reg"] >= min_rating)
-fdf = df[mask]
+# Music is unrated (NaN target_reg); the rating threshold must not silently drop it.
+rating_ok = (df["target_reg"] >= min_rating) | df["target_reg"].isna()
+mask = df["media_type"].isin(media_filter) & rating_ok
+fdf = df[mask].copy()
+
+# Resolve search terms -> matched rows (case-insensitive substring, any domain).
+terms = [t.strip().lower() for t in search.split(",") if t.strip()] if search else []
+if terms:
+    tl = fdf["title"].astype(str).str.lower()
+    fdf["_match"] = tl.apply(lambda t: next((q for q in terms if q in t), None))
+    matched = fdf[fdf["_match"].notna()]
+else:
+    matched = fdf.iloc[0:0]
 
 hover_cols = [c for c in ("title", "media_type", "target_reg", "year")
               if c in fdf.columns]
@@ -271,8 +388,21 @@ fig = px.scatter(
     color_continuous_scale="RdYlGn" if color_by == "target_reg" else "Viridis",
     height=800, template="plotly_dark",
 )
-fig.update_traces(marker=dict(size=6, opacity=0.65,
+base_opacity = 0.18 if len(matched) else 0.65
+fig.update_traces(marker=dict(size=6, opacity=base_opacity,
                               line=dict(width=0.3, color="white")))
+if len(matched):
+    fig.add_trace(go.Scatter(
+        x=matched["umap_1"], y=matched["umap_2"],
+        mode="markers+text",
+        text=matched["title"], textposition="top center",
+        textfont=dict(size=11, color="#FFD166"),
+        marker=dict(size=15, color="rgba(255,90,90,0.95)",
+                    line=dict(width=2, color="white"), symbol="star"),
+        name="🔎 matches",
+        hovertext=matched["title"] + "  (" + matched["media_type"] + ")",
+        hoverinfo="text",
+    ))
 fig.update_layout(
     plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
     xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
@@ -280,6 +410,48 @@ fig.update_layout(
 )
 with c1:
     st.plotly_chart(fig, use_container_width=True)
+
+    if terms:
+        if len(matched):
+            st.markdown(f"**{len(matched)} item(s) matched** `{', '.join(terms)}`:")
+            st.dataframe(
+                matched[["title", "media_type", "target_reg"]]
+                .rename(columns={"target_reg": "your_rating"}),
+                use_container_width=True, hide_index=True)
+
+            metric = hidim["metric"] if hidim else "cosine"
+            sim_word = "cosine distance (0 = identical)" if metric == "cosine" else "euclidean distance"
+
+            # TRUE-SPACE pairwise distance — the faithful "close or apart?" read.
+            # (The 2-D map distorts global distance; this uses the high-dim vectors.)
+            if len(matched) > 1 and hidim is not None:
+                pos = matched.index.to_numpy()          # positional rows into X
+                sub = hidim["X"][pos]
+                dmat = _pairwise_distance(sub, metric)
+                dtab = pd.DataFrame(dmat, index=matched["title"], columns=matched["title"]).round(3)
+                st.caption(f"**True-space {sim_word}** between your matches — smaller = "
+                           "genuinely more similar (computed in the full embedding, not the 2-D map):")
+                st.dataframe(dtab, use_container_width=True)
+
+            # Nearest neighbours in TRUE space for each match — what actually
+            # clusters with it, across every domain.
+            if hidim is not None:
+                st.caption("**Nearest neighbours in the true embedding space** "
+                           "(what each match is genuinely closest to, any domain):")
+                titles_all = df["title"].to_numpy()
+                mtypes_all = df["media_type"].to_numpy()
+                for ridx in matched.index:
+                    nb, dist = _neighbors_in_true_space(hidim["X"], metric, ridx, k=6)
+                    label = f"{titles_all[ridx]} ({mtypes_all[ridx]})"
+                    neigh = ", ".join(f"{titles_all[j]} [{mtypes_all[j]}] · {dist[j]:.2f}"
+                                      for j in nb)
+                    st.markdown(f"- **{label}** → {neigh}")
+        else:
+            st.warning(f"No items matched `{', '.join(terms)}`. Note the map shows the "
+                       "**frozen** unified set (movies=1000, TV=162, books=88, games=72) — "
+                       "items added after the last unified feature-engineering run won't appear. "
+                       "Also check the **Media Types** filter and **Min rating** slider aren't "
+                       "hiding them, and press **R** / clear cache if the app predates this update.")
 
 # ---------------------------------------------------------------------------
 # Quantitative companion: domain separability score

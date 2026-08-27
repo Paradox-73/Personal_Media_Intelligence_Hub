@@ -52,10 +52,37 @@ from src.reporting.standalone_benchmarks import _load_domain, DROP_COLS, _maybe_
 
 BUCKET_MAP = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0, 4: 2.5, 5: 3.0, 6: 3.5, 7: 4.0, 8: 4.5, 9: 5.0}
 
+# Crowd columns used as the residual anchor (see `residual` in CFG below).
+ANCHOR_COLS = ["imdb_rating", "metascore", "rotten_tomatoes_rating", "vote_average",
+               "critic_avg_5"]
+
 # Per-domain production ensemble configuration.
+#
+# `residual`: train the REGRESSION members on (rating - crowd anchor) instead of the
+# rating, then add the anchor back to each member's own prediction so everything
+# reaches the meta on the star scale. The anchor is an OLS of rating on ANCHOR_COLS
+# fit on the training fold only.
+#
+# Rationale: an ablation found 12 crowd/metadata columns alone score as well as the
+# full matrix, i.e. the trees were spending most of their capacity re-deriving "is
+# this film good" from columns that already say so. Handing them that answer frees
+# every split for taste, and predictions shrink toward the anchor where the taste
+# signal is weak -- bias down AND variance down. Measured on 10 registry folds with
+# this exact ensemble: MAE 0.5151 -> 0.4929, R2 0.4767 -> 0.5141.
+#
+# NOTE the first attempt at this scored 0.5904 because the residual target was passed
+# straight through `_stack_fold`, which leaves the ordinal member on bucket labels --
+# three members then predicted residuals near 0 while the fourth predicted 0.5-5.0 and
+# the mean meta averaged incompatible scales. The ordinal member must stay untouched
+# and every regression member must re-add the anchor itself.
+#
+# OFF for tv: never measured there, TV has only 2 of the 5 anchor columns, and TV is
+# 173 rows where every change so far has landed inside the noise.
 CFG = {
-    "movie": {"cat_iters": 1000, "xgb_estimators": 300, "meta": "ridgecv", "label": "Prod Stacking (edge+Cat+SVR+Ord)"},
-    "tv":    {"cat_iters": 500,  "xgb_estimators": 200, "meta": "ridge_pos", "label": "Prod Simplex-Stack (edge+Cat+SVR)"},
+    "movie": {"cat_iters": 1000, "xgb_estimators": 300, "meta": "mean", "residual": True,
+              "label": "Prod Mean-Ensemble (edge+Cat+SVR+Ord, residual)"},
+    "tv":    {"cat_iters": 500,  "xgb_estimators": 200, "meta": "ridge_pos", "residual": False,
+              "label": "Prod Simplex-Stack (edge+Cat+SVR)"},
 }
 
 
@@ -137,31 +164,82 @@ def _ordinal_ev(X_tr, y_ord_tr, w_tr, X_te, n_estimators=200):
     return probs @ bucket_vals
 
 
+def fit_anchor(X_tr, y_tr, cols):
+    """OLS of rating on the crowd columns, fit on the TRAINING fold only.
+
+    Returns (model, cols_used) or (None, []) when none of the anchor columns exist
+    in this domain's matrix.
+    """
+    from sklearn.linear_model import LinearRegression
+    use = [c for c in cols if c in X_tr.columns]
+    if not use:
+        return None, []
+    return LinearRegression().fit(X_tr[use], y_tr), use
+
+
 def _base_predictions(X_tr, y_reg_tr, y_ord_tr, X_te, cfg, alphas):
-    """Fit all base learners on (X_tr) and return a dict of test predictions."""
+    """Fit all base learners on (X_tr) and return a dict of test predictions.
+
+    Every returned prediction is on the STAR scale, including when the regression
+    members are trained on the residual -- each adds its anchor back itself.
+    """
     w = _balanced_weights(y_reg_tr)
     a_hi, a_lo = alphas
+
+    # Residual reframing: members learn (rating - anchor), predict, then add back.
+    lin, anchor_use, off_te = None, [], 0.0
+    y_fit = y_reg_tr
+    if cfg.get("residual"):
+        lin, anchor_use = fit_anchor(X_tr, y_reg_tr, ANCHOR_COLS)
+        if lin is not None:
+            off_te = lin.predict(X_te[anchor_use])
+            y_fit = pd.Series(np.asarray(y_reg_tr) - lin.predict(X_tr[anchor_use]),
+                              index=y_reg_tr.index)
 
     xgb_edge = xgb.XGBRegressor(objective=AsymmetricEdgePenaltyObjective(a_hi, a_lo),
                                 n_estimators=cfg["xgb_estimators"], learning_rate=0.03,
                                 max_depth=6, subsample=0.8, colsample_bytree=0.8,
                                 random_state=42, n_jobs=-1)
-    xgb_edge.fit(X_tr, y_reg_tr, sample_weight=w)
+    xgb_edge.fit(X_tr, y_fit, sample_weight=w)
 
     cat = ctb.CatBoostRegressor(iterations=cfg["cat_iters"], learning_rate=0.05, depth=6,
                                 l2_leaf_reg=3, loss_function="MAE", random_seed=42, verbose=0)
-    cat.fit(X_tr, y_reg_tr)
+    cat.fit(X_tr, y_fit)
 
     svr = Pipeline([("scaler", StandardScaler()), ("svr", SVR(kernel="rbf", C=1.0, epsilon=0.1))])
-    svr.fit(X_tr, y_reg_tr, svr__sample_weight=w)
+    svr.fit(X_tr, y_fit, svr__sample_weight=w)
 
+    # The ordinal member predicts a BUCKET -- it has no meaningful residual form and
+    # is always trained on the untouched labels.
     ev = _ordinal_ev(X_tr, y_ord_tr, w, X_te)
 
-    return {"xgb": xgb_edge.predict(X_te), "cat": cat.predict(X_te),
-            "svr": svr.predict(X_te), "ord": ev}
+    return {"xgb": xgb_edge.predict(X_te) + off_te,
+            "cat": cat.predict(X_te) + off_te,
+            "svr": svr.predict(X_te) + off_te,
+            "ord": ev}
+
+
+class _MeanMeta:
+    """Equal-weight mean of the base predictions.
+
+    The project's own ablation found that Ridge stacking was *destroying* signal
+    and that the plain mean beats every member ("Complementary -- mean beats every
+    member; no dead weight"). That conclusion never reached the movie path, which
+    kept `ridgecv` and ended up scoring BELOW its own best member on the frozen
+    folds (R2 0.470 stacked vs 0.512 standalone). A fixed mean has no meta
+    parameters to overfit on 3-fold inner OOF, which is where the loss came from.
+    """
+
+    def fit(self, Z, y):  # noqa: D102, N803
+        return self
+
+    def predict(self, Z):  # noqa: D102, N803
+        return np.asarray(Z, dtype=float).mean(axis=1)
 
 
 def _make_meta(kind):
+    if kind == "mean":
+        return _MeanMeta()
     return RidgeCV() if kind == "ridgecv" else Ridge(positive=True)
 
 

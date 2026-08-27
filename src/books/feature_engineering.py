@@ -12,9 +12,23 @@ from sklearn.preprocessing import MultiLabelBinarizer
 # Add Project Root to Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common.parsing import (  # canonical shared parsers
+    parse_list, people_key, sanitize_col, clean_money)
+from src.common import taste_features as tf
+from src.common.text_embedding import encode_pooled, encode_pooled_single
 
 # --- CONFIG ---
 PCA_COMPONENTS = 15 # Reduced for small dataset
+
+# Smoothing prior for the entity encodings (see src/common/taste_features.py).
+TE_PRIOR = 2
+
+# (column, names to keep). Replaces 165 one-hot dummies that were being fitted on
+# 93 rows. `moods` and `hc_tags` are Hardcover fields that were never read.
+BOOK_ENCODE = [
+    ("authors", 2), ("categories", 4), ("publisher", 1),
+    ("moods", 4), ("hc_tags", 5),
+]
 
 def clean_year(val):
     try:
@@ -28,19 +42,7 @@ def clean_year(val):
     except:
         return 0
 
-def parse_list(x):
-    if pd.isna(x) or x == "": return []
-    try:
-        if isinstance(x, list): return x
-        s = str(x).strip()
-        if s.startswith('[') and s.endswith(']'):
-            return ast.literal_eval(s)
-        return [item.strip() for item in s.split(',')]
-    except:
-        return [str(x)]
 
-def sanitize_col(col_name):
-    return re.sub(r"[\[\]<']", "", str(col_name))
 
 def process_features():
     print("🛠️ Starting Book Feature Engineering...")
@@ -66,33 +68,53 @@ def process_features():
     for col in num_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
-    # 4. Authors Multi-Hot (Top ones to avoid explosion)
+    # 4-5. Authors / categories / publisher as TARGET ENCODINGS, not multi-hot.
+    #
+    # This block used to emit 10 author dummies and 155 category dummies. On 93
+    # rated books that is 165 near-empty binary columns for 93 samples -- most with
+    # one or two positives -- which is the single worst feature-to-sample ratio in
+    # the project and pure variance. A smoothed mean rating per author/category
+    # carries the same information in one dense column each, and the smoothing
+    # prior handles the long tail instead of the model having to.
+    #
+    # `moods` and `hc_tags` come from Hardcover (65% / 69% coverage) and were never
+    # read at all.
+    y_books = df['my_rating_clean'].astype(float).values
     df['author_list'] = df['authors'].apply(parse_list)
-    mlb_author = MultiLabelBinarizer()
-    author_encoded = mlb_author.fit_transform(df['author_list'])
-    # Only keep authors that appear at least twice
-    author_counts = author_encoded.sum(axis=0)
-    valid_author_indices = np.where(author_counts >= 2)[0]
-    X_author = pd.DataFrame(author_encoded[:, valid_author_indices], 
-                            columns=[f"aut_{sanitize_col(mlb_author.classes_[i])}" for i in valid_author_indices], 
-                            index=df.index)
-    
-    # 5. Categories Multi-Hot
     df['cat_list'] = df['categories'].apply(parse_list)
-    mlb_cat = MultiLabelBinarizer()
-    X_cat = pd.DataFrame(mlb_cat.fit_transform(df['cat_list']), 
-                         columns=[f"cat_{sanitize_col(c)}" for c in mlb_cat.classes_], 
-                         index=df.index)
-    
+
+    te_frames, te_artifacts = {}, {}
+    for col, limit in BOOK_ENCODE:
+        if col not in df.columns:
+            continue
+        enc, sup, art = tf.oof_entity_encode(df[col].tolist(), y_books,
+                                             m=TE_PRIOR, limit=limit)
+        te_frames[f'{col}_encoded'] = enc
+        te_frames[f'{col}_n'] = sup
+        te_artifacts[col] = art
+    X_entity = pd.DataFrame(te_frames)
+    # Kept only so an older preprocessor state / the inference path can still be
+    # unpickled; the dummy columns themselves are no longer emitted.
+    mlb_author, mlb_cat = MultiLabelBinarizer(), MultiLabelBinarizer()
+    mlb_author.fit(df['author_list'])
+    mlb_cat.fit(df['cat_list'])
+    valid_author_indices = np.array([], dtype=int)
+
+
     # 6. Text Embeddings
     print("   Generating text embeddings...")
-    df['text_content'] = "Title: " + df['title'].fillna('') + \
-                         ". Authors: " + df['authors'].fillna('') + \
-                         ". Categories: " + df['categories'].fillna('') + \
-                         ". Description: " + df['description'].fillna('')
-    
+    # Header + description are embedded SEPARATELY so a long blurb is split into
+    # sentence windows and read in full, instead of MiniLM silently dropping every
+    # token past 256. Book blurbs average ~104 words and routinely run far longer, so
+    # the tail was being cut off. `_book_header` is shared with the inference path
+    # and the similarity search, so the three cannot drift apart.
+    df['text_header'] = [_book_header(r) for r in df.to_dict('records')]
+    _body = "Description: " + df['description'].fillna('').astype(str)
+    df['text_content'] = df['text_header'] + " " + _body
+
     transformer_model = SentenceTransformer('all-MiniLM-L6-v2')
-    text_embeddings = transformer_model.encode(df['text_content'].tolist(), show_progress_bar=True)
+    text_embeddings = encode_pooled(df['text_header'].tolist(), _body.tolist(),
+                                    transformer_model, show_progress_bar=True)
     
     print("   Applying PCA to embeddings...")
     pca = PCA(n_components=min(PCA_COMPONENTS, len(df)-1))
@@ -100,9 +122,8 @@ def process_features():
     X_text = pd.DataFrame(X_text_pca, columns=[f'pca_{i}' for i in range(X_text_pca.shape[1])])
 
     # 7. Combine
-    X_final = pd.concat([df[num_cols].reset_index(drop=True), 
-                         X_author.reset_index(drop=True), 
-                         X_cat.reset_index(drop=True), 
+    X_final = pd.concat([df[num_cols].reset_index(drop=True),
+                         X_entity.reset_index(drop=True),
                          X_text.reset_index(drop=True)], axis=1)
     
     X_final.columns = [sanitize_col(col) for col in X_final.columns]
@@ -122,7 +143,10 @@ def process_features():
         'pca': pca,
         'median_values': df[num_cols].median().to_dict(),
         'training_columns': X_final.drop(columns=['target_reg', 'target_class']).columns.tolist(),
-        'sentence_transformer': 'all-MiniLM-L6-v2'
+        'sentence_transformer': 'all-MiniLM-L6-v2',
+        'te_artifacts': te_artifacts,
+        'book_encode': BOOK_ENCODE,
+        'te_prior': TE_PRIOR,
     }
     joblib.dump(state, config.BOOKS_PREPROCESSOR_STATE)
     print(f"✅ Features processed. Shape: {X_final.shape}")
@@ -145,13 +169,22 @@ def _join(val):
     return str(val or '')
 
 
-def _book_text(raw):
-    """Reproduce the exact training text_content string for one book."""
+def _book_header(raw):
+    """The per-item prefix repeated on every window, so a long blurb cannot drift
+    off-item. One definition, shared by training, inference and similarity."""
     title = raw.get('title') or ''
     authors = _join(raw.get('authors') or raw.get('author'))
     cats = _join(raw.get('categories') or raw.get('genre'))
-    desc = raw.get('description') or ''
-    return f"Title: {title}. Authors: {authors}. Categories: {cats}. Description: {desc}"
+    return f"Title: {title}. Authors: {authors}. Categories: {cats}."
+
+
+def _book_body(raw):
+    return "Description: " + str(raw.get('description') or '')
+
+
+def _book_text(raw):
+    """Header + body as one flat string, for display and for callers that want it."""
+    return f"{_book_header(raw)} {_book_body(raw)}"
 
 
 def transform_single_book(raw_data, state):
@@ -160,52 +193,46 @@ def transform_single_book(raw_data, state):
     X = pd.DataFrame(0.0, index=[0], columns=cols)
     medians = state.get('median_values', {})
 
+    # `process_features` fills missing numerics with 0 (`.fillna(0)`), so inference
+    # must too — falling back to the median served a value the batch never produces.
     def num(key):
         try:
             v = float(raw_data.get(key))
-            return v if not np.isnan(v) else medians.get(key, 0)
+            return 0.0 if np.isnan(v) else v
         except (TypeError, ValueError):
-            return medians.get(key, 0)
+            return 0.0
 
-    year = clean_year(raw_data.get('year') or raw_data.get('publishedDate')) or medians.get('year', 0)
+    year = clean_year(raw_data.get('year') or raw_data.get('publishedDate')) or 0
     numeric_vals = {'year': year, 'pageCount': num('pageCount'),
                     'averageRating': num('averageRating'), 'ratingsCount': num('ratingsCount')}
     for k, v in numeric_vals.items():
         if k in X.columns:
             X.at[0, k] = v
 
-    # Authors multi-hot (frequency-gated indices)
-    authors = raw_data.get('author') or raw_data.get('authors') or []
-    authors = authors if isinstance(authors, list) else parse_list(authors)
-    mlb_author = state.get('mlb_author')
-    valid = state.get('valid_author_indices', [])
-    if mlb_author is not None:
-        try:
-            av = mlb_author.transform([authors])[0]
-            for i in valid:
-                col = sanitize_col(f"aut_{mlb_author.classes_[i]}")
-                if col in X.columns:
-                    X.at[0, col] = av[i]
-        except Exception:
-            pass
-
-    # Categories multi-hot
-    cats = raw_data.get('genre') or raw_data.get('categories') or []
-    cats = cats if isinstance(cats, list) else parse_list(cats)
-    mlb_cat = state.get('mlb_cat')
-    if mlb_cat is not None:
-        try:
-            cv = mlb_cat.transform([cats])[0]
-            for i, c in enumerate(mlb_cat.classes_):
-                col = sanitize_col(f"cat_{c}")
-                if col in X.columns:
-                    X.at[0, col] = cv[i]
-        except Exception:
-            pass
+    # Entity target encodings, applied through the same helper that built the
+    # training columns. Replaces the old author/category multi-hot blocks (165
+    # dummies fitted on 93 rows). `genre` is accepted as an alias for `categories`
+    # and `author` for `authors`, because the watchlist/queue callers use those.
+    ALIASES = {'authors': ('authors', 'author'), 'categories': ('categories', 'genre'),
+               'publisher': ('publisher',), 'moods': ('moods',), 'hc_tags': ('hc_tags',)}
+    arts = state.get('te_artifacts') or {}
+    for col, limit in state.get('book_encode', BOOK_ENCODE):
+        art = arts.get(col)
+        if not art:
+            continue
+        raw_val = next((raw_data.get(k) for k in ALIASES.get(col, (col,))
+                        if raw_data.get(k) not in (None, '', [])), None)
+        enc, sup = tf.apply_entity_map(raw_val, art['map'], art.get('counts', {}),
+                                       art['mean'], art.get('limit', limit))
+        if f'{col}_encoded' in X.columns:
+            X.at[0, f'{col}_encoded'] = enc
+        if f'{col}_n' in X.columns:
+            X.at[0, f'{col}_n'] = sup
 
     # Text embedding -> PCA
     try:
-        emb = _get_transformer().encode([_book_text(raw_data)])
+        emb = encode_pooled_single(_book_header(raw_data), _book_body(raw_data),
+                                   _get_transformer())
         pcav = state['pca'].transform(emb)[0]
         for i in range(len(pcav)):
             col = f"pca_{i}"
@@ -234,18 +261,16 @@ def find_similar_books(raw_data, input_df, state, n=3):
         return []
 
     model = _get_transformer()
-    target_text = _book_text(raw_data)
 
     lib = lib.copy()
-    lib['_text'] = ("Title: " + lib['title'].fillna('') +
-                    ". Authors: " + lib.get('authors', pd.Series('', index=lib.index)).fillna('') +
-                    ". Categories: " + lib.get('categories', pd.Series('', index=lib.index)).fillna('') +
-                    ". Description: " + lib.get('description', pd.Series('', index=lib.index)).fillna(''))
-
-    embs = model.encode([target_text] + lib['_text'].tolist())
+    # Same header/body split and same pooled encoder as training, so "similar" is
+    # measured in the space the model was actually fitted on.
+    recs = lib.to_dict('records')
+    embs = encode_pooled([_book_header(raw_data)] + [_book_header(r) for r in recs],
+                         [_book_body(raw_data)] + [_book_body(r) for r in recs], model)
     target_vec, lib_vecs = embs[0], embs[1:]
-    sims = lib_vecs @ target_vec / (
-        (np.linalg.norm(lib_vecs, axis=1) * np.linalg.norm(target_vec)) + 1e-9)
+    # encode_pooled returns unit vectors, so the dot product IS the cosine.
+    sims = lib_vecs @ target_vec
 
     target_title = str(raw_data.get('title', '')).lower().strip()
     out = []

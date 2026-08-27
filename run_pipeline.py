@@ -35,14 +35,21 @@ ENV = {**os.environ, "PYTHONUTF8": "1"}
 DOMAINS = {
     "movies": {
         "ingest": "src.movies.ingestion",
+        # Runs straight after ingest so NEW items get keywords / franchise /
+        # revenue / budget too. Null-cells-only and cached, so it is cheap on
+        # re-runs and only hits the API for rows that are actually missing.
+        "enrich": ["src.movies.enrich_extended", "--apply"],
         "feature": "src.movies.feature_engineering",
         "models": ["src.movies.advanced_movie_model_trainer", "src.movies.model_trainer"],
         "predict": "src.movies.predict_ratings",
     },
     "shows": {
         "ingest": "src.shows.ingestion",
+        "enrich": ["src.shows.enrich_extended", "--apply"],
+        # Per-season fill: episode-rating trend, guest stars, season art.
+        "enrich2": ["src.shows.season_fill", "--apply"],
         "feature": "src.shows.feature_engineering",
-        "models": ["src.shows.model_trainer"],
+        "models": ["src.shows.model_trainer", "src.shows.season_model_trainer"],
         "predict": "src.shows.predict_ratings",
     },
     "games": {
@@ -53,6 +60,11 @@ DOMAINS = {
     },
     "books": {
         "ingest": "src.books.ingestion",
+        # Backfills moods / hc_tags / content_warnings for rows that predate
+        # ingestion reading them. Books was the only domain with no enrich step,
+        # which is why newly-added books arrived with those columns empty while
+        # the model trains on moods_encoded / hc_tags_encoded.
+        "enrich": ["src.books.enrich_extended", "--apply"],
         "feature": "src.books.feature_engineering",
         "models": ["src.books.model_trainer"],
         "predict": "src.books.predict_ratings",
@@ -83,6 +95,14 @@ def build_plan(args):
     if not args.no_ingest:
         for d in domains:
             steps.append(("ingest", f"merge-ingest {d}", [PY, "-m", DOMAINS[d]["ingest"]]))
+        # Extended enrichment always follows ingestion, so anything newly added
+        # arrives with the same fields as the existing library.
+        for d in domains:
+            for key in ("enrich", "enrich2"):
+                spec = DOMAINS[d].get(key)
+                if spec:
+                    steps.append(("ingest", f"enrich {d} ({spec[0].split('.')[-1]})",
+                                  [PY, "-m", *spec]))
 
     for d in domains:
         steps.append(("features", f"features {d}", [PY, "-m", DOMAINS[d]["feature"]]))
@@ -97,6 +117,16 @@ def build_plan(args):
 
     if not args.skip_models:
         steps.append(("models", "unified deployed ensemble", [PY, "-m", "src.unified_model.advanced_unified_model_trainer"]))
+        # Score the unified model right after training it, and BEFORE the per-domain
+        # trainers, which read data/predictions/unified/*.csv for the distillation
+        # prior. This step was missing from the plan entirely: the predictions file on
+        # disk was two months older than the features, so games/books read a stale
+        # frame (and the wrong column name) and silently trained with no prior at all.
+        # It must also come after the trainer, because build_universal_dataset rewrites
+        # preprocessor_state.pkl WITHOUT the DomainAligner and only the trainer puts it
+        # back -- scoring before the trainer would serve unaligned pca_*.
+        steps.append(("models", "unified batch predictions",
+                      [PY, "-m", "src.unified_model.predict_unified_ratings"]))
         for d in domains:
             for m in DOMAINS[d]["models"]:
                 steps.append(("models", f"train {d} ({m.split('.')[-1]})", [PY, "-m", m]))

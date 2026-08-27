@@ -2,11 +2,12 @@
 # Re-run only the 4 downstream stages that failed (enrichment+feateng already OK).
 # Fixes applied: PYTHONPATH (model_training's absolute import), UTF-8 (emoji prints),
 # plus code fixes in profile_builder + cross_domain_transfer.
-cd "E:/Personal_Media_Intelligence_Hub" || exit 1
-export PYTHONPATH="E:/Personal_Media_Intelligence_Hub"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT" || exit 1
+export PYTHONPATH="$ROOT"
 export PYTHONIOENCODING=utf-8
 export PYTHONUTF8=1
-PY="content_rec/Scripts/python.exe"
+PY=".venv/Scripts/python.exe"
 R="reports"
 ts() { date '+%H:%M:%S'; }
 echo "FINISH_START $(ts)" > "$R/_finish.log"

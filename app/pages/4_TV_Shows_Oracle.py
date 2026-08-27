@@ -79,11 +79,24 @@ def transform_for_parity(meta, state):
     if ncol in X.columns:
         X.at[0, ncol] = 1
 
-    # MiniLM embedding -> PCA
-    text = (f"Title: {meta.get('name', 'Unknown')}. "
-            f"Network: {net}. {meta.get('overview', '') or ''}")
+    # MiniLM embedding -> PCA. Built from the SAME header/body helpers the trainer
+    # uses; this string previously dropped Creator and Cast, so a show scored here
+    # embedded differently than the identical show did during training.
+    from src.shows.feature_engineering import _show_header, _show_body
+    from src.common.text_embedding import encode_pooled_single
+    from src.shows.season_data import season_overview_by_show, SEASON_NARRATIVE_COL
+    _raw = dict(meta)
+    _raw['primary_network'] = net
+    # Training embeds the season-by-season narrative; look it up by tmdb_id so a
+    # show scored here gets the same text it had in training. Absent -> empty
+    # string, which is exactly what a show with no season sheet trained on.
     try:
-        emb = get_transformer().encode([text])
+        _raw[SEASON_NARRATIVE_COL] = season_overview_by_show().get(
+            int(float(meta.get('tmdb_id') or meta.get('id') or 0)), "")
+    except (TypeError, ValueError):
+        _raw[SEASON_NARRATIVE_COL] = ""
+    try:
+        emb = encode_pooled_single(_show_header(_raw), _show_body(_raw), get_transformer())
         pcav = state['pca'].transform(emb)[0]
         for i, c in enumerate(state.get('pca_cols', [])):
             if c in X.columns:
@@ -133,13 +146,26 @@ def find_similar_shows(meta, n=3):
         return []
     model = get_transformer()
     net = get_primary_network(meta.get('network'))
-    target_text = f"Title: {meta.get('name', '')}. Network: {net}. {meta.get('overview', '') or ''}"
-    lib['_text'] = ("Title: " + lib['name'].fillna('Unknown') +
-                    ". Network: " + lib['network'].fillna('').apply(get_primary_network) +
-                    ". " + lib['overview'].fillna(''))
-    embs = model.encode([target_text] + lib['_text'].tolist())
+    from src.shows.feature_engineering import _show_header, _show_body
+    from src.common.text_embedding import encode_pooled
+    # Same header/body helpers as training, so "similar shows" is measured in the
+    # space the model actually learned in rather than a third ad-hoc string.
+    _target = dict(meta)
+    _target['primary_network'] = net
+    from src.shows.season_data import attach_season_narrative
+    lib = attach_season_narrative(lib)
+    _lib_recs = lib.to_dict('records')
+    for _r in _lib_recs:
+        _r['primary_network'] = get_primary_network(_r.get('network'))
+    headers = [_show_header(_target)] + [_show_header(r) for r in _lib_recs]
+    bodies = [_show_body(_target)] + [_show_body(r) for r in _lib_recs]
+    target_text = f"{headers[0]} {bodies[0]}"
+    lib['_text'] = [f"{h} {b}" for h, b in zip(headers[1:], bodies[1:])]
+
+    embs = encode_pooled(headers, bodies, model)
     tv, lv = embs[0], embs[1:]
-    sims = lv @ tv / ((np.linalg.norm(lv, axis=1) * np.linalg.norm(tv)) + 1e-9)
+    # encode_pooled returns unit vectors, so the dot product IS the cosine.
+    sims = lv @ tv
     target_name = str(meta.get('name', '')).lower().strip()
     out = []
     for idx in np.argsort(sims)[::-1]:

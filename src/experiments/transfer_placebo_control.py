@@ -12,10 +12,10 @@ Interpretation:
 
 Writes reports/transfer_placebo_control.json.
 """
-import sys, json
+import sys, json, pathlib
 import numpy as np, pandas as pd
 from scipy.stats import wilcoxon
-sys.path.append(r"E:\Personal_Media_Intelligence_Hub")
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[2]))
 from src import config
 import src.experiments.transfer_study as ts
 from src.experiments.transfer_study import select_features, _fit_predict, SEED

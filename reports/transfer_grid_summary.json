@@ -1,48 +1,48 @@
 {
   "affinity": {
     "game": {
-      "book": 0.0864,
-      "movie": 0.0942,
-      "tv": 0.0506
+      "book": 0.0823,
+      "movie": 0.067,
+      "tv": 0.0883
     },
     "movie": {
-      "book": 0.1347,
-      "game": -0.193,
-      "tv": 0.1464
+      "book": 0.153,
+      "game": -0.2972,
+      "tv": 0.119
     },
     "tv": {
-      "book": 0.0537,
-      "game": -0.4236,
-      "movie": 0.1812
+      "book": 0.0481,
+      "game": -0.4584,
+      "movie": 0.1522
     },
     "book": {
-      "game": -0.3694,
-      "movie": 0.1913,
-      "tv": 0.0522
+      "game": -0.3617,
+      "movie": 0.1266,
+      "tv": 0.087
     }
   },
   "best_subset": {
     "movie": {
-      "source": "book",
+      "source": "tv",
       "music": false,
-      "lift@100": 0.0013,
+      "lift@100": -0.0001,
       "frac_significant": 0,
       "lifts": {
         "0.0": {
-          "lift": -0.1603,
+          "lift": -0.175,
           "p": 0.0
         },
         "0.25": {
-          "lift": -0.0372,
+          "lift": -0.0389,
           "p": 0.0
         },
         "0.5": {
-          "lift": -0.018,
-          "p": 0.0
+          "lift": -0.0182,
+          "p": 0.0013
         },
         "1.0": {
-          "lift": 0.0013,
-          "p": 0.4539
+          "lift": -0.0001,
+          "p": 0.8301
         }
       },
       "positive": false
@@ -50,24 +50,24 @@
     "tv": {
       "source": "movie",
       "music": false,
-      "lift@100": 0.0296,
-      "frac_significant": 1,
+      "lift@100": 0.0207,
+      "frac_significant": 0,
       "lifts": {
         "0.0": {
-          "lift": 0.0061,
-          "p": 0.871
+          "lift": -0.0144,
+          "p": 0.3246
         },
         "0.25": {
-          "lift": -0.0049,
-          "p": 0.8075
+          "lift": -0.0121,
+          "p": 0.4563
         },
         "0.5": {
-          "lift": 0.0029,
-          "p": 0.7681
+          "lift": -0.0028,
+          "p": 0.8289
         },
         "1.0": {
-          "lift": 0.0296,
-          "p": 0.0212
+          "lift": 0.0207,
+          "p": 0.2768
         }
       },
       "positive": false
@@ -75,24 +75,24 @@
     "game": {
       "source": "movie+tv+book",
       "music": false,
-      "lift@100": 0.1552,
+      "lift@100": 0.1211,
       "frac_significant": 4,
       "lifts": {
         "0.0": {
-          "lift": 0.1184,
-          "p": 0.0014
+          "lift": 0.0852,
+          "p": 0.0309
         },
         "0.25": {
-          "lift": 0.09,
-          "p": 0.0056
+          "lift": 0.0814,
+          "p": 0.0295
         },
         "0.5": {
-          "lift": 0.1502,
-          "p": 0.0001
+          "lift": 0.1295,
+          "p": 0.0003
         },
         "1.0": {
-          "lift": 0.1552,
-          "p": 0.0
+          "lift": 0.1211,
+          "p": 0.0014
         }
       },
       "positive": true
@@ -100,24 +100,24 @@
     "book": {
       "source": "tv+game",
       "music": false,
-      "lift@100": 0.0183,
+      "lift@100": 0.0228,
       "frac_significant": 0,
       "lifts": {
         "0.0": {
-          "lift": -0.2875,
+          "lift": -0.2167,
           "p": 0.0
         },
         "0.25": {
-          "lift": -0.1018,
-          "p": 0.0
+          "lift": -0.0576,
+          "p": 0.0121
         },
         "0.5": {
-          "lift": -0.0517,
-          "p": 0.0168
+          "lift": -0.0199,
+          "p": 0.3159
         },
         "1.0": {
-          "lift": 0.0183,
-          "p": 0.2996
+          "lift": 0.0228,
+          "p": 0.2552
         }
       },
       "positive": false
@@ -125,153 +125,125 @@
   },
   "learning_curves": {
     "movie": {
-      "best_source": "book",
+      "best_source": "tv",
       "music": false,
       "skill_by_fraction": {
-        "0.0": 0.1347,
-        "0.25": 0.2951,
-        "0.5": 0.3198,
-        "1.0": 0.3449
+        "0.0": 0.119,
+        "0.25": 0.2949,
+        "0.5": 0.3218,
+        "1.0": 0.3448
       },
-      "target_alone_skill": 0.3433
+      "target_alone_skill": 0.345
     },
     "tv": {
       "best_source": "movie",
       "music": false,
       "skill_by_fraction": {
-        "0.0": 0.1812,
-        "0.25": 0.1674,
-        "0.5": 0.1768,
-        "1.0": 0.2072
+        "0.0": 0.1522,
+        "0.25": 0.1555,
+        "0.5": 0.165,
+        "1.0": 0.1939
       },
-      "target_alone_skill": 0.1677
+      "target_alone_skill": 0.1655
     },
     "game": {
       "best_source": "movie+tv+book",
       "music": false,
       "skill_by_fraction": {
-        "0.0": 0.1062,
-        "0.25": 0.0759,
-        "0.5": 0.1361,
-        "1.0": 0.1385
+        "0.0": 0.0905,
+        "0.25": 0.0853,
+        "0.5": 0.1287,
+        "1.0": 0.125
       },
-      "target_alone_skill": -0.0152
+      "target_alone_skill": 0.0117
     },
     "book": {
       "best_source": "tv+game",
       "music": false,
       "skill_by_fraction": {
-        "0.0": -0.1779,
-        "0.25": 0.1096,
-        "0.5": 0.1743,
-        "1.0": 0.2932
+        "0.0": -0.093,
+        "0.25": 0.1452,
+        "0.5": 0.2126,
+        "1.0": 0.2773
       },
-      "target_alone_skill": 0.2564
+      "target_alone_skill": 0.2427
     }
   },
   "positive_findings": [
     {
       "target": "game",
-      "source": "book",
-      "music": false,
-      "frac_significant": 3,
-      "lift@100": 0.052
-    },
-    {
-      "target": "game",
-      "source": "book",
-      "music": true,
-      "frac_significant": 3,
-      "lift@100": 0.052
-    },
-    {
-      "target": "game",
       "source": "movie",
       "music": false,
-      "frac_significant": 4,
-      "lift@100": 0.127
+      "frac_significant": 3,
+      "lift@100": 0.1105
     },
     {
       "target": "game",
       "source": "movie",
       "music": true,
-      "frac_significant": 4,
-      "lift@100": 0.127
+      "frac_significant": 3,
+      "lift@100": 0.1105
     },
     {
       "target": "game",
       "source": "movie+book",
       "music": false,
-      "frac_significant": 4,
-      "lift@100": 0.1263
+      "frac_significant": 3,
+      "lift@100": 0.1045
     },
     {
       "target": "game",
       "source": "movie+book",
       "music": true,
-      "frac_significant": 4,
-      "lift@100": 0.1263
+      "frac_significant": 3,
+      "lift@100": 0.1045
     },
     {
       "target": "game",
       "source": "movie+tv",
       "music": false,
-      "frac_significant": 4,
-      "lift@100": 0.1404
+      "frac_significant": 2,
+      "lift@100": 0.1198
     },
     {
       "target": "game",
       "source": "movie+tv",
       "music": true,
-      "frac_significant": 4,
-      "lift@100": 0.1404
+      "frac_significant": 2,
+      "lift@100": 0.1198
     },
     {
       "target": "game",
       "source": "movie+tv+book",
       "music": false,
       "frac_significant": 4,
-      "lift@100": 0.1552
+      "lift@100": 0.1211
     },
     {
       "target": "game",
       "source": "movie+tv+book",
       "music": true,
       "frac_significant": 4,
-      "lift@100": 0.1552
+      "lift@100": 0.1211
     },
     {
       "target": "game",
       "source": "tv",
       "music": false,
       "frac_significant": 3,
-      "lift@100": 0.125
+      "lift@100": 0.0207
     },
     {
       "target": "game",
       "source": "tv",
       "music": true,
       "frac_significant": 3,
-      "lift@100": 0.125
-    },
-    {
-      "target": "game",
-      "source": "tv+book",
-      "music": false,
-      "frac_significant": 4,
-      "lift@100": 0.1039
-    },
-    {
-      "target": "game",
-      "source": "tv+book",
-      "music": true,
-      "frac_significant": 4,
-      "lift@100": 0.1039
+      "lift@100": 0.0207
     }
   ],
   "similarity_corr": {
-    "spearman_centroid_dist_vs_zeroshot_skill": 0.1696,
-    "spearman_mmd_vs_zeroshot_skill": 0.1696,
+    "spearman_centroid_dist_vs_zeroshot_skill": 0.0848,
+    "spearman_mmd_vs_zeroshot_skill": 0.0848,
     "n_pairs": 12
   },
   "verdict": "TASTE TRANSFERS: at least one target shows a positive transfer finding (augmented lift > 0, paired p < 0.05, at >= 2 fractions).",

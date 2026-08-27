@@ -55,6 +55,13 @@ def train_advanced_unified_models():
         return
 
     df = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
+    # Drop unrated rows before fitting anything. They carry target_reg == 0.0 (a
+    # fillna, not NaN), which is off the 0.5-5.0 star grid, and their target_ordinal
+    # is 5 (=3.0 stars) -- the two targets disagree on the same row.
+    _n0 = len(df)
+    df = df[df['target_reg'] > 0].reset_index(drop=True)
+    if len(df) < _n0:
+        print(f"   Dropped {_n0 - len(df)} unrated row(s) with target_reg == 0.")
     df['rating_date'] = pd.to_datetime(df['rating_date'])
     pca_cols = [c for c in df.columns if c.startswith('pca_')]
     
@@ -64,13 +71,25 @@ def train_advanced_unified_models():
     dates = df['rating_date']
 
     # 1. Tune Hyperparameters
+    #
+    # The tuning split MUST NOT be the final test split. Both this objective and
+    # the final split below used train_test_split(..., test_size=0.2,
+    # random_state=42) on the same frame, so the objective's validation set WAS
+    # X_test: lambda_decay and both alphas were selected by minimising error on the
+    # data the script then reported metrics against. Hold the test set out FIRST,
+    # then tune inside the remaining training portion only.
+    X_fit, X_hold, y_fit, y_hold, m_fit, m_hold, d_fit, d_hold = train_test_split(
+        X, y_reg, media_types, dates, test_size=0.2, random_state=42)
+
     print("🚀 Tuning Temporal Decay (λ) and Asymmetric Penalties...")
     def objective(trial):
         l_decay = trial.suggest_float("lambda_decay", 1e-5, 0.01, log=True)
         alpha_hi = trial.suggest_float("alpha_hi", 0.05, 0.3)
         alpha_lo = trial.suggest_float("alpha_lo", 0.05, 0.3)
-        xt, xv, yt, yv, mt, mv, dt, dv = train_test_split(X, y_reg, media_types, dates, test_size=0.2, random_state=42)
-        
+        # Inner split of the TRAINING portion only -- never touches X_hold.
+        xt, xv, yt, yv, mt, mv, dt, dv = train_test_split(
+            X_fit, y_fit, m_fit, d_fit, test_size=0.25, random_state=7)
+
         aligner = DomainAligner(method='centroid')
         aligner.fit(xt[pca_cols].values, mt)
         xt_p = xt.copy(); xt_p.loc[:, pca_cols] = aligner.transform(xt[pca_cols].values, mt)
@@ -81,13 +100,17 @@ def train_advanced_unified_models():
         model.fit(xt_p, yt, sample_weight=w)
         return mean_absolute_error(yv, model.predict(xv_p))
 
-    study = optuna.create_study(direction="minimize")
+    study = optuna.create_study(direction="minimize",
+                                sampler=optuna.samplers.TPESampler(seed=42))
     study.optimize(objective, n_trials=10)
     best_lambda = study.best_params['lambda_decay']
 
-    # 2. Final Training
-    weights = compute_temporal_weights(dates, lambda_decay=best_lambda)
-    X_train, X_test, y_train, y_test, w_train, w_test, m_train, m_test = train_test_split(X, y_reg, weights, media_types, test_size=0.2, random_state=42)
+    # 2. Final Training -- reuse the split made BEFORE tuning, so the held-out
+    # fifth has never been seen by the hyperparameter search.
+    X_train, y_train, m_train = X_fit, y_fit, m_fit
+    X_test, y_test, m_test = X_hold, y_hold, m_hold
+    w_train = compute_temporal_weights(d_fit, lambda_decay=best_lambda)
+    w_test = compute_temporal_weights(d_hold, lambda_decay=best_lambda)
 
     aligner = DomainAligner(method='centroid')
     aligner.fit(X_train[pca_cols].values, m_train)

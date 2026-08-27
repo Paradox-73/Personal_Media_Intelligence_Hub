@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 import json
@@ -21,6 +22,35 @@ apply_mobile_css()
 YT_RED = "#FF0000"
 YT_DARK = "#CC0000"
 YT_GREY = "#909090"
+# Fixed colours for the Long form / Shorts split so the same series is the same
+# colour in every stacked chart on the page.
+FORMAT_COLORS = {"Long form": "#CC0000", "Shorts": "#FF8080"}
+
+# channels.list snippet.country returns ISO-2; plotly's choropleth takes ISO-3 or
+# country names. Covers the codes that actually appear in this library (76 of them);
+# anything unmapped is reported rather than silently dropped.
+ISO2_NAME = {
+    "US": "United States", "GB": "United Kingdom", "IN": "India", "CA": "Canada",
+    "AU": "Australia", "DE": "Germany", "FR": "France", "JP": "Japan",
+    "KR": "South Korea", "BR": "Brazil", "RU": "Russia", "NL": "Netherlands",
+    "SE": "Sweden", "NO": "Norway", "DK": "Denmark", "FI": "Finland",
+    "ES": "Spain", "IT": "Italy", "PL": "Poland", "MX": "Mexico",
+    "AR": "Argentina", "CL": "Chile", "CO": "Colombia", "PH": "Philippines",
+    "ID": "Indonesia", "MY": "Malaysia", "SG": "Singapore", "TH": "Thailand",
+    "VN": "Vietnam", "TR": "Turkey", "UA": "Ukraine", "IE": "Ireland",
+    "NZ": "New Zealand", "ZA": "South Africa", "NG": "Nigeria", "EG": "Egypt",
+    "PK": "Pakistan", "BD": "Bangladesh", "LK": "Sri Lanka", "NP": "Nepal",
+    "CN": "China", "TW": "Taiwan", "HK": "Hong Kong", "IL": "Israel",
+    "AE": "United Arab Emirates", "SA": "Saudi Arabia", "CH": "Switzerland",
+    "AT": "Austria", "BE": "Belgium", "PT": "Portugal", "GR": "Greece",
+    "CZ": "Czechia", "HU": "Hungary", "RO": "Romania", "BG": "Bulgaria",
+    "HR": "Croatia", "RS": "Serbia", "SK": "Slovakia", "SI": "Slovenia",
+    "EE": "Estonia", "LV": "Latvia", "LT": "Lithuania", "IS": "Iceland",
+    "PE": "Peru", "VE": "Venezuela", "EC": "Ecuador", "UY": "Uruguay",
+    "CR": "Costa Rica", "PA": "Panama", "DO": "Dominican Republic",
+    "GT": "Guatemala", "MA": "Morocco", "KE": "Kenya", "GH": "Ghana",
+    "JO": "Jordan", "QA": "Qatar", "KW": "Kuwait", "LB": "Lebanon",
+}
 # Red ramp (light -> dark) for categorical charts on a white background
 RED_SEQUENCE = ["#FF0000", "#CC0000", "#FF4D4D", "#990000", "#FF8080", "#660000", "#E50914", "#FFB3B3"]
 # White-to-red continuous scale for heatmaps / histograms
@@ -103,11 +133,22 @@ def detect_short(row):
     if row.get('duration_sec', 0) and 0 < row['duration_sec'] < 61: return True
     return False
 
+def hour_label(h):
+    """24h integer -> 12-hour clock label ('0' -> '12 AM', '13' -> '1 PM')."""
+    h = int(h) % 24
+    suffix = "AM" if h < 12 else "PM"
+    display = h % 12
+    return f"{12 if display == 0 else display} {suffix}"
+
+
+HOUR_ORDER = [hour_label(h) for h in range(24)]
+
+
 def get_time_of_day(hour):
-    if 5 <= hour < 12: return 'Morning (5-12)'
-    elif 12 <= hour < 17: return 'Afternoon (12-17)'
-    elif 17 <= hour < 22: return 'Evening (17-22)'
-    else: return 'Night (22-5)'
+    if 5 <= hour < 12: return 'Morning (5 AM–12 PM)'
+    elif 12 <= hour < 17: return 'Afternoon (12–5 PM)'
+    elif 17 <= hour < 22: return 'Evening (5–10 PM)'
+    else: return 'Night (10 PM–5 AM)'
 
 def calculate_sessions(df, threshold_min=30):
     if df.empty: return pd.DataFrame()
@@ -153,6 +194,14 @@ def load_all_data():
     if VIDEO_STATS_PATH.exists():
         v_df = pd.read_csv(VIDEO_STATS_PATH)
         v_df['tags'] = v_df['tags'].apply(lambda x: ast.literal_eval(x) if pd.notna(x) and str(x).startswith('[') else [])
+        # topicDetails.topicCategories -> list (schema v2)
+        if 'topic_categories' in v_df.columns:
+            v_df['topic_categories'] = v_df['topic_categories'].apply(
+                lambda x: ast.literal_eval(x) if pd.notna(x) and str(x).startswith('[') else [])
+        # The API title is authoritative; Takeout titles carry a "Watched " prefix
+        # and are absent for anything not in the history.
+        if 'video_title' in v_df.columns:
+            v_df = v_df.rename(columns={'video_title': 'api_title'})
         # Avoid clobbering the history-derived channel_id on merge
         if 'channel_id' in v_df.columns:
             v_df = v_df.drop(columns=['channel_id'])
@@ -219,12 +268,6 @@ df['day_of_week'] = df['time'].dt.day_name()
 df['time_of_day'] = df['hour'].apply(get_time_of_day)
 df['is_short'] = df.apply(detect_short, axis=1)
 
-# Rewatch counts (history has one row per watch event)
-rewatch = df['video_id'].value_counts()
-
-# SESSIONS
-sessions = calculate_sessions(df)
-
 # --- DASHBOARD UI ---
 st.title("🟥 YouTube Personal Intelligence")
 if data.get('n_posts'):
@@ -232,13 +275,45 @@ if data.get('n_posts'):
                f"({df['time'].min():%b %Y} – {df['time'].max():%b %Y}). "
                f"Excluded {data['n_posts']:,} community-post entries.")
 
+# --- SHORTS FILTER -----------------------------------------------------------
+# Applies to every metric and chart below. `df_all` keeps the unfiltered frame so
+# the charts whose whole point is comparing the two formats (the format pie, the
+# stacked splits) still have both series to show.
+#
+# This has to run BEFORE rewatch counts and sessions are derived -- those are
+# computed FROM df, so filtering afterwards would leave them describing the full
+# history while every chart around them described the filtered slice.
+df_all = df
+_fmt = st.radio(
+    "Content format", ["All", "Long-form only", "Shorts only"],
+    horizontal=True, index=0,
+    help="Filters every metric and chart on this page. Charts that compare the two "
+         "formats always use the full history regardless of this setting.",
+)
+if _fmt == "Long-form only":
+    df = df_all[~df_all['is_short']].copy()
+elif _fmt == "Shorts only":
+    df = df_all[df_all['is_short']].copy()
+if _fmt != "All":
+    st.caption(f"Showing **{len(df):,}** of {len(df_all):,} watches ({_fmt.lower()}).")
+if df.empty:
+    st.warning("No watches match that filter.")
+    st.stop()
+
+# Rewatch counts (history has one row per watch event) and sessions -- both derived
+# from the FILTERED frame so they agree with everything else on the page.
+rewatch = df['video_id'].value_counts()
+sessions = calculate_sessions(df)
+
 # 1. KEY METRICS ROW
 st.subheader("📊 At a Glance")
 total_views = len(df)
 unique_videos = df['video_id'].nunique()
 unique_channels = df['channel_id'].nunique()
-shorts_count = int(df['is_short'].sum())
-shorts_pct = (shorts_count / total_views) * 100 if total_views > 0 else 0
+# Shorts share is always measured against the FULL history -- inside a filtered
+# view it would trivially read 0% or 100% and tell you nothing.
+shorts_count = int(df_all['is_short'].sum())
+shorts_pct = (shorts_count / len(df_all)) * 100 if len(df_all) > 0 else 0
 
 r1 = st.columns(3)
 r2 = st.columns(3)
@@ -259,29 +334,39 @@ else:
 st.divider()
 
 # --- TABS ---
-tab_time, tab_content, tab_behavior, tab_stats, tab_comm = st.tabs([
+tab_time, tab_content, tab_behavior, tab_stats, tab_comm, tab_deep = st.tabs([
     "📅 Temporal Habits",
     "🎬 Content & Genres",
     "🧠 Behavior & Sessions",
     "📈 Hipster Index (Stats)",
-    "🤝 Loyalty & Subs"
+    "🤝 Loyalty & Subs",
+    "🔬 Deep Metadata"
 ])
 
 # === TAB 1: TEMPORAL ===
 with tab_time:
     c_left, c_right = st.columns(2)
     with c_left:
-        monthly = df.groupby(df['time'].dt.to_period("M")).size().reset_index(name='Views')
-        monthly['time'] = monthly['time'].astype(str)
-        fig = px.bar(monthly, x='time', y='Views', title="Watch History Timeline")
+        # Stacked: Shorts sit on top of long-form in ONE chart rather than two.
+        monthly = (df_all.assign(_m=df_all['time'].dt.to_period("M").astype(str),
+                                 Format=np.where(df_all['is_short'], 'Shorts', 'Long form'))
+                   .groupby(['_m', 'Format']).size().reset_index(name='Views')
+                   .rename(columns={'_m': 'Month'}))
+        fig = px.bar(monthly, x='Month', y='Views', color='Format', barmode='stack',
+                     title="Watch History Timeline",
+                     color_discrete_map=FORMAT_COLORS,
+                     category_orders={'Format': ['Long form', 'Shorts']})
         st.plotly_chart(fig, use_container_width=True)
     with c_right:
         heatmap_data = df.groupby(['day_of_week', 'hour']).size().reset_index(name='count')
+        heatmap_data['hour_lbl'] = heatmap_data['hour'].apply(hour_label)
         days_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
         fig = go.Figure(data=go.Heatmap(
-            z=heatmap_data['count'], x=heatmap_data['hour'], y=heatmap_data['day_of_week'],
-            colorscale=RED_SCALE))
+            z=heatmap_data['count'], x=heatmap_data['hour_lbl'], y=heatmap_data['day_of_week'],
+            colorscale=RED_SCALE,
+            hovertemplate="%{y} %{x}<br>%{z} videos<extra></extra>"))
         fig.update_yaxes(categoryorder='array', categoryarray=days_order)
+        fig.update_xaxes(categoryorder='array', categoryarray=HOUR_ORDER)
         fig.update_layout(title="Weekly Heatmap: When do you watch?")
         st.plotly_chart(fig, use_container_width=True)
 
@@ -312,19 +397,27 @@ with tab_content:
     c_g1, c_g2 = st.columns(2)
     with c_g1:
         st.markdown("#### 📱 Format Preference")
-        type_counts = df['is_short'].value_counts().reset_index()
+        # Always the FULL history -- this chart exists to compare the two formats.
+        type_counts = df_all['is_short'].value_counts().reset_index()
         type_counts.columns = ['Type', 'Count']
-        type_counts['Type'] = type_counts['Type'].map({True: 'Shorts', False: 'Long Form'})
+        type_counts['Type'] = type_counts['Type'].map({True: 'Shorts', False: 'Long form'})
         fig = px.pie(type_counts, values='Count', names='Type', hole=0.5,
-                     color_discrete_sequence=[YT_RED, YT_GREY])
+                     color='Type', color_discrete_map=FORMAT_COLORS)
         st.plotly_chart(fig, use_container_width=True)
     with c_g2:
         if is_enriched:
             st.markdown("#### 🎭 Top Categories (by Watch Time)")
-            cat_stats = df[df['category'] != 'Unknown'].groupby('category')['duration_sec'].sum().reset_index()
-            cat_stats['Hours'] = cat_stats['duration_sec'] / 3600
-            fig = px.bar(cat_stats.sort_values('Hours', ascending=False).head(10),
-                         x='Hours', y='category', orientation='h')
+            _cat = df_all[df_all['category'] != 'Unknown'].copy()
+            _cat['Format'] = np.where(_cat['is_short'], 'Shorts', 'Long form')
+            cat_stats = (_cat.groupby(['category', 'Format'])['duration_sec'].sum() / 3600
+                         ).reset_index(name='Hours')
+            top10 = (cat_stats.groupby('category')['Hours'].sum()
+                     .nlargest(10).index.tolist())
+            cat_stats = cat_stats[cat_stats['category'].isin(top10)]
+            fig = px.bar(cat_stats, x='Hours', y='category', color='Format',
+                         orientation='h', barmode='stack',
+                         color_discrete_map=FORMAT_COLORS,
+                         category_orders={'Format': ['Long form', 'Shorts']})
             fig.update_layout(yaxis={'categoryorder': 'total ascending'})
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -426,14 +519,35 @@ with tab_stats:
     if is_enriched and 'public_views' in df.columns:
         st.markdown("#### 🧐 The Hipster Index")
         st.caption("Do you watch mainstream viral videos or obscure content?")
-        valid_views = df[df['public_views'] > 0].copy()
+        valid_views = df[pd.to_numeric(df['public_views'], errors='coerce') > 0].copy()
+        valid_views['public_views'] = pd.to_numeric(valid_views['public_views'],
+                                                    errors='coerce')
 
         c_h1, c_h2 = st.columns(2)
         with c_h1:
-            fig = px.histogram(valid_views, x='public_views', log_x=True, nbins=40,
-                               title="Public Views of Videos You Watched (log)",
-                               color_discrete_sequence=[YT_RED])
-            st.plotly_chart(fig, use_container_width=True)
+            if valid_views.empty:
+                st.info("No public view counts available for these watches.")
+            else:
+                # Bin in LOG space, not linear-with-a-log-axis. px.histogram(log_x=True)
+                # computes bin edges linearly and only then maps them onto a log axis:
+                # the first edge is 0, log10(0) is undefined, and Plotly silently drops
+                # every bar -- which is why this chart rendered empty.
+                lv = np.log10(valid_views['public_views'])
+                fig = px.histogram(x=lv, nbins=40,
+                                   title="Public Views of Videos You Watched (log scale)",
+                                   labels={'x': 'Views'},
+                                   color_discrete_sequence=[YT_RED])
+                ticks = [t for t in range(0, 11) if lv.min() - 1 <= t <= lv.max() + 1]
+                fig.update_xaxes(
+                    tickvals=ticks,
+                    ticktext=[("1" if t == 0 else
+                               f"{10**t:,.0f}" if t < 6 else
+                               f"{10**(t-6):,.0f}M" if t < 9 else
+                               f"{10**(t-9):,.0f}B") for t in ticks])
+                fig.update_yaxes(title="Videos")
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption(f"Median video you watch has "
+                           f"**{valid_views['public_views'].median():,.0f}** views.")
         with c_h2:
             if has_channel_stats and 'subscriber_count' in df.columns:
                 subs_data = df[df['subscriber_count'] > 0]
@@ -474,19 +588,32 @@ with tab_comm:
     # Channel concentration / loyalty (always available)
     st.markdown("#### 🏆 Top Channels")
     top_n = st.slider("How many channels?", 5, 25, 10, key="topn")
-    by_count = df['channel_name'].value_counts().head(top_n).reset_index()
-    by_count.columns = ['Channel', 'Videos']
+    _ch = df_all.assign(Format=np.where(df_all['is_short'], 'Shorts', 'Long form'))
+    top_names = df_all['channel_name'].value_counts().head(top_n).index.tolist()
     cl1, cl2 = st.columns(2)
     with cl1:
-        fig = px.bar(by_count.sort_values('Videos'), x='Videos', y='Channel', orientation='h',
-                     title="By Video Count")
+        by_count = (_ch[_ch['channel_name'].isin(top_names)]
+                    .groupby(['channel_name', 'Format']).size().reset_index(name='Videos'))
+        fig = px.bar(by_count, x='Videos', y='channel_name', color='Format',
+                     orientation='h', barmode='stack', title="By Video Count",
+                     color_discrete_map=FORMAT_COLORS,
+                     category_orders={'Format': ['Long form', 'Shorts']},
+                     labels={'channel_name': 'Channel'})
+        fig.update_layout(yaxis={'categoryorder': 'total ascending'})
         st.plotly_chart(fig, use_container_width=True)
     with cl2:
         if is_enriched:
-            by_time = (df.groupby('channel_name')['duration_sec'].sum() / 3600).sort_values(ascending=False).head(top_n).reset_index()
-            by_time.columns = ['Channel', 'Hours']
-            fig = px.bar(by_time.sort_values('Hours'), x='Hours', y='Channel', orientation='h',
-                         title="By Watch Time (hrs)")
+            time_names = ((df_all.groupby('channel_name')['duration_sec'].sum() / 3600)
+                          .nlargest(top_n).index.tolist())
+            by_time = (_ch[_ch['channel_name'].isin(time_names)]
+                       .groupby(['channel_name', 'Format'])['duration_sec'].sum() / 3600
+                       ).reset_index(name='Hours')
+            fig = px.bar(by_time, x='Hours', y='channel_name', color='Format',
+                         orientation='h', barmode='stack', title="By Watch Time (hrs)",
+                         color_discrete_map=FORMAT_COLORS,
+                         category_orders={'Format': ['Long form', 'Shorts']},
+                         labels={'channel_name': 'Channel'})
+            fig.update_layout(yaxis={'categoryorder': 'total ascending'})
             st.plotly_chart(fig, use_container_width=True)
 
     # Loyalty concentration metric
@@ -532,6 +659,198 @@ with tab_comm:
     else:
         st.warning("⚠️ `subscriptions.csv` not found in `data/raw/youtube/`. Download it from Google Takeout.")
 
+# === TAB 6: DEEP METADATA (schema v2 fields) ===
+with tab_deep:
+    st.caption("Everything below comes from parts of the YouTube Data API that cost "
+               "**no extra quota** — `videos.list` is 1 unit per call however many "
+               "parts you ask for. Run `python -m src.youtube.enrich_yt` to populate.")
+
+    have = lambda c: c in df.columns and df[c].notna().any()  # noqa: E731
+
+    # These come back from CSV as OBJECT columns holding real bools plus NaN for the
+    # ~2% of videos the API no longer returns. .mean()/.map() cope, but boolean
+    # MASKING on a column containing NA raises, so coerce once here.
+    for _b in ('has_caption', 'made_for_kids', 'licensed_content', 'embeddable',
+               'is_live_stream'):
+        if _b in df.columns:
+            df[_b] = df[_b].fillna(False).astype(bool)
+
+    # --- 1. Topic categories: the real taxonomy -------------------------------
+    if 'topic_categories' in df.columns:
+        st.markdown("#### 🧭 What you actually watch (Wikipedia topics)")
+        st.caption("`topicDetails` gives real subject tags. The numeric `categoryId` "
+                   "has only ~32 buckets and lumps most of YouTube into 'Entertainment'.")
+        topics = Counter()
+        for lst in df['topic_categories'].dropna():
+            if isinstance(lst, list):
+                topics.update(lst)
+        if topics:
+            t_df = pd.DataFrame(topics.most_common(20), columns=['Topic', 'Videos'])
+            c1, c2 = st.columns([2, 1])
+            with c1:
+                fig = px.bar(t_df.sort_values('Videos'), x='Videos', y='Topic',
+                             orientation='h', title="Top 20 Topics",
+                             color='Videos', color_continuous_scale=RED_SCALE)
+                fig.update_layout(height=560, coloraxis_showscale=False)
+                st.plotly_chart(fig, use_container_width=True)
+            with c2:
+                cat_n = df['category'].nunique() if 'category' in df.columns else 0
+                st.metric("Distinct topics", f"{len(topics):,}")
+                st.metric("Distinct categoryIds", f"{cat_n:,}")
+                st.caption(f"The topic vocabulary is **{len(topics) / max(cat_n, 1):.0f}×** "
+                           "richer than the category field the dashboard used before.")
+        else:
+            st.info("No topic data yet — re-run the enrichment script.")
+
+    st.divider()
+
+    # --- 2. Production quality / accessibility --------------------------------
+    st.markdown("#### 🎛️ Production & Accessibility")
+    q1, q2, q3 = st.columns(3)
+    with q1:
+        if have('definition'):
+            d = df['definition'].str.upper().value_counts().reset_index()
+            d.columns = ['Definition', 'Videos']
+            fig = px.pie(d, values='Videos', names='Definition', hole=0.5,
+                         title="HD vs SD", color_discrete_sequence=[YT_RED, YT_GREY])
+            st.plotly_chart(fig, use_container_width=True)
+    with q2:
+        if have('has_caption'):
+            c = df['has_caption'].map({True: 'Captioned', False: 'No captions'}).value_counts().reset_index()
+            c.columns = ['Captions', 'Videos']
+            fig = px.pie(c, values='Videos', names='Captions', hole=0.5,
+                         title="Caption Availability",
+                         color_discrete_sequence=[YT_RED, YT_GREY])
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption(f"{df['has_caption'].mean() * 100:.0f}% of what you watch is captioned.")
+    with q3:
+        if have('made_for_kids') or have('licensed_content'):
+            bits = {}
+            if have('made_for_kids'):
+                bits['Made for kids'] = df['made_for_kids'].mean() * 100
+            if have('licensed_content'):
+                bits['Licensed (rights-held)'] = df['licensed_content'].mean() * 100
+            if have('embeddable'):
+                bits['Embeddable'] = df['embeddable'].mean() * 100
+            b_df = pd.DataFrame({'Flag': list(bits), 'Percent': list(bits.values())})
+            fig = px.bar(b_df, x='Percent', y='Flag', orientation='h',
+                         title="Content Flags (% of watches)",
+                         color_discrete_sequence=[YT_RED], range_x=[0, 100])
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+
+    # --- 3. Language --------------------------------------------------------
+    if have('audio_language'):
+        st.markdown("#### 🗣️ Audio Language")
+        lang = df['audio_language'].fillna('').astype(str).str.strip()
+        lang = lang[lang != ''].str.split('-').str[0].str.lower().value_counts().head(12)
+        if not lang.empty:
+            l_df = lang.reset_index()
+            l_df.columns = ['Language', 'Videos']
+            fig = px.bar(l_df.sort_values('Videos'), x='Videos', y='Language',
+                         orientation='h', title="Audio Language of Videos Watched",
+                         color='Videos', color_continuous_scale=RED_SCALE)
+            fig.update_layout(coloraxis_showscale=False)
+            st.plotly_chart(fig, use_container_width=True)
+            declared = (df['audio_language'].notna()
+                        & (df['audio_language'].astype(str).str.strip() != '')).mean() * 100
+            st.caption(f"Declared for {declared:.0f}% of watches — uploaders often "
+                       "leave this field blank.")
+
+    # --- 4. Live streams -----------------------------------------------------
+    if have('is_live_stream'):
+        st.markdown("#### 🔴 Livestreams vs Uploads")
+        n_live = int(df['is_live_stream'].sum())
+        lc1, lc2 = st.columns([1, 2])
+        lc1.metric("Livestream watches", f"{n_live:,}",
+                   f"{n_live / len(df) * 100:.1f}% of all")
+        if n_live:
+            live_month = (df[df['is_live_stream']]
+                          .groupby(df['time'].dt.to_period('M').astype(str))
+                          .size().reset_index(name='Livestreams'))
+            live_month.columns = ['Month', 'Livestreams']
+            with lc2:
+                fig = px.bar(live_month, x='Month', y='Livestreams',
+                             title="Livestream Watches Over Time",
+                             color_discrete_sequence=[YT_RED])
+                st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+
+    # --- 5. Channel geography + size ----------------------------------------
+    cg1, cg2 = st.columns(2)
+    with cg1:
+        if have('channel_country'):
+            st.markdown("#### 🌍 Where Your Creators Are")
+            geo = (df.dropna(subset=['channel_country'])
+                     .drop_duplicates('channel_id')['channel_country']
+                     .value_counts().reset_index())
+            geo.columns = ['Country', 'Channels']
+            if not geo.empty:
+                # The API returns ISO-2 ("US"); plotly's choropleth wants ISO-3 or
+                # full names. pycountry isn't a dependency here, so map the codes we
+                # actually see and fall back to a bar chart for anything unmapped —
+                # a blank globe would look like a bug rather than missing data.
+                geo['name'] = geo['Country'].map(ISO2_NAME)
+                mapped = geo.dropna(subset=['name'])
+                unmapped = int(geo['name'].isna().sum())
+                if len(mapped) >= 5:
+                    fig = px.choropleth(mapped, locations='name',
+                                        locationmode='country names',
+                                        color='Channels', color_continuous_scale=RED_SCALE,
+                                        title="Creator Countries (distinct channels)",
+                                        hover_name='name')
+                    fig.update_layout(margin=dict(l=0, r=0, t=40, b=0))
+                    st.plotly_chart(fig, use_container_width=True)
+                    if unmapped:
+                        st.caption(f"{unmapped} smaller country code(s) not shown on the map.")
+                else:
+                    fig = px.bar(geo.head(15).sort_values('Channels'),
+                                 x='Channels', y='Country', orientation='h',
+                                 title="Creator Countries (distinct channels)",
+                                 color='Channels', color_continuous_scale=RED_SCALE)
+                    fig.update_layout(coloraxis_showscale=False)
+                    st.plotly_chart(fig, use_container_width=True)
+                st.caption(f"{geo['Channels'].sum():,} channels across "
+                           f"{len(geo)} countries. Top: **{geo.iloc[0]['Country']}** "
+                           f"({geo.iloc[0]['Channels']:,}).")
+    with cg2:
+        if have('channel_created_at'):
+            st.markdown("#### 📆 Creator Vintage")
+            ch = df.drop_duplicates('channel_id').copy()
+            ch['created'] = pd.to_datetime(ch['channel_created_at'], errors='coerce',
+                                           utc=True).dt.tz_localize(None)
+            ch = ch.dropna(subset=['created'])
+            if not ch.empty:
+                fig = px.histogram(ch, x=ch['created'].dt.year, nbins=20,
+                                   title="When the Channels You Watch Were Created",
+                                   labels={'x': 'Channel created'},
+                                   color_discrete_sequence=[YT_RED])
+                fig.update_yaxes(title="Channels")
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption(f"Median creator started in **{int(ch['created'].dt.year.median())}**.")
+
+    # --- 6. Channel reach vs your attention ---------------------------------
+    if have('channel_view_count') and have('subscriber_count'):
+        st.markdown("#### 📊 Creator Reach vs Your Attention")
+        agg = (df.groupby('channel_name')
+                 .agg(your_watches=('video_id', 'size'),
+                      subs=('subscriber_count', 'max'),
+                      total_views=('channel_view_count', 'max'))
+                 .reset_index())
+        agg = agg[(agg['subs'] > 0) & (agg['total_views'] > 0)].nlargest(300, 'your_watches')
+        if not agg.empty:
+            fig = px.scatter(agg, x='subs', y='your_watches', size='total_views',
+                             hover_name='channel_name', log_x=True, log_y=True,
+                             title="Subscribers vs Times You Watched (bubble = channel lifetime views)",
+                             labels={'subs': 'Subscribers', 'your_watches': 'Your watches'},
+                             color='your_watches', color_continuous_scale=RED_SCALE)
+            fig.update_layout(coloraxis_showscale=False)
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("Top-left = small creators you watch a lot. Bottom-right = huge "
+                       "channels you barely touch.")
+
 # RAW DATA
 st.divider()
 with st.expander("🔎 Search & Inspect Data"):
@@ -541,6 +860,10 @@ with st.expander("🔎 Search & Inspect Data"):
     if search:
         mask = df['video_title'].str.contains(search, case=False, na=False) | \
                df['channel_name'].str.contains(search, case=False, na=False)
-        st.dataframe(df[mask][cols].head(100), use_container_width=True)
+        shown = df[mask][cols].head(100).copy()
     else:
-        st.dataframe(df[cols].head(100), use_container_width=True)
+        shown = df[cols].head(100).copy()
+    # 12-hour clock to match the rest of the page.
+    if 'time' in shown.columns:
+        shown['time'] = pd.to_datetime(shown['time']).dt.strftime('%d %b %Y, %I:%M %p')
+    st.dataframe(shown, use_container_width=True)

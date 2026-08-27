@@ -1,0 +1,59 @@
+{
+  "models": {
+    "movie": {
+      "text": 0.071,
+      "crowd": 0.323,
+      "nontext": 0.388,
+      "full": 0.379,
+      "knn_text": 0.081,
+      "n_text": 40,
+      "n_crowd": 7,
+      "full_mae": 0.475,
+      "winner": "FULL"
+    },
+    "tv": {
+      "text": 0.048,
+      "crowd": 0.26,
+      "nontext": 0.152,
+      "full": 0.15,
+      "knn_text": 0.017,
+      "n_text": 15,
+      "n_crowd": 4,
+      "full_mae": 0.722,
+      "winner": "CROWD"
+    },
+    "game": {
+      "text": 0.105,
+      "crowd": 0.124,
+      "nontext": 0.118,
+      "full": 0.204,
+      "knn_text": 0.106,
+      "n_text": 15,
+      "n_crowd": 4,
+      "full_mae": 0.629,
+      "winner": "FULL"
+    },
+    "book": {
+      "text": 0.387,
+      "crowd": 0.17,
+      "nontext": 0.174,
+      "full": 0.244,
+      "knn_text": 0.426,
+      "n_text": 15,
+      "n_crowd": 2,
+      "full_mae": 0.501,
+      "winner": "TEXT"
+    },
+    "unified": {
+      "text": 0.047,
+      "crowd": 0.259,
+      "nontext": 0.312,
+      "full": 0.314,
+      "knn_text": 0.05,
+      "n_text": 10,
+      "n_crowd": 4,
+      "full_mae": 0.544,
+      "winner": "FULL"
+    }
+  }
+}

@@ -116,6 +116,40 @@ def shap_per_domain(out):
         plt.savefig(f"reports/shap_{dom}.png", dpi=120)
         plt.close()
 
+    # --- (B2) UNIFIED model: SHAP on the cross-domain shared feature space -----
+    # The unified matrix has extra bookkeeping cols and its own DROP set (mirrors
+    # comprehensive_evaluator). Computed here so the "most predictive features per
+    # model" table covers the unified Mean Ensemble too, not just the locals.
+    try:
+        import shap
+    except Exception:
+        return
+    UNI_DROP = ["target_reg", "target_ordinal", "target_class", "source_id",
+                "media_type", "rating_date", "global_id"]
+    udf = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
+    udf = udf[udf["target_reg"].notna()]
+    ufeat = [c for c in udf.columns if c not in UNI_DROP]
+    Xu, yu = udf[ufeat].fillna(0), udf["target_reg"]
+    mu = xgb.XGBRegressor(n_estimators=300, learning_rate=0.03, max_depth=4,
+                          subsample=0.85, colsample_bytree=0.85,
+                          objective="reg:absoluteerror", random_state=42)
+    mu.fit(Xu, yu)
+    svu = shap.TreeExplainer(mu).shap_values(Xu)
+    impu = np.abs(svu).mean(axis=0)
+    orderu = np.argsort(impu)[::-1]
+    topu = [(ufeat[i], float(impu[i])) for i in orderu[:12]]
+    out["shap_top"]["unified"] = topu
+    print(f"\n  UNIFIED  (N={len(udf)}, {len(ufeat)} features)")
+    for name, v in topu:
+        bar = "#" * int(round(v / topu[0][1] * 30)) if topu[0][1] > 0 else ""
+        print(f"    {name:<22} {v:7.4f} {bar}")
+    names = [t[0] for t in topu][::-1]; vals = [t[1] for t in topu][::-1]
+    plt.figure(figsize=(7, 4.5))
+    plt.barh(names, vals, color="#9d7bea")
+    plt.xlabel("mean |SHAP| (impact on predicted rating)")
+    plt.title("UNIFIED — top features (shared-space XGB surrogate)")
+    plt.tight_layout(); plt.savefig("reports/shap_unified.png", dpi=120); plt.close()
+
 
 # ---------------------------------------------------- (C) per-base-learner ablation
 def _xgb():

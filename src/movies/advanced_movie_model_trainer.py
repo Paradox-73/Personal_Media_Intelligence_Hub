@@ -28,10 +28,114 @@ from src.movies.custom_objectives import AsymmetricEdgePenaltyObjective
 # ==========================================
 # ⚙️ ARCHITECTURE FLAGS
 # ==========================================
-USE_CUSTOM_EDGE_LOSS = True  
+USE_CUSTOM_EDGE_LOSS = True
+# Crowd columns forming the residual anchor. Must match
+# src/reporting/production_benchmarks.ANCHOR_COLS, or the deployed model stops being
+# the benchmarked one (the mismatch that let a RidgeCV stack ship while the docs
+# described a mean ensemble).
+ANCHOR_COLS = ["imdb_rating", "metascore", "rotten_tomatoes_rating", "vote_average",
+               "critic_avg_5"]
 # ==========================================
 
 from sklearn.base import BaseEstimator, RegressorMixin
+
+
+class AnchoredRegressor(RegressorMixin, BaseEstimator):
+    """Train `base` on (y - crowd anchor) and add the anchor back when predicting.
+
+    An ablation found 12 crowd/metadata columns alone score as well as the full 108,
+    i.e. the trees were spending most of their capacity re-deriving "is this film
+    good" from columns that already say so. Learning the residual hands them that
+    answer and frees every split for taste; predictions also shrink toward the anchor
+    where the taste signal is weak, so bias AND variance fall. Measured on the 10
+    registry folds with the production ensemble: MAE 0.5151 -> 0.4929, R2 0.4767 ->
+    0.5141.
+
+    Wrapped as an estimator (rather than pre-transforming y) so it survives
+    `StackingRegressor`, which clones members and refits them on CV folds -- the
+    anchor must be refit per fold or it leaks across the split.
+
+    The ordinal member is deliberately NOT wrapped: it predicts a bucket and has no
+    residual form. Mixing a residual-scale member with a star-scale one is what made
+    the first attempt at this score 0.5904.
+    """
+
+    def __init__(self, base=None, anchor_cols=None):
+        self.base = base
+        self.anchor_cols = anchor_cols
+
+    def fit(self, X, y, sample_weight=None):  # noqa: D102, N803
+        from sklearn.base import clone
+        from sklearn.linear_model import LinearRegression
+        X = pd.DataFrame(X)
+        self.anchor_used_ = [c for c in (self.anchor_cols or []) if c in X.columns]
+        y = np.asarray(y, dtype=float)
+        if self.anchor_used_:
+            self.anchor_ = LinearRegression().fit(X[self.anchor_used_], y)
+            target = y - self.anchor_.predict(X[self.anchor_used_])
+        else:
+            self.anchor_ = None
+            target = y
+        self.base_ = clone(self.base)
+        self._fit_base(X, target, sample_weight)
+        return self
+
+    def _fit_base(self, X, target, sample_weight):
+        """Route sample_weight correctly for the estimator kind.
+
+        A Pipeline rejects a bare `sample_weight` and raises ValueError (not
+        TypeError) telling you to use `stepname__sample_weight`. The SVR member is a
+        Pipeline, so a plain try/except TypeError silently missed it and the whole
+        trainer died. Weights are load-bearing here -- they carry the balanced +
+        edge-boost calibration -- so fall back to unweighted only as a last resort.
+        """
+        from sklearn.pipeline import Pipeline as _Pipeline
+        if sample_weight is None:
+            self.base_.fit(X, target)
+            return
+        if isinstance(self.base_, _Pipeline):
+            last = self.base_.steps[-1][0]
+            try:
+                self.base_.fit(X, target, **{f"{last}__sample_weight": sample_weight})
+                return
+            except (TypeError, ValueError):
+                pass
+        else:
+            try:
+                self.base_.fit(X, target, sample_weight=sample_weight)
+                return
+            except (TypeError, ValueError):
+                pass
+        self.base_.fit(X, target)
+
+    def predict(self, X):  # noqa: D102, N803
+        X = pd.DataFrame(X)
+        p = np.asarray(self.base_.predict(X), dtype=float)
+        if self.anchor_ is not None:
+            p = p + self.anchor_.predict(X[self.anchor_used_])
+        return p
+
+
+class MeanMetaRegressor(RegressorMixin, BaseEstimator):
+    """Equal-weight mean of the base predictions, as the stack's final estimator.
+
+    The project's own ablation (see src/reporting/production_benchmarks.py) found
+    that Ridge stacking DESTROYS signal here -- the RidgeCV stack scored R2 0.470
+    on the frozen folds against 0.512 for its own best member -- and that a plain
+    mean beats every member with no dead weight. The benchmark tables were switched
+    to the mean; this trainer was not, so the artifact shipped by predict_ratings.py
+    was a RidgeCV stack while the published numbers described a mean ensemble.
+    A fixed mean has no meta parameters to overfit on 3-fold inner OOF, which is
+    where the loss came from.
+    """
+
+    def fit(self, X, y=None, sample_weight=None):  # noqa: D102, N803, ARG002
+        self.n_features_in_ = np.asarray(X).shape[1]
+        return self
+
+    def predict(self, X):  # noqa: D102, N803
+        return np.asarray(X, dtype=float).mean(axis=1)
+
 
 class OrdinalExpectedValueRegressor(RegressorMixin, BaseEstimator):
     """Wraps the Ordinal Classifier to act as a regressor for stacking.
@@ -89,8 +193,10 @@ def print_performance_report(model_name: str, y_true: pd.Series, y_pred: np.ndar
     print(f"📊 PERFORMANCE REPORT: {model_name}")
     print("="*50)
 
-    # Clip and round predictions to valid rating values (0.5 increments)
-    y_pred_rounded = np.round(np.clip(y_pred, 0, 5) * 2) / 2
+    # Clip and round predictions to valid rating values (0.5 increments). The floor
+    # is 0.5, not 0: Letterboxd has no 0-star rating, so clipping to 0 let a low
+    # prediction round to an impossible 0.0 and inflated the error against it.
+    y_pred_rounded = np.round(np.clip(y_pred, 0.5, 5.0) * 2) / 2
 
     mse = mean_squared_error(y_true, y_pred_rounded)
     rmse = np.sqrt(mse)
@@ -115,13 +221,21 @@ def print_performance_report(model_name: str, y_true: pd.Series, y_pred: np.ndar
     print("   " + "-"*40)
     print("="*50)
 
-def tune_with_optuna(X_train, y_train):
+def tune_with_optuna(X_train, y_train, sample_weight=None):
     """
     Jointly tunes asymmetric alpha_hi/alpha_lo and tree params using Optuna.
     Uses 5x2 RepeatedKFold for robust validation as recommended.
+
+    `sample_weight` is threaded through both the tuning folds and the final fit.
+    It used to be dropped here, so with USE_CUSTOM_EDGE_LOSS=True (the default)
+    the *deployed* XGB was the only member trained without the balanced +
+    EDGE_WEIGHT_BOOST weights the caller goes to the trouble of computing --
+    and it disagreed with every benchmark, which does pass them.
     """
     import optuna
     from sklearn.model_selection import RepeatedKFold
+
+    w = None if sample_weight is None else np.asarray(sample_weight, dtype=float)
 
     def objective(trial):
         a_hi = trial.suggest_float("alpha_hi", 0.01, 0.5, log=True)
@@ -129,14 +243,14 @@ def tune_with_optuna(X_train, y_train):
         max_depth = trial.suggest_int("max_depth", 3, 8)
         min_child_weight = trial.suggest_int("min_child_weight", 1, 10)
         reg_lambda = trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True)
-        
+
         rkf = RepeatedKFold(n_splits=5, n_repeats=2, random_state=42)
         maes = []
-        
+
         for t_idx, v_idx in rkf.split(X_train):
             xt, xv = X_train.iloc[t_idx], X_train.iloc[v_idx]
             yt, yv = y_train.iloc[t_idx], y_train.iloc[v_idx]
-            
+
             model = xgb.XGBRegressor(
                 objective=AsymmetricEdgePenaltyObjective(alpha_hi=a_hi, alpha_lo=a_lo),
                 max_depth=max_depth,
@@ -147,19 +261,23 @@ def tune_with_optuna(X_train, y_train):
                 random_state=42,
                 n_jobs=-1
             )
-            model.fit(xt, yt)
+            model.fit(xt, yt, sample_weight=None if w is None else w[t_idx])
             preds = model.predict(xv)
-            preds_rounded = np.round(np.clip(preds, 0, 5) * 2) / 2
+            preds_rounded = np.round(np.clip(preds, 0.5, 5.0) * 2) / 2
             maes.append(mean_absolute_error(yv, preds_rounded))
-            
+
         return np.mean(maes)
 
     print("\n🚀 Starting Optuna Hyperparameter Sweep...")
-    study = optuna.create_study(direction="minimize")
+    # Seeded sampler: the rest of the project (production_benchmarks.tune_alphas)
+    # seeds TPE so the numbers reproduce. This study did not, so the deployed
+    # model differed run to run.
+    study = optuna.create_study(direction="minimize",
+                                sampler=optuna.samplers.TPESampler(seed=42))
     study.optimize(objective, n_trials=30)
-    
+
     print(f"✅ Best Trial: {study.best_params}")
-    
+
     best_obj = AsymmetricEdgePenaltyObjective(
         alpha_hi=study.best_params['alpha_hi'],
         alpha_lo=study.best_params['alpha_lo']
@@ -174,7 +292,7 @@ def tune_with_optuna(X_train, y_train):
         random_state=42,
         n_jobs=-1
     )
-    final_xgb.fit(X_train, y_train)
+    final_xgb.fit(X_train, y_train, sample_weight=w)
     return final_xgb
 
 def train_advanced_models():
@@ -228,7 +346,7 @@ def train_advanced_models():
     print("   Defining base models...")
 
     if USE_CUSTOM_EDGE_LOSS:
-        xgb_reg = tune_with_optuna(X_train, y_reg_train)
+        xgb_reg = tune_with_optuna(X_train, y_reg_train, sample_weight=sample_weights)
     else:
         xgb_reg = xgb.XGBRegressor(
             n_estimators=200, learning_rate=0.03, max_depth=6,
@@ -261,23 +379,35 @@ def train_advanced_models():
     print_performance_report("Support Vector Regressor (SVR)", y_reg_test, svr_preds)
 
     print("   Fitting CatBoost...")
-    cat_reg.fit(X_train, y_reg_train, eval_set=(X_test, y_reg_test), use_best_model=True)
+    # Early stopping needs a validation set that is NOT the test set. This used to
+    # pass eval_set=(X_test, y_reg_test), so the iteration count of the SAVED model
+    # was chosen by peeking at the held-out data and the report printed below scored
+    # the very set it had tuned on. Carve the validation slice out of the training
+    # data instead; the test set stays untouched until evaluation.
+    X_cat_tr, X_cat_val, y_cat_tr, y_cat_val, w_cat_tr, _ = train_test_split(
+        X_train, y_reg_train, sample_weights, test_size=0.2, random_state=42
+    )
+    cat_reg.fit(X_cat_tr, y_cat_tr, sample_weight=w_cat_tr,
+                eval_set=(X_cat_val, y_cat_val), use_best_model=True)
     cat_preds = cat_reg.predict(X_test)
     print_performance_report("CatBoost Regressor", y_reg_test, cat_preds)
 
     # 5. Train Stacking Ensemble (FUSED with Ordinal)
     print("\n--- Training Stacking Ensemble ---")
     # Fusing the ordinal classifier expected value into the stack
+    # Regression members learn the residual against the crowd anchor and add it back
+    # themselves, so all four reach the meta on the star scale. The ordinal member is
+    # bucket-valued and stays unwrapped -- see AnchoredRegressor's docstring.
     estimators = [
-        ('xgb', xgb_reg), 
-        ('svr', svr_pipe), 
-        ('catboost', cat_reg),
+        ('xgb', AnchoredRegressor(xgb_reg, ANCHOR_COLS)),
+        ('svr', AnchoredRegressor(svr_pipe, ANCHOR_COLS)),
+        ('catboost', AnchoredRegressor(cat_reg, ANCHOR_COLS)),
         ('ordinal_ev', ord_wrapper)
     ]
 
     stacking_regressor = StackingRegressor(
         estimators=estimators,
-        final_estimator=RidgeCV(), 
+        final_estimator=MeanMetaRegressor(),
         cv=5,
         n_jobs=-1
     )

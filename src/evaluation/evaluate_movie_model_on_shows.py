@@ -13,25 +13,15 @@ from sentence_transformers import SentenceTransformer
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common.parsing import (  # canonical shared parsers
+    parse_list, people_key, sanitize_col, clean_money)
 # Needed so joblib can unpickle the movie stacking/ordinal models (they embed an
 # OrdinalExpectedValueRegressor referenced under __main__ at train time).
-from src.movies.advanced_movie_model_trainer import OrdinalExpectedValueRegressor
+from src.movies.advanced_movie_model_trainer import (
+    OrdinalExpectedValueRegressor, MeanMetaRegressor, AnchoredRegressor)  # noqa: F401
 
 # --- HELPERS (Copied from src/movies/feature_engineering.py and src/movies/predict_ratings.py) ---
-def clean_money(x):
-    if pd.isna(x): return 0
-    if isinstance(x, (int, float)): return x
-    x = str(x).replace('$', '').replace(',', '').strip()
-    try: return float(x)
-    except: return 0
 
-def parse_list(x):
-    if pd.isna(x) or x == "": return []
-    try:
-        if isinstance(x, list): return x
-        if "[" in str(x): return ast.literal_eval(str(x))
-        return [str(x)]
-    except: return []
 
 def categorize_rating(r):
     r = str(r).upper()
@@ -39,8 +29,6 @@ def categorize_rating(r):
     if 'PG' in r or 'TV-14' in r: return 'Teen'
     return 'General'
 
-def sanitize_col(col_name):
-    return re.sub(r"[\[\]<']", "", str(col_name))
 
 # --- Performance Report Function (Copied from src/movies/advanced_movie_model_trainer.py) ---
 def print_performance_report(model_name: str, y_true: pd.Series, y_pred: np.ndarray):
@@ -204,17 +192,25 @@ def transform_show_data_for_movie_model(df_shows: pd.DataFrame, movie_preprocess
 
     # 3. Text Representation (Sentence Transformers + PCA) - using movie's models
     print("   Generating text embeddings for TV shows...")
-    df['text_content'] = "Title: " + df['name'].fillna('Unknown') + \
-                         ". Directed by: " + df['created_by'].fillna('Unknown') + \
-                         ". Starring: " + df['actors'].fillna('Unknown') + \
-                         ". Written by: " + df['writer'].fillna('Unknown') + \
-                         ". Produced by: " + df['production_companies'].fillna('Unknown') + \
-                         ". " + df['tagline'].fillna('') + \
-                         " " + df['overview'].fillna('')
-    
+    # This script deliberately maps TV fields onto the MOVIE template (created_by ->
+    # "Directed by", networks -> "Produced by") to test transfer, so the wording stays
+    # bespoke. What must match is the ENCODING: the movie PCA is fit on chunk-pooled,
+    # L2-normalised vectors, so these have to be built the same way or the transfer
+    # number measures a space mismatch instead of a domain gap.
+    from src.common.text_embedding import encode_pooled
+    _header = ("Title: " + df['name'].fillna('Unknown') +
+               ". Directed by: " + df['created_by'].fillna('Unknown') +
+               ". Starring: " + df['actors'].fillna('Unknown') +
+               ". Written by: " + df['writer'].fillna('Unknown') +
+               ". Produced by: " + df['production_companies'].fillna('Unknown') +
+               ". Tagline: " + df['tagline'].fillna('') + ".")
+    _body = df['overview'].fillna('').astype(str)
+    df['text_content'] = _header + " " + _body
+
     transformer_model = SentenceTransformer(movie_preprocessor_state['sentence_transformer'])
-    text_embeddings = transformer_model.encode(df['text_content'].tolist(), show_progress_bar=False) # No progress bar for batch
-    
+    text_embeddings = encode_pooled(_header.tolist(), _body.tolist(),
+                                    transformer_model, show_progress_bar=False)
+
     pca_movie = movie_preprocessor_state['pca']
     X_text_pca = pca_movie.transform(text_embeddings)
     X_text = pd.DataFrame(X_text_pca, columns=[f'pca_{i}' for i in range(pca_movie.n_components_)], index=df.index)

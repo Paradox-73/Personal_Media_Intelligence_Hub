@@ -65,10 +65,11 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.movies.ingestion import get_movie_metadata, clean_year
 from src.movies.predict_ratings import (
-    clean_money, parse_list, categorize_rating, sanitize_col,
+    clean_money, parse_list, categorize_rating, sanitize_col, people_key,
 )
 # Needed so joblib can unpickle the ordinal / stacking estimators.
-from src.movies.advanced_movie_model_trainer import OrdinalExpectedValueRegressor  # noqa: F401
+from src.movies.advanced_movie_model_trainer import (
+    OrdinalExpectedValueRegressor, MeanMetaRegressor, AnchoredRegressor)  # noqa: F401
 
 WATCHLIST_PATH = config.MOVIES_RAW_DIR / "watchlist.csv"
 ENRICH_CACHE_PATH = config.CACHE_DIR / "watchlist_enriched.json"
@@ -115,9 +116,41 @@ def _stringify(val, sep=", "):
     return str(val)
 
 
+def _watched_keys():
+    """Keys (letterboxd_uri + title/year) for films already watched/rated.
+
+    Letterboxd leaves a film on your watchlist after you watch it, so the raw
+    watchlist contains already-seen films. The active-learning pool must be
+    *unlabelled* candidates only — exclude anything already in the enriched CSV.
+    """
+    uris, ty = set(), set()
+    if config.MOVIES_ENRICHED_DATA_PATH.exists():
+        en = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
+        uris = {str(u).strip() for u in en.get("letterboxd_uri", pd.Series(dtype=str)).dropna()}
+        for _, r in en.iterrows():
+            for nm in (r.get("title"), r.get("letterboxd_name")):
+                if pd.notna(nm):
+                    ty.add((str(nm).strip().lower(), clean_year(r.get("year"))))
+    return uris, ty
+
+
 def enrich_watchlist(limit=None, no_fetch=False):
     """Return a DataFrame of enriched watchlist films (cached)."""
     wl = pd.read_csv(WATCHLIST_PATH)
+
+    watched_uris, watched_ty = _watched_keys()
+    before = len(wl)
+    keep = []
+    for _, row in wl.iterrows():
+        uri = str(row.get("Letterboxd URI", "")).strip()
+        key = (str(row.get("Name", "")).strip().lower(), clean_year(row.get("Year")))
+        keep.append(not ((uri and uri in watched_uris) or key in watched_ty))
+    wl = wl[keep].reset_index(drop=True)
+    dropped = before - len(wl)
+    if dropped:
+        print(f"   Excluded {dropped} already-watched films from the watchlist pool "
+              f"({len(wl)} unwatched candidates remain).")
+
     if limit:
         wl = wl.head(limit)
 
@@ -228,11 +261,21 @@ def build_features(df, state):
     X_lang = pd.get_dummies(df["language_cleaned"], prefix="lang")
 
     from sentence_transformers import SentenceTransformer
-    df["text_content"] = ("Title: " + df["title"].fillna("Unknown")
-                          + ". Directed by: " + df.get("director", "Unknown").fillna("Unknown")
-                          + ". " + df["plot"].fillna(""))
+    # MUST match the recipe in feature_engineering.process_features(); the PCA was
+    # fit on those sentences. The old Title+Director+Plot form embedded watchlist
+    # films into a different region of text space than the rated films.
+    def col(name):
+        return df[name].apply(people_key) if name in df.columns else ""
+
+    # Same chunk-pooled recipe the movie PCA in `state` was fit on.
+    from src.movies.feature_engineering import _movie_header, _movie_body
+    from src.common.text_embedding import encode_pooled
+    _records = df.to_dict("records")
+    _headers = [_movie_header(r) for r in _records]
+    _bodies = [_movie_body(r) for r in _records]
+    df["text_content"] = [f"{h} {b}" for h, b in zip(_headers, _bodies)]
     st_model = SentenceTransformer(state.get("sentence_transformer", "all-MiniLM-L6-v2"))
-    emb = st_model.encode(df["text_content"].tolist(), show_progress_bar=True)
+    emb = encode_pooled(_headers, _bodies, st_model, show_progress_bar=True)
     pca_vec = state["pca"].transform(emb)
     X_text = pd.DataFrame(pca_vec, columns=[f"pca_{i}" for i in range(pca_vec.shape[1])],
                           index=df.index)
@@ -260,9 +303,12 @@ def build_features(df, state):
 
     df["director_encoded"] = df.get("director", "").apply(lambda v: apply_te(v, te.get("director")))
     df["actors_encoded"] = df.get("actors", "").apply(lambda v: apply_te(v, te.get("actors")))
-    primary_genre = df["genre_list"].apply(lambda x: x[0] if x else "Unknown")
-    dir_genre_key = df.get("director", "").astype(str) + "_" + primary_genre
-    df["dir_genre_encoded"] = dir_genre_key.apply(lambda v: apply_te(v, te.get("dir_genre")))
+    primary_genre = df["genre_list"].apply(lambda x: x[0] if len(x) else "Unknown")
+    # Composite key: canonicalised like training, looked up WHOLE (not comma-split).
+    dg = te.get("dir_genre")
+    dir_genre_key = df.get("director", "").apply(people_key) + "_" + primary_genre
+    df["dir_genre_encoded"] = dir_genre_key.apply(
+        lambda k: dg["map"].get(k, dg["mean"]) if dg else 0.0)
     X_te = df[["director_encoded", "actors_encoded", "dir_genre_encoded"]]
 
     X_temp = pd.concat([df[list(state["median_values"].keys())], X_lang, X_genre, X_te, X_mpaa, X_text], axis=1)

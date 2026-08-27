@@ -67,8 +67,16 @@ def create_frozen_folds():
     # PU pseudo-labels, has no frozen folds, and is evaluated separately, so it is
     # excluded here — the registry must contain exactly the rated universe.
     n_before = len(df)
-    df = df[df["media_type"] != "music"].reset_index(drop=True)
-    print(f"   Rated universe: {len(df)} items (excluded {n_before - len(df)} music rows).")
+    df = df[df["media_type"] != "music"]
+    n_music = n_before - len(df)
+    # Unrated items are stored with target_reg == 0.0 (fillna, not NaN), so they are
+    # not filtered by any notna() guard and would be stratified into the `lo` bin and
+    # scored as genuine 0-star items. The registry must contain exactly the rated
+    # universe the evaluator uses, or its N assertions compare different row sets.
+    n_pre_unrated = len(df)
+    df = df[df["target_reg"] > 0].reset_index(drop=True)
+    print(f"   Rated universe: {len(df)} items (excluded {n_music} music rows, "
+          f"{n_pre_unrated - len(df)} unrated/0-target rows).")
 
     df["global_id"] = df["media_type"] + "_" + df["source_id"].astype(str)
     strata = _stratum_labels(df, rating_col, N_SPLITS)
