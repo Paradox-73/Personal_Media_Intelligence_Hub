@@ -12,7 +12,7 @@ from tmdbv3api import TMDb, Movie
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.common.parsing import canon_genres
+from src.common.parsing import canon_genres, clean_year
 
 # Load Environment Variables
 load_dotenv()
@@ -31,14 +31,6 @@ tmdb.api_key = TMDB_KEY
 tmdb_movie = Movie()
 
 # --- 2. HELPERS ---
-
-def clean_year(val):
-    try:
-        s = str(val).replace('.0', '').strip()
-        if not s or s.lower() in ['nan', 'none', '']: return None
-        return int(s[:4])
-    except:
-        return None
 
 def clean_float(val):
     try:
@@ -65,18 +57,20 @@ def is_effectively_empty(val):
     s = str(val).strip().lower()
     return s in ['', 'nan', 'n/a', 'none', 'null', 'unknown', 'false', '0', '0.0', 'not rated', 'unrated']
 
+OMDB_URL = "https://www.omdbapi.com/"
+
 def fetch_omdb_direct(imdb_id=None, title=None, year=None):
     """Internal helper to fetch from OMDB."""
     try:
         if imdb_id and str(imdb_id).lower() != 'nan':
-            url = f"http://www.omdbapi.com/?i={imdb_id}&apikey={OMDB_KEY}"
-            res = requests.get(url, timeout=5).json()
+            res = requests.get(OMDB_URL, params={"i": imdb_id, "apikey": OMDB_KEY},
+                               timeout=5).json()
             if res.get('Response') == 'True': return res
 
         if title and year:
             clean_t = title.replace(':', '').strip()
-            url = f"http://www.omdbapi.com/?t={clean_t}&y={year}&apikey={OMDB_KEY}"
-            res = requests.get(url, timeout=5).json()
+            res = requests.get(OMDB_URL, params={"t": clean_t, "y": year, "apikey": OMDB_KEY},
+                               timeout=5).json()
             if res.get('Response') == 'True': return res
     except: pass
     return None
@@ -106,26 +100,6 @@ def smart_search_tmdb(title, target_year):
 
 # --- 3. EXPORTED FUNCTIONS (FOR APPS) ---
 
-def get_omdb_data(imdb_id):
-    """
-    Wrapper for Oracle App to fetch OMDB data by ID.
-    Returns specific fields needed for the model (Metascore, RT, etc.)
-    """
-    data = fetch_omdb_direct(imdb_id=imdb_id)
-    if not data: return None
-    
-    # Extract specific fields needed for the Oracle
-    rt_score = next((r['Value'] for r in data.get('Ratings', []) if r['Source'] == 'Rotten Tomatoes'), None)
-    return {
-        'metascore': data.get('Metascore'),
-        'rotten_tomatoes_rating': rt_score,
-        'awards': data.get('Awards'),
-        'box_office': data.get('BoxOffice'),
-        'rated': data.get('Rated'),
-        'poster_omdb': data.get('Poster'),
-        'plot': data.get('Plot')
-    }
-
 def search_movies_by_query(query):
     """Searches TMDB for movies matching the query. Used by Oracle UI."""
     results = []
@@ -143,58 +117,6 @@ def search_movies_by_query(query):
     except Exception as e:
         print(f"Search error: {e}")
     return results
-
-def fetch_movie_details_by_tmdb_id(tmdb_id):
-    """Fetches details from TMDB. Used by Oracle UI."""
-    try:
-        # Fetch details
-        m = tmdb_movie.details(int(tmdb_id))
-        
-        # Fetch credits (Directors/Cast)
-        credits = tmdb_movie.credits(tmdb_id)
-        
-        director = [c.name for c in credits.crew if c.job == 'Director']
-        actors = [c.name for c in credits.cast][:5]
-        genres = [g.name for g in m.genres] if hasattr(m, 'genres') else []
-        prod = [p.name for p in getattr(m, 'production_companies', [])]
-
-        # Keywords + franchise: the Oracle shows these and uses them to explain
-        # similarity. Same fields src/movies/enrich_extended.py stores in the CSV.
-        keywords, collection = [], None
-        try:
-            kw = requests.get(f"https://api.themoviedb.org/3/movie/{int(tmdb_id)}/keywords",
-                              params={"api_key": TMDB_KEY}, timeout=8).json()
-            keywords = [w['name'] for w in kw.get('keywords', [])]
-        except Exception:  # noqa: BLE001
-            pass
-        coll = getattr(m, 'belongs_to_collection', None)
-        if isinstance(coll, dict):
-            collection = coll.get('name')
-
-        return {
-            'keywords': keywords,
-            'collection_name': collection,
-            'revenue': getattr(m, 'revenue', None),
-            'budget': getattr(m, 'budget', None),
-            'tmdb_id': m.id,
-            'imdb_id': getattr(m, 'imdb_id', None),
-            'title': m.title,
-            'year': clean_year(getattr(m, 'release_date', '')),
-            'runtime': getattr(m, 'runtime', 0),
-            'overview': getattr(m, 'overview', ''),
-            'tagline': getattr(m, 'tagline', ''),
-            'director': director,
-            'actors': actors,
-            'genre': genres,
-            'production': prod,
-            'poster': m.poster_path,
-            'vote_average': getattr(m, 'vote_average', 0),
-            'vote_count': getattr(m, 'vote_count', 0),
-            'popularity': getattr(m, 'popularity', 0),
-            'processing_status': 'success'
-        }
-    except Exception as e:
-        return {'processing_status': 'error', 'error': str(e)}
 
 # --- 4. CORE BATCH LOGIC ---
 
@@ -341,24 +263,6 @@ def get_movie_metadata(title, year, tmdb_id=None, imdb_id=None):
         'editor': tmdb_data.get('editor', []),
         'producer': tmdb_data.get('producer', []),
     }
-
-def fetch_fresh_data(row, tmdb_cache, omdb_cache):
-    """Wrapper for initial ingestion."""
-    lb_name = str(row['Name'])
-    lb_year = clean_year(row['Year'])
-    
-    metadata = get_movie_metadata(lb_name, lb_year, imdb_id=row.get('imdb_id'))
-    
-    metadata['letterboxd_name'] = lb_name
-    metadata['letterboxd_uri'] = row.get('Letterboxd URI')
-    metadata['user_rating'] = row.get('Rating')
-    metadata['is_liked'] = row.get('is_liked', 0)
-    
-    return metadata
-
-def run_repair(limit=None):
-    # (Same code as before, omitted for brevity but presumed to exist)
-    pass
 
 def sync_letterboxd_data():
     """

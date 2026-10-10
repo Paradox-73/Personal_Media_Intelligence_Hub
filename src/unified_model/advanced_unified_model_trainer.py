@@ -21,7 +21,8 @@ from scipy.optimize import minimize
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.movies.custom_objectives import AsymmetricEdgePenaltyObjective
-from src.unified_model.unified_utils import DomainAligner, compute_temporal_weights
+from src.unified_model.unified_utils import (AlignedTextPCA, compute_temporal_weights,
+                                             replace_text_block, text_feature_cols)
 
 class SimplexWeightedAverager:
     """
@@ -63,7 +64,7 @@ def train_advanced_unified_models():
     if len(df) < _n0:
         print(f"   Dropped {_n0 - len(df)} unrated row(s) with target_reg == 0.")
     df['rating_date'] = pd.to_datetime(df['rating_date'])
-    pca_cols = [c for c in df.columns if c.startswith('pca_')]
+    pca_cols = text_feature_cols(df)
     
     X = df.drop(columns=['target_reg', 'target_ordinal', 'source_id', 'media_type', 'rating_date'], errors='ignore')
     y_reg = df['target_reg']
@@ -90,10 +91,9 @@ def train_advanced_unified_models():
         xt, xv, yt, yv, mt, mv, dt, dv = train_test_split(
             X_fit, y_fit, m_fit, d_fit, test_size=0.25, random_state=7)
 
-        aligner = DomainAligner(method='centroid')
-        aligner.fit(xt[pca_cols].values, mt)
-        xt_p = xt.copy(); xt_p.loc[:, pca_cols] = aligner.transform(xt[pca_cols].values, mt)
-        xv_p = xv.copy(); xv_p.loc[:, pca_cols] = aligner.transform(xv[pca_cols].values, mv)
+        block = AlignedTextPCA().fit(xt[pca_cols].values, mt)
+        xt_p = replace_text_block(xt, pca_cols, block, mt)
+        xv_p = replace_text_block(xv, pca_cols, block, mv)
         
         w = compute_temporal_weights(dt, lambda_decay=l_decay)
         model = xgb.XGBRegressor(objective=AsymmetricEdgePenaltyObjective(alpha_hi=alpha_hi, alpha_lo=alpha_lo), n_estimators=100, learning_rate=0.1, max_depth=5, random_state=42)
@@ -112,10 +112,10 @@ def train_advanced_unified_models():
     w_train = compute_temporal_weights(d_fit, lambda_decay=best_lambda)
     w_test = compute_temporal_weights(d_hold, lambda_decay=best_lambda)
 
-    aligner = DomainAligner(method='centroid')
-    aligner.fit(X_train[pca_cols].values, m_train)
-    X_train_a = X_train.copy(); X_train_a.loc[:, pca_cols] = aligner.transform(X_train[pca_cols].values, m_train)
-    X_test_a = X_test.copy(); X_test_a.loc[:, pca_cols] = aligner.transform(X_test[pca_cols].values, m_test)
+    # Align + PCA-10 on the training rows (see AlignedTextPCA for the measurement).
+    aligner = AlignedTextPCA().fit(X_train[pca_cols].values, m_train)
+    X_train_a = replace_text_block(X_train, pca_cols, aligner, m_train)
+    X_test_a = replace_text_block(X_test, pca_cols, aligner, m_test)
 
     # Base Models
     xgb_reg = xgb.XGBRegressor(objective=AsymmetricEdgePenaltyObjective(alpha_hi=study.best_params['alpha_hi'], alpha_lo=study.best_params['alpha_lo']), n_estimators=300, learning_rate=0.03, max_depth=6, random_state=42)
@@ -162,17 +162,14 @@ def train_advanced_unified_models():
     joblib.dump(ensemble, ensemble_dir / "stacking_ensemble_regressor.joblib")
     joblib.dump(xgb_reg, ensemble_dir / "xgb_base_regressor.joblib")
     joblib.dump(cat_reg, ensemble_dir / "catboost_base_regressor.joblib")
-    joblib.dump({'best_lambda': best_lambda, 'aligner': aligner, 'pca_cols': pca_cols, 'weights': ensemble.weights}, ensemble_dir / "model_metadata.joblib")
-    
-    # Save a GLOBAL Aligner (fitted on all data) for visualization in the Explorer
-    global_aligner = DomainAligner(method='centroid') # or 'coral' if preferred
-    global_aligner.fit(X[pca_cols].values, media_types)
-    joblib.dump(global_aligner, config.BASE_DIR / "models" / "coral_alignment.joblib")
-    print(f"🌍 Global aligner saved for Latent Space Explorer.")
+    joblib.dump({'best_lambda': best_lambda, 'aligner': aligner, 'pca_cols': aligner.out_cols, 'weights': ensemble.weights}, ensemble_dir / "model_metadata.joblib")
 
     # Update state for inference
     state = joblib.load(config.UNIFIED_PREPROCESSOR_STATE)
     state['aligner'] = aligner
+    # The models read pca_0..9, not the CSV's emb_* block, so serving reindexes to
+    # these columns (training_columns stays the feature-CSV schema).
+    state['model_columns'] = list(X_train_a.columns)
     joblib.dump(state, config.UNIFIED_PREPROCESSOR_STATE)
     
     print(f"✅ Models saved to: {ensemble_dir}")

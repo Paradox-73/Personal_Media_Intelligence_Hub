@@ -153,10 +153,14 @@ BUILDER = {"movie": _xgb_anchored, "unified": _xgb, "tv": _svr,
 def _load(domain):
     if domain == "unified":
         df = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
-        df = df[df["target_reg"].notna()]
+        # `notna()` is not enough: unrated items are stored as target_reg == 0.0
+        # (a fillna in the builder, not NaN), so six unrated games survived this
+        # filter and were scored as genuine 0-star items -- 1,413 rows instead of
+        # the 1,407 the fold registry and every other report use.
+        df = df[df["target_reg"].notna() & (df["target_reg"] > 0)]
     else:
         df = pd.read_csv(LOCAL_PATHS[domain])
-        df = df[df["target_reg"].notna()]
+        df = df[df["target_reg"].notna() & (df["target_reg"] > 0)]
     feats = [c for c in df.columns if c not in DROP]
     return df[feats].fillna(0), df["target_reg"].astype(float).values
 

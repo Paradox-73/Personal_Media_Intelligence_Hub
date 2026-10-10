@@ -6,15 +6,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
-from sklearn.model_selection import train_test_split, cross_val_predict, KFold
+from sklearn.model_selection import train_test_split, KFold
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, accuracy_score
 from sklearn.svm import SVR
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
+from sklearn.base import clone
 
 # Add Project Root to Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.books.model_trainer import calculate_skill_score, refit_encodings
+from src.games.feature_engineering import GAME_ENCODE, TE_PRIOR
 
 # C=3.0, not the old frozen 1.0. Every domain measured ~95% bias-dominated, which
 # is the regime where more capacity helps. Chosen by NESTED CV (hyperparameter
@@ -23,49 +26,8 @@ from src import config
 # that was winner's curse; the honest optimum is 3.0.
 SVR_C = 3.0
 
-def get_unified_predictions(df, media_type='game'):
-    """
-    Helper to get predictions from the Unified Model to use as a feature (distillation).
-    """
-    try:
-        ensemble_dir = config.UNIFIED_ENSEMBLE_DIR
-        stack_path = ensemble_dir / "stacking_ensemble_regressor.joblib"
-        state_path = config.UNIFIED_PREPROCESSOR_STATE
-        
-        if not stack_path.exists() or not state_path.exists():
-            return None
-            
-        unified_results_path = config.UNIFIED_PREDICTIONS_DIR / "unified_predictions_ensemble.csv"
-        if unified_results_path.exists():
-            u_df = pd.read_csv(unified_results_path)
-            # Use 'name' or 'title' to match
-            name_col = 'name' if 'name' in df.columns else 'title'
-            mapping = u_df[u_df['media_type'] == media_type].set_index('display_name')['pred_Stacking'].to_dict()
-            return df[name_col].map(mapping).fillna(df['user_rating'].mean() if 'user_rating' in df else 3.0)
-        
-        return None
-    except Exception as e:
-        # Do NOT silently train without the prior. The lookup key is stale --
-        # predict_unified_ratings writes `pred_MeanEnsemble`, not `pred_Stacking`
-        # -- so this branch has ALWAYS been taken and distillation has never
-        # actually run. Renaming the key alone is not enough: `unified_prior`
-        # would become a column that is not in state['training_columns'], and
-        # the fitted scaler (n_features_in_ = 51) would reject it at serve time.
-        # Enabling distillation needs the column plumbed into the preprocessor
-        # state as well; until then this prints loudly instead of whispering.
-        print(f"   ⚠️  DISTILLATION DISABLED — unified prior unavailable: {e}")
-        print("      (expected column 'pred_Stacking'; the file provides "
-              "'pred_MeanEnsemble'. Training WITHOUT the unified prior.)")
-        return None
-
-def calculate_skill_score(y_true, y_pred, y_train_mean):
-    mae_model = mean_absolute_error(y_true, y_pred)
-    mae_baseline = mean_absolute_error(y_true, np.full_like(y_true, y_train_mean))
-    if mae_baseline == 0: return 0
-    return 1 - (mae_model / mae_baseline)
-
 def train_models():
-    print("🤖 Starting Game Model Training (Distillation Mode)...")
+    print("🤖 Starting Game Model Training...")
 
     if not config.GAMES_TRAINING_DATA_PATH.exists():
         print("❌ Error: Training data not found.")
@@ -74,33 +36,28 @@ def train_models():
     df = pd.read_csv(config.GAMES_TRAINING_DATA_PATH)
     df_enriched = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH)
 
-    # 1. Distillation: Get Unified Model Predictions as a feature
-    unified_preds = get_unified_predictions(df_enriched, 'game')
-    
     X = df.drop(columns=['target_reg', 'target_class'], errors='ignore')
-    if unified_preds is not None:
-        print("   ✅ Fusing Unified Model Predictions as a feature.")
-        X['unified_prior'] = unified_preds.values
-        
     y_reg = df['target_reg']
     y_class = df['target_class']
 
     # Separate training data from all data
     mask_train = y_reg.notna()
-    X_train_full = X[mask_train]
-    y_reg_train_full = y_reg[mask_train]
-    y_class_train_full = y_class[mask_train].astype(int)
+    X_train_full = X[mask_train].reset_index(drop=True)
+    raw_train_full = df_enriched[mask_train].reset_index(drop=True)
+    y_reg_train_full = y_reg[mask_train].reset_index(drop=True)
+    y_class_train_full = y_class[mask_train].astype(int).reset_index(drop=True)
 
-    # 80/20 Split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_train_full, y_reg_train_full, test_size=0.2, random_state=42
-    )
+    # 80/20 Split, with target encodings refitted on the train rows only.
+    tr, te = train_test_split(np.arange(len(X_train_full)), test_size=0.2, random_state=42)
+    X_train, X_test = refit_encodings(X_train_full, raw_train_full, y_reg_train_full,
+                                      tr, te, GAME_ENCODE, TE_PRIOR)
+    y_train, y_test = y_reg_train_full.iloc[tr], y_reg_train_full.iloc[te]
 
     print(f"   Training Set: {len(X_train)} | Test Set: {len(X_test)}")
 
-    # --- 1. SVR (Distilled) ---
+    # --- 1. SVR ---
     # With N<100, we freeze hyperparameters as recommended
-    print(f"   Training Distilled SVR (nested-CV tuned: C={SVR_C}, kernel=rbf)...")
+    print(f"   Training SVR (nested-CV tuned: C={SVR_C}, kernel=rbf)...")
     
     svr_pipe = Pipeline([
         ('scaler', StandardScaler()),
@@ -110,11 +67,13 @@ def train_models():
     
     # --- CONFORMAL PREDICTION (Uncertainty) ---
     print("   Computing conformal intervals via 5-fold OOF residuals...")
-    # cross_val_predict needs a clean partition (each item tested once); RepeatedKFold
-    # reuses test items across repeats and raises "only works for partitions".
     kf = KFold(n_splits=5, shuffle=True, random_state=42)
-    oof_preds = cross_val_predict(svr_pipe, X_train_full, y_reg_train_full, cv=kf)
-    abs_residuals = np.abs(y_reg_train_full - oof_preds)
+    oof_preds = np.empty(len(X_train_full))
+    for f_tr, f_va in kf.split(X_train_full):
+        X_a, X_b = refit_encodings(X_train_full, raw_train_full, y_reg_train_full,
+                                   f_tr, f_va, GAME_ENCODE, TE_PRIOR)
+        oof_preds[f_va] = clone(svr_pipe).fit(X_a, y_reg_train_full.iloc[f_tr]).predict(X_b)
+    abs_residuals = np.abs(y_reg_train_full.values - oof_preds)
     
     # 80% coverage interval width
     q_80 = np.quantile(abs_residuals, 0.8)
@@ -131,7 +90,7 @@ def train_models():
     skill_score = calculate_skill_score(y_test, y_pred, y_train.mean())
 
     print("\n" + "="*50)
-    print("📊 PERFORMANCE REPORT: Distilled Game SVR")
+    print("📊 PERFORMANCE REPORT: Game SVR")
     print("="*50)
     print(f"   📉 [TEST SET] MAE:   {mae:.4f}")
     print(f"   📈 [TEST SET] R²:    {r2:.4f}")
@@ -156,7 +115,7 @@ def train_models():
         n_estimators=50, learning_rate=0.05, max_depth=3,
         objective='multi:softmax', num_class=3, random_state=42
     )
-    y_class_train = y_class_train_full.loc[X_train.index]
+    y_class_train = y_class_train_full.iloc[tr]
     classifier.fit(X_train, y_class_train)
     joblib.dump(classifier, config.GAMES_MODEL_CLASSIFIER)
 

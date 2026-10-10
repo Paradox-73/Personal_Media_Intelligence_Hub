@@ -33,7 +33,10 @@ import pandas as pd
 import requests
 from tqdm import tqdm
 
-import config
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[2]))  # repo root, so `python src/music/<mod>.py` works too
+from src.music import config
 
 try:
     import lyricsgenius

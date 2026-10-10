@@ -79,7 +79,7 @@ def tvdb_series(imdb_id, name, year, cache):
     coarse genres TMDB returns -- closer to nanogenres than anything else we have.
     """
     ck = str(imdb_id or f"{name}|{year}")
-    if ck in cache:
+    if ck in cache and "_error" not in cache[ck]:  # retry past failures
         return cache[ck]
     tok = tvdb_token()
     if not tok:
@@ -116,7 +116,7 @@ def tvdb_series(imdb_id, name, year, cache):
                 "content_rating": ratings.get("usa") or next(iter(ratings.values()), None),
             }
     except Exception as e:  # noqa: BLE001
-        rec = {"_error": str(e)}
+        return {"_error": str(e)}
     cache[ck] = rec
     return rec
 
@@ -125,7 +125,7 @@ def tvmaze_show(imdb_id, name, cache):
     """TVMaze `weight` is its own popularity score (0-100) -- a crowd-attention
     signal none of the other APIs give us."""
     ck = str(imdb_id or name)
-    if ck in cache:
+    if ck in cache and "_error" not in cache[ck]:  # retry past failures
         return cache[ck]
     rec = {}
     try:
@@ -148,7 +148,7 @@ def tvmaze_show(imdb_id, name, cache):
                 "web_channel": ((d.get("webChannel") or {}) or {}).get("name"),
             }
     except Exception as e:  # noqa: BLE001
-        rec = {"_error": str(e)}
+        return {"_error": str(e)}
     cache[ck] = rec
     return rec
 
@@ -168,7 +168,7 @@ def _load():
 
 def tmdb_tv(tmdb_id, cache):
     k = str(int(float(tmdb_id)))
-    if k in cache:
+    if k in cache and "_error" not in cache[k]:  # retry past failures
         return cache[k]
     rec = {}
     try:
@@ -189,7 +189,7 @@ def tmdb_tv(tmdb_id, cache):
                           params={"api_key": TMDB_KEY}, timeout=TIMEOUT).json()
         rec["keywords"] = [w["name"] for w in (kw.get("results") or kw.get("keywords") or [])]
     except Exception as e:  # noqa: BLE001
-        rec = {"_error": str(e)}
+        return {"_error": str(e)}
     cache[k] = rec
     return rec
 

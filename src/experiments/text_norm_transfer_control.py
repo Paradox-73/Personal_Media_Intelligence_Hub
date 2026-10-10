@@ -32,6 +32,7 @@ from sentence_transformers import SentenceTransformer
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.reporting.standalone_benchmarks import load_registry, registry_folds
 from src.unified_model.unified_utils import DomainAligner
 from src.experiments.transfer_study import select_features
 
@@ -116,8 +117,7 @@ def run():
     df["global_id"] = df["media_type"] + "_" + df["source_id"].astype(str)
     feat = select_features(df, max_genres=40)
     pca = [c for c in feat if c.startswith("pca_")]
-    with open(config.UNIFIED_MODEL_DIR / "fold_registry.json") as f:
-        registry = json.load(f)
+    registry = load_registry()
 
     target = "game"
     tdf = df[df.media_type == target].copy()
@@ -127,10 +127,8 @@ def run():
     # collect per-fold MAE for protocol A and each (source, fraction)
     A_mae, cells = {}, {}
     spear = {}
-    for fold in range(50):
-        te = tdf[tdf.global_id.apply(lambda g: fold in registry.get(g, []))]
-        if te.empty:
-            continue
+    for fold, te_mask in registry_folds(tdf, registry):
+        te = tdf[te_mask]
         tr = tdf[~tdf.global_id.isin(te.global_id)]
         y = te["target_reg"].values
         predA = _fit_zero_or_aug(tr, tr.iloc[0:0], te, feat, pca)

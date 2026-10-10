@@ -9,6 +9,7 @@ from sentence_transformers import SentenceTransformer
 
 from src.common.text_embedding import encode_pooled, encode_pooled_single
 from src.common import taste_features as tf
+from src.common.wikipedia_plots import plot_for
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import MultiLabelBinarizer
 
@@ -16,11 +17,12 @@ from sklearn.preprocessing import MultiLabelBinarizer
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.common.parsing import (  # canonical shared parsers
-    parse_list, people_key, sanitize_col, clean_money, canon_genre)
+    parse_list, sanitize_col, clean_money, canon_genre, canon_genres,
+    genres_in_multiple_domains)
 # categorize_rating lives in src/common/parsing.py. Three copies of it had drifted;
 # two used a bare `'R' in r` test that read 'Not Rated'/'Unrated'/'Approved' as
 # Adult, mislabelling 12.4% of the movie library.
-from src.common.parsing import categorize_rating
+from src.common.parsing import categorize_rating, norm_language, clean_year
 
 from src.unified_model.unified_utils import get_music_affinity_features, get_music_gate_mask, DomainAligner
 
@@ -64,7 +66,14 @@ def unified_header(meta):
 
 
 def unified_body(meta):
-    return _s(meta.get('overview') or meta.get('description'))
+    blurb = _s(meta.get('overview') or meta.get('description'))
+    mt = _s(meta.get('media_type'))
+    title = _s(meta.get('title'))
+    # The year keeps remakes from sharing a plot (Ghostbusters 1984/2016).
+    year = next((y for y in (clean_year(meta.get(k)) for k in
+                             ('year', 'released', 'first_air_date', 'publishedDate'))
+                 if y), None)
+    return plot_for(mt, title, blurb, year=year) if mt and title else blurb
 
 
 # --- HELPERS ---
@@ -82,16 +91,6 @@ UNIFIED_ENCODE = [("director", 3), ("studio", 1)]
 # Matches the books pipeline so the two are comparable.
 TE_PRIOR = 2
 
-
-def clean_year(val):
-    try:
-        if pd.isna(val) or val == '': return None
-        s = str(val).strip()
-        match = re.search(r'(\d{4})', s)
-        if match: return int(match.group(1))
-        return int(float(s[:4]))
-    except:
-        return None
 
 _ST_CACHE = {}
 
@@ -125,32 +124,16 @@ def _present(meta, *keys):
 
 def transform_single_media(meta, state, media_type='movie'):
     """
-    Transforms a single item's metadata into the unified feature space.
-    Used for live inference/evaluation.
+    Transforms a single item's metadata into the unified model's input columns.
+    The Oracle AND the batch scorer (predict_unified_ratings) both go through here,
+    so there is one serving path.
 
     Every step here must mirror `build_universal_dataset` exactly — the model only
     ever saw vectors that function produced. `scripts/audit_inference_parity.py`
     diffs the two paths on the real library and fails the pipeline if they drift.
+    Only the blocks the model reads are built: critic_avg_5, creator/studio
+    encodings, the shared genre axis and the aligned text block.
     """
-    # 1. Basic Metadata
-    is_tv = 1 if media_type == 'tv' else 0
-    is_game = 1 if media_type == 'game' else 0
-    is_book = 1 if media_type == 'book' else 0
-    is_music = 1 if media_type == 'music' else 0
-
-    runtime = meta.get('runtime')
-    if isinstance(runtime, str):
-        runtime_match = re.search(r'\d+', runtime)
-        runtime = float(runtime_match.group()) if runtime_match else np.nan
-    runtime = pd.to_numeric(runtime, errors='coerce')
-
-    year = clean_year(meta.get('year') or meta.get('released'))
-    if year is None:
-        year = np.nan
-
-    # Missingness Masks
-    masks = {f'has_{d}_feats': (1 if media_type == d else 0) for d in ['movie', 'tv', 'game', 'book', 'music']}
-
     # Scores — NaN when the domain genuinely has no such field (see _present).
     imdb = _present(meta, 'imdb_rating')
     meta_score = _present(meta, 'metascore')
@@ -163,37 +146,13 @@ def transform_single_media(meta, state, media_type='movie'):
     ir_100 = imdb * 10 if media_type in ['movie', 'tv'] else imdb * 20
     _parts = [p for p in (ir_100, meta_score, rt, va * 10) if pd.notna(p)]
     critic_avg = (float(np.mean(_parts)) / 100 * 5) if _parts else np.nan
-
-    box_office = np.log1p(clean_money(meta.get('box_office', 0)))
-
-    # Awards. The batch builder parses these out of the OMDb `awards` string; this
-    # path used to hardcode both to 0, so a heavily-awarded film was scored as if it
-    # had won nothing (train σ ≈ 61 nominations).
-    _awards = str(meta.get('awards') or '')
-    _wins = re.search(r'(\d+)\s+win', _awards, re.I)
-    _noms = re.search(r'(\d+)\s+nomination', _awards, re.I)
-
-    data = {
-        'is_tv_show': is_tv, 'is_game': is_game, 'is_book': is_book, 'is_music': is_music,
-        'year': year, 'runtime': runtime, 'imdb_rating': imdb, 'metascore': meta_score,
-        'rotten_tomatoes_rating': rt, 'vote_average': va,
-        'imdb_votes': _present(meta, 'imdb_votes'),
-        'box_office_log': box_office, 'popularity': _present(meta, 'popularity'),
-        'total_wins': float(_wins.group(1)) if _wins else 0.0,
-        'total_nominations': float(_noms.group(1)) if _noms else 0.0,
-        'critic_avg_5': critic_avg,
-        **masks
-    }
-
-    # Median-impute exactly as the batch builder does, using the medians it saved.
-    for col, med in (state.get('median_values') or {}).items():
-        if col in data and pd.isna(data[col]):
-            data[col] = med
+    if pd.isna(critic_avg):
+        critic_avg = (state.get('median_values') or {}).get('critic_avg_5', np.nan)
+    data = {'critic_avg_5': critic_avg}
 
     # Creator / studio entity encodings, applied through the SAME artifacts the batch
     # builder saved. The batch path writes out-of-fold values (target held out of its
-    # own row); inference legitimately applies the full-data map -- that asymmetry is
-    # by design and is whitelisted in scripts/audit_inference_parity.py.
+    # own row); inference legitimately applies the full-data map.
     #
     # Aliases exist because each Oracle hands us its domain's native field name; the
     # backbone renames them to `director`/`studio`, but single-item callers may not.
@@ -216,95 +175,40 @@ def transform_single_media(meta, state, media_type='movie'):
         data[f'{name}_encoded'] = enc
         data[f'{name}_n'] = sup
 
-    # NLP — chunk-pooled, genre-templated text. This MUST stay identical to the
-    # batch builder: it calls the same `encode_pooled` through its single-item form,
-    # so the header template and the window pooling cannot drift apart. The `Tags:`
-    # slot is part of that template — omitting it here (as this path used to)
-    # changed the sentence shape for EVERY inference and moved the PCA coords away
-    # from anything the model was fitted on.
-    _d = unified_body(meta)
-    header = unified_header(meta)
-    transformer = _get_st(state['sentence_transformer'])
-    emb = encode_pooled_single(header, _d, transformer)
-    # The music-affinity block below scores the SAME flat string the batch builder
-    # stores in df['txt'] (header + full description). Keep this assignment next to
-    # the header it is built from: when the pooled encoder replaced the old single
-    # `txt` variable, this line went missing, `get_music_affinity_features` raised
-    # NameError into a bare `except`, and every music_affinity_* column silently
-    # served 0 against a batch that wrote real values.
-    txt = f"{header} {_d}".strip()
+    # NLP — chunk-pooled, genre-templated text through the same `encode_pooled` the
+    # builder calls, so the header template and the window pooling cannot drift.
+    # `unified_body` needs media_type to find the item's Wikipedia plot; callers pass
+    # it as an argument, not in the dict, and without it every inference fell back to
+    # the short API blurb (Dune Part Two: 305 characters here vs the builder's 4,185).
+    meta = dict(meta)
+    meta.setdefault('media_type', media_type)
+    emb = encode_pooled_single(unified_header(meta), unified_body(meta),
+                               _get_st(state['sentence_transformer']))
+    text_vec = np.asarray(emb, dtype=float)
+    if state.get('aligner') is not None:
+        text_vec = state['aligner'].transform(text_vec, [media_type])
+    _tcols = getattr(state.get('aligner'), 'out_cols', None)         or [f'emb_{i}' for i in range(text_vec.shape[1])]
+    X_text = pd.DataFrame(text_vec, columns=_tcols)
 
-    # PCA first (384 -> 10), THEN domain alignment: the aligner was fit on the
-    # PCA components (pca_cols) in the trainer, so it operates in PCA space.
-    pca_vec = state['pca'].transform(emb)
-    if 'aligner' in state and state['aligner'] is not None:
-        pca_vec = state['aligner'].transform(pca_vec, [media_type])
-
-    X_text = pd.DataFrame(pca_vec, columns=[f'pca_{i}' for i in range(10)])
-    
-    # Languages & Genres
-    # Default to empty, not "English": domains with no language column (games) are
-    # 'Other' in every training row, so defaulting to English inverted the block.
-    lang = next((l.strip() for l in str(meta.get('language') or '').split(',') if l.strip() in state['top_languages']), 'Other')
-    X_lang = pd.DataFrame(0, index=[0], columns=[f'lang_{l}' for l in state['top_languages']] + ['lang_Other'])
-    X_lang[f'lang_{lang}'] = 1
-
-    # Shared GEOGRAPHY axis. The batch builder one-hots the top origin countries and
-    # sends everything else to `ctry_Other`, so EVERY training row has exactly one
-    # ctry column set. This path used to emit none, leaving the whole block at zero
-    # — a combination no training row had.
-    top_countries = state.get('top_countries') or []
-    X_country = pd.DataFrame(0, index=[0], columns=[f'ctry_{c}' for c in top_countries] + ['ctry_Other'])
-    ctry = next((c.strip() for c in str(meta.get('country') or '').split(',')
-                 if c.strip() in top_countries), 'Other')
-    X_country[f'ctry_{ctry}'] = 1
-
-    # Genres — canonicalized the same way the batch builder does, including the
-    # combined TMDB buckets. Passing raw labels meant "Sci-Fi & Fantasy" matched no
-    # class and the item silently lost its genre one-hots entirely.
-    genres = parse_list(meta.get('genre') or meta.get('categories', []))
-    _split = {'Sci-Fi & Fantasy': ['Science Fiction', 'Fantasy'],
-              'Action & Adventure': ['Action', 'Adventure']}
-    genres = list({canon_genre(item) for g in genres for item in _split.get(g, [g])})
+    # Genres — one call, the same one the batch builder makes.
+    genres = canon_genres(meta.get('genre') or meta.get('categories') or [])
     known = set(state['mlb_genre'].classes_)
     X_genre = pd.DataFrame(state['mlb_genre'].transform([[g for g in genres if g in known]]),
                            columns=[f"gen_{sanitize_col(c)}" for c in state['mlb_genre'].classes_])
 
-    mpaa = categorize_rating(meta.get('rated') or '')
-    X_mpaa = pd.DataFrame(0, index=[0], columns=['rated_Adult', 'rated_Teen', 'rated_General'])
-    X_mpaa[f'rated_{mpaa}'] = 1
-    
-    # Music Affinity (gated to zero for non-music items, so a failure here is
-    # harmless for movie/tv/game/book — those columns just stay 0 via alignment).
-    X_music = pd.DataFrame()
-    profile_path = config.MUSIC_MODEL_DIR / "profile.joblib"
-    bundle_path = config.MUSIC_MODEL_DIR / "preprocessors.joblib"
-    if profile_path.exists() and bundle_path.exists():
-        try:
-            profile = joblib.load(profile_path)
-            bundle = joblib.load(bundle_path)
-            X_music = get_music_affinity_features([txt], profile, bundle)
-            X_music = X_music * get_music_gate_mask(media_type)
-        except Exception:
-            X_music = pd.DataFrame()
-
-    # Final concat. Coerce the numeric backbone to floats: missing fields (e.g. a
-    # manually-entered book with no page count) arrive as None and would otherwise
-    # leave an object-dtype column that XGBoost/CatBoost reject.
-    X_meta = pd.DataFrame([data]).apply(pd.to_numeric, errors='coerce')
-    X_final = pd.concat([X_meta.reset_index(drop=True), X_lang.reset_index(drop=True),
-                         X_country.reset_index(drop=True),
-                         X_genre.reset_index(drop=True), X_mpaa.reset_index(drop=True),
-                         X_text.reset_index(drop=True), X_music.reset_index(drop=True)], axis=1)
+    X_final = pd.concat([pd.DataFrame([data]).astype(float), X_genre, X_text], axis=1)
     X_final.columns = [sanitize_col(c) for c in X_final.columns]
-    X_final = X_final.loc[:, ~X_final.columns.duplicated()]
-    
-    # Fill missing columns from training
-    for col in state['training_columns']:
-        if col not in X_final.columns:
-            X_final[col] = 0
-            
-    return X_final[state['training_columns']]
+
+    # model_columns (written by the trainer) is what the models read: pca_0..9 in
+    # place of the CSV's emb_* block. Older states fall back to training_columns.
+    _model_cols = state.get('model_columns', state['training_columns'])
+    # Never zero-fill: a model column this path does not build is a serving bug
+    # (the batch scorer once served 21 of 32 columns as 0 that way).
+    missing = [c for c in _model_cols if c not in X_final.columns]
+    if missing:
+        raise ValueError(f"transform_single_media does not build {len(missing)} model "
+                         f"column(s): {missing[:12]}")
+    return X_final[_model_cols]
 
 def build_universal_dataset():
     print("🌍 Building Universal Media Dataset (Movies + TV Shows + Games + Books + Music)...")
@@ -354,7 +258,7 @@ def build_universal_dataset():
     # 3. Load Games
     try:
         df_g = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH)
-    except:
+    except UnicodeDecodeError:
         df_g = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH, encoding='latin1')
     
     df_g = df_g.rename(columns={
@@ -378,7 +282,7 @@ def build_universal_dataset():
     # 4. Load Books
     try:
         df_b = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH)
-    except:
+    except UnicodeDecodeError:
         df_b = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH, encoding='latin1')
     
     df_b = df_b.rename(columns={
@@ -535,6 +439,12 @@ def build_universal_dataset():
         df[c] = numeric_series.fillna(median_val)
 
     # NLP
+    # Normalise BEFORE picking the top 3, or the shared language axis cannot bridge
+    # domains at all: TMDB gives ISO codes ('en') and OMDb/Hardcover give names
+    # ('English'), so the matrix ended up with lang_en (movies/TV) AND lang_English
+    # (books) as two orthogonal columns for ONE language -- the exact opposite of a
+    # cross-domain bridge. Hindi was split 'hi'/'Hindi' the same way.
+    df['language'] = df['language'].apply(norm_language)
     top_3_langs = df['language'].astype(str).str.split(', ').explode().value_counts().nlargest(3).index.tolist()
     X_lang = pd.get_dummies(df['language'].apply(lambda x: next((l.strip() for l in str(x).split(',') if l.strip() in top_3_langs), 'Other')), prefix='lang')
 
@@ -582,8 +492,24 @@ def build_universal_dataset():
     # --- DOMAIN CENTROID ALIGNMENT (REMOVED: Handle in trainer per-fold to avoid leakage) ---
     # Centering here on full dataset leaks test info.
     # We'll use the raw embeddings for PCA and let the trainer apply DomainAligner.
-    pca = PCA(n_components=10)
-    X_text = pd.DataFrame(pca.fit_transform(text_embeddings), columns=[f'pca_{i}' for i in range(10)])
+    # THE FULL 384-d EMBEDDING, not a 10-component PCA of it.
+    #
+    # Compressing to pca_0..pca_9 is why the unified model could not find similar
+    # items across domains. PCA keeps the directions of greatest GLOBAL variance and
+    # discards local neighbourhood structure -- which is exactly what nearest-neighbour
+    # retrieval runs on. Measured on this corpus: in the full 384-d space the Scott
+    # Pilgrim film's top neighbours are the TV series and all six book volumes
+    # (cos 0.69-0.74, and it survives scrubbing every title token, so it is thematic
+    # rather than name matching). In pca_0..9 the same query returns Ted, The Studio
+    # and Ferris Bueller's Day Off. 374 of 384 dimensions were being thrown away
+    # before the model ever saw the text.
+    #
+    # Named `emb_*`, not `pca_*`, because they are no longer principal components --
+    # and app/pages/12_Latent_Space_Explorer.py already treats `emb_` as a vibe prefix.
+    X_text = pd.DataFrame(text_embeddings,
+                          columns=[f'emb_{i}' for i in range(text_embeddings.shape[1])],
+                          index=df.index)
+    pca = None   # kept in `state` as None so old artifacts unpickle predictably
 
     # --- CREATOR / STUDIO ENTITY ENCODINGS (the shared "who made it" axis) ---
     #
@@ -618,7 +544,8 @@ def build_universal_dataset():
                           + df['writer'].fillna('').astype(str).str.strip(" []")
                           ).str.strip(' ,')
 
-    y_uni = pd.to_numeric(df['user_rating'], errors='coerce').fillna(0).astype(float).values
+    # NaN, not 0: _fit_entity_map skips unrated rows; a 0 would count as a 0-star vote.
+    y_uni = pd.to_numeric(df['user_rating'], errors='coerce').astype(float).values
     te_frames, te_artifacts = {}, {}
     for col, limit in UNIFIED_ENCODE:
         if col not in df.columns:
@@ -633,8 +560,26 @@ def build_universal_dataset():
     print(f"      creator coverage: {(df['director'].fillna('').astype(str).str.strip() != '').mean():.1%}"
           f"   studio coverage: {(df['studio'].fillna('').astype(str).str.strip() != '').mean():.1%}")
 
-    # Genres
-    df['gen_list'] = df['genre'].apply(parse_list).apply(lambda gl: list(set([canon_genre(item) for g in gl for item in {'Sci-Fi & Fantasy': ['Science Fiction', 'Fantasy'], 'Action & Adventure': ['Action', 'Adventure']}.get(g, [g])])))
+    # Genres. `canon_genres` now owns the whole vocabulary problem: it expands TV's
+    # compound labels ("Sci-Fi & Fantasy" -> Science Fiction + Fantasy), folds
+    # non-English and variant spellings onto one label ("Aventure"/"Aventura" ->
+    # Adventure, "Juvenile Fiction" -> Family) and drops non-genre noise that arrives
+    # in Hardcover's free-text category field ("Mice", "Spanish", "General").
+    df['gen_list'] = df['genre'].apply(canon_genres)
+
+    # Then keep ONLY genres carried by two or more domains. A single-domain label is a
+    # domain indicator, not a shared feature: "Fiction" sits on 87% of books and on
+    # nothing else, and "Shooter"/"Platformer"/"Arcade" are games-only. Feeding those to
+    # a model whose thesis is cross-domain generalisation lets it recover domain
+    # identity from the very column meant to bridge domains -- the same failure as the
+    # split lang_en / lang_English one-hot. This takes the axis from 183 columns to ~17
+    # real ones.
+    _shared = genres_in_multiple_domains(
+        {mt: g['gen_list'].tolist() for mt, g in df.groupby('media_type')})
+    df['gen_list'] = df['gen_list'].apply(lambda gl: [g for g in gl if g in _shared])
+    print(f"      shared genre axis: {len(_shared)} genres in >=2 domains "
+          f"({', '.join(sorted(_shared))})")
+
     mlb = MultiLabelBinarizer()
     X_genre = pd.DataFrame(mlb.fit_transform(df['gen_list']), columns=[f"gen_{sanitize_col(c)}" for c in mlb.classes_], index=df.index)
     X_mpaa = pd.get_dummies(df['rated'].apply(categorize_rating), prefix='rated')
@@ -660,7 +605,33 @@ def build_universal_dataset():
     mask_cols = [f'has_{d}_feats' for d in ['movie', 'tv', 'game', 'book', 'music']]
 
     # Final
-    X_final = pd.concat([df[num_cols + mask_cols], X_entity, X_lang, X_country, X_genre, X_mpaa, X_text, X_music], axis=1)
+    # The full 384-d description embedding and the critic score, PLUS the two blocks
+    # that were measured to carry real signal: the creator/studio target encodings and
+    # the SHARED genre axis.
+    #
+    # History, so this is not re-litigated blind. These blocks were dropped on
+    # 2026-08-29 because 183 genre one-hots crowded 10 PCA text dims out of a
+    # 244-column matrix and several columns encoded domain identity. Two things have
+    # changed since: the text side is now 384 columns rather than 10, so it can no
+    # longer be crowded out; and the genre axis is filtered to genres appearing in two
+    # or more domains, which removes the domain-indicator problem at its source rather
+    # than by deleting the whole block. Dropping them cost unified MAE 0.5025 -> 0.5561.
+    #
+    # What is still NOT restored, deliberately: language, country and MPAA one-hots
+    # (near-pure domain indicators -- MPAA exists for film/TV and not for books), and
+    # the music-affinity block (music is de-rated, 0 rows).
+    #
+    # CAVEAT that must travel with any metric computed on this matrix: the
+    # creator/studio encodings come from `oof_entity_encode`, which runs its OWN
+    # internal KFold unrelated to the frozen 50-fold registry. 48% of train rows get an
+    # encoding computed from a test row's target, and the value is computed once and
+    # reused across all 50 folds. Every unified MAE/R2 that includes these columns is
+    # therefore optimistic by an unmeasured amount. Fixing that means re-encoding inside
+    # each registry fold, which is not done here.
+    X_final = pd.concat([df[['critic_avg_5']].reset_index(drop=True),
+                         X_entity.reset_index(drop=True),
+                         X_genre.reset_index(drop=True),
+                         X_text.reset_index(drop=True)], axis=1)
     X_final.columns = [sanitize_col(c) for c in X_final.columns]
     X_final = X_final.loc[:, ~X_final.columns.duplicated()]
 
@@ -676,6 +647,9 @@ def build_universal_dataset():
         'te_artifacts': te_artifacts,
         'unified_encode': UNIFIED_ENCODE,
         'te_prior': TE_PRIOR,
+        # Raw creator/studio cells by source_id, so comprehensive_evaluator can
+        # re-encode them inside each registry fold from training rows only.
+        'entity_raw': {col: df[col].tolist() for col, _ in UNIFIED_ENCODE if col in df.columns},
         'top_languages': top_3_langs,
         # Needed by transform_single_media to rebuild the ctry_* one-hot block the
         # same way this builder does; without it inference emitted an all-zero block.

@@ -54,7 +54,7 @@ from sklearn.metrics import mean_absolute_error, r2_score
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.movies.custom_objectives import AsymmetricEdgePenaltyObjective
-from src.reporting.standalone_benchmarks import _load_domain, DROP_COLS, _round_half
+from src.reporting.standalone_benchmarks import _load_domain, DROP_COLS, _round_half, load_registry, registry_folds
 
 # Tuned alphas as recorded in reports/PIPELINE_RUN_LOG.md (Optuna, movie domain).
 ALPHA_HI = 0.0597
@@ -83,10 +83,7 @@ def _fit_predict(X_tr, y_tr, X_te, objective):
 def _oof_for_arm(loc, feat_cols, registry, objective, label):
     """Run one arm across all 50 frozen folds; return per-item OOF DataFrame."""
     rows = []
-    for fold_id in range(50):
-        test_mask = loc["global_id"].apply(lambda g: fold_id in registry.get(g, []))
-        if not test_mask.any():
-            continue
+    for fold_id, test_mask in registry_folds(loc, registry):
         train_mask = ~test_mask
         X_tr, X_te = loc.loc[train_mask, feat_cols], loc.loc[test_mask, feat_cols]
         y_tr = loc.loc[train_mask, "target_reg"]
@@ -298,8 +295,7 @@ def main():
     print("== Edge-penalty loss ablation (movies, 50 frozen folds) ==")
     uni = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
     uni["global_id"] = uni["media_type"] + "_" + uni["source_id"].astype(str)
-    with open(config.UNIFIED_MODEL_DIR / "fold_registry.json") as f:
-        registry = json.load(f)
+    registry = load_registry()
 
     loc = _load_domain("movie", uni, registry)
     feat_cols = [c for c in loc.columns if c not in DROP_COLS]

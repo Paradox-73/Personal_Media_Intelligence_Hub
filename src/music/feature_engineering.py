@@ -31,7 +31,10 @@ import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-import config
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[2]))  # repo root, so `python src/music/<mod>.py` works too
+from src.music import config
 
 EMBED_MODEL = "all-MiniLM-L6-v2"
 TOP_GENRES = 60

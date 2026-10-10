@@ -64,9 +64,7 @@ from sklearn.neighbors import NearestNeighbors
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.movies.ingestion import get_movie_metadata, clean_year
-from src.movies.predict_ratings import (
-    clean_money, parse_list, categorize_rating, sanitize_col, people_key,
-)
+from src.movies.feature_engineering import transform_single_movie
 # Needed so joblib can unpickle the ordinal / stacking estimators.
 from src.movies.advanced_movie_model_trainer import (
     OrdinalExpectedValueRegressor, MeanMetaRegressor, AnchoredRegressor)  # noqa: F401
@@ -209,116 +207,15 @@ def enrich_watchlist(limit=None, no_fetch=False):
 
 
 # --------------------------------------------------------------------------- #
-# Featurization (mirrors src/movies/predict_ratings.py exactly)
+# Featurization (the same per-row builder as the Oracle and batch scorer)
 # --------------------------------------------------------------------------- #
 
 def build_features(df, state):
-    import re
-    df = df.copy()
-
-    if "plot" not in df.columns:
-        df["plot"] = df["overview"]
-    df["plot"] = df["plot"].fillna(df.get("overview", "")).fillna("")
-
-    rt = df.get("rotten_tomatoes_rating")
-    if rt is not None and rt.dtype == "object":
-        df["rotten_tomatoes_rating"] = rt.astype(str).str.replace("%", "", regex=False)
-    df["rotten_tomatoes_rating"] = pd.to_numeric(
-        df.get("rotten_tomatoes_rating"), errors="coerce")
-
-    df["box_office_clean"] = df.get("box_office", 0).apply(clean_money)
-    df["box_office_log"] = np.log1p(df["box_office_clean"])
-
-    awards = df.get("awards", pd.Series("", index=df.index)).astype(str)
-    df["total_wins"] = awards.str.extract(r"(\d+)\s+win", flags=re.IGNORECASE)[0].astype(float).fillna(0)
-    df["total_nominations"] = awards.str.extract(r"(\d+)\s+nomination", flags=re.IGNORECASE)[0].astype(float).fillna(0)
-
-    df["imdb_rating_100"] = pd.to_numeric(df.get("imdb_rating"), errors="coerce") * 10
-    df["vote_average_100"] = pd.to_numeric(df.get("vote_average"), errors="coerce") * 10
-    df["metascore"] = pd.to_numeric(df.get("metascore"), errors="coerce")
-    critic = df[["imdb_rating_100", "metascore", "rotten_tomatoes_rating", "vote_average_100"]]
-    df["critic_avg_100"] = critic.mean(axis=1)
-    df["critic_avg_5"] = (df["critic_avg_100"] / 100) * 5
-
-    if "imdb_votes" not in df.columns and "vote_count" in df.columns:
-        df["imdb_votes"] = df["vote_count"]
-
-    for col, med in state["median_values"].items():
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(med)
-        else:
-            df[col] = med
-
-    def map_language(lang_str):
-        if pd.isna(lang_str) or lang_str == "":
-            return "Other"
-        for lang in [l.strip() for l in str(lang_str).split(",")]:
-            if lang in state["top_languages"]:
-                return lang
-        return "Other"
-
-    df["language_cleaned"] = df.get("language", "").apply(map_language)
-    X_lang = pd.get_dummies(df["language_cleaned"], prefix="lang")
-
-    from sentence_transformers import SentenceTransformer
-    # MUST match the recipe in feature_engineering.process_features(); the PCA was
-    # fit on those sentences. The old Title+Director+Plot form embedded watchlist
-    # films into a different region of text space than the rated films.
-    def col(name):
-        return df[name].apply(people_key) if name in df.columns else ""
-
-    # Same chunk-pooled recipe the movie PCA in `state` was fit on.
-    from src.movies.feature_engineering import _movie_header, _movie_body
-    from src.common.text_embedding import encode_pooled
-    _records = df.to_dict("records")
-    _headers = [_movie_header(r) for r in _records]
-    _bodies = [_movie_body(r) for r in _records]
-    df["text_content"] = [f"{h} {b}" for h, b in zip(_headers, _bodies)]
-    st_model = SentenceTransformer(state.get("sentence_transformer", "all-MiniLM-L6-v2"))
-    emb = encode_pooled(_headers, _bodies, st_model, show_progress_bar=True)
-    pca_vec = state["pca"].transform(emb)
-    X_text = pd.DataFrame(pca_vec, columns=[f"pca_{i}" for i in range(pca_vec.shape[1])],
-                          index=df.index)
-
-    df["genre_list"] = df.get("genre", "").apply(parse_list)
-    genre_enc = state["mlb_genre"].transform(df["genre_list"])
-    X_genre = pd.DataFrame(genre_enc, columns=[f"gen_{c}" for c in state["mlb_genre"].classes_],
-                           index=df.index)
-
-    df["mpaa_cat"] = df.get("rated", "").apply(categorize_rating)
-    X_mpaa = pd.get_dummies(df["mpaa_cat"], prefix="rated")
-
-    # Target encodings (director / actors / director x primary-genre), applied
-    # from the saved global maps -- mirrors feature_engineering.transform_single_movie.
-    te = state.get("target_encodings", {})
-
-    def apply_te(val, meta):
-        if not meta:
-            return 0.0
-        mapping, g_mean = meta["map"], meta["mean"]
-        items = parse_list(val)
-        if not items:
-            return g_mean
-        return float(np.mean([mapping.get(i, g_mean) for i in items]))
-
-    df["director_encoded"] = df.get("director", "").apply(lambda v: apply_te(v, te.get("director")))
-    df["actors_encoded"] = df.get("actors", "").apply(lambda v: apply_te(v, te.get("actors")))
-    primary_genre = df["genre_list"].apply(lambda x: x[0] if len(x) else "Unknown")
-    # Composite key: canonicalised like training, looked up WHOLE (not comma-split).
-    dg = te.get("dir_genre")
-    dir_genre_key = df.get("director", "").apply(people_key) + "_" + primary_genre
-    df["dir_genre_encoded"] = dir_genre_key.apply(
-        lambda k: dg["map"].get(k, dg["mean"]) if dg else 0.0)
-    X_te = df[["director_encoded", "actors_encoded", "dir_genre_encoded"]]
-
-    X_temp = pd.concat([df[list(state["median_values"].keys())], X_lang, X_genre, X_te, X_mpaa, X_text], axis=1)
-    X_temp.columns = [sanitize_col(c) for c in X_temp.columns]
-    X_temp = X_temp.loc[:, ~X_temp.columns.duplicated()]
-
-    X_final = pd.DataFrame(0, index=df.index, columns=state["training_columns"])
-    common = list(set(X_temp.columns) & set(state["training_columns"]))
-    X_final[common] = X_temp[common]
-    return X_final, pca_vec
+    X_final = pd.concat([transform_single_movie(r, state) for r in df.to_dict("records")],
+                        ignore_index=True)
+    X_final.index = df.index
+    pca_cols = [c for c in X_final.columns if c.startswith("pca_")]
+    return X_final, X_final[pca_cols].to_numpy()
 
 
 # --------------------------------------------------------------------------- #

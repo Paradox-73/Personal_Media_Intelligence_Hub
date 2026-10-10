@@ -25,6 +25,7 @@ except ImportError:
     pass
 
 from spotipy.oauth2 import SpotifyOAuth
+from spotipy.cache_handler import MemoryCacheHandler
 
 SCOPE = "user-library-read playlist-modify-public playlist-modify-private"
 
@@ -32,7 +33,8 @@ for var in ("SPOTIPY_CLIENT_ID", "SPOTIPY_CLIENT_SECRET", "SPOTIPY_REDIRECT_URI"
     if not os.environ.get(var):
         raise SystemExit(f"Set {var} before running (see .env.example).")
 
-auth = SpotifyOAuth(scope=SCOPE, open_browser=True, cache_path=".cache-token-helper")
+# Memory cache: the refresh token is printed once and never written to disk.
+auth = SpotifyOAuth(scope=SCOPE, open_browser=True, cache_handler=MemoryCacheHandler())
 token_info = auth.get_access_token(as_dict=True, check_cache=False)
 
 print("\n" + "=" * 60)

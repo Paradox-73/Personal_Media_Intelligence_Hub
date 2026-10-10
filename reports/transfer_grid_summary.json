@@ -1,98 +1,98 @@
 {
   "affinity": {
     "game": {
-      "book": 0.0823,
-      "movie": 0.067,
-      "tv": 0.0883
+      "book": 0.1768,
+      "movie": 0.2391,
+      "tv": 0.1034
     },
     "movie": {
-      "book": 0.153,
-      "game": -0.2972,
-      "tv": 0.119
+      "book": 0.0069,
+      "game": -0.0691,
+      "tv": 0.1248
     },
     "tv": {
-      "book": 0.0481,
-      "game": -0.4584,
-      "movie": 0.1522
+      "book": 0.0408,
+      "game": 0.0139,
+      "movie": 0.1649
     },
     "book": {
-      "game": -0.3617,
-      "movie": 0.1266,
-      "tv": 0.087
+      "game": -0.1098,
+      "movie": 0.123,
+      "tv": 0.1248
     }
   },
   "best_subset": {
     "movie": {
-      "source": "tv",
+      "source": "book",
       "music": false,
-      "lift@100": -0.0001,
+      "lift@100": 0.0018,
       "frac_significant": 0,
       "lifts": {
         "0.0": {
-          "lift": -0.175,
+          "lift": -0.2431,
           "p": 0.0
         },
         "0.25": {
-          "lift": -0.0389,
+          "lift": -0.0483,
           "p": 0.0
         },
         "0.5": {
-          "lift": -0.0182,
-          "p": 0.0013
+          "lift": -0.0214,
+          "p": 0.0
         },
         "1.0": {
-          "lift": -0.0001,
-          "p": 0.8301
+          "lift": 0.0018,
+          "p": 0.5551
         }
       },
       "positive": false
     },
     "tv": {
-      "source": "movie",
+      "source": "book",
       "music": false,
-      "lift@100": 0.0207,
-      "frac_significant": 0,
+      "lift@100": 0.0265,
+      "frac_significant": 1,
       "lifts": {
         "0.0": {
-          "lift": -0.0144,
-          "p": 0.3246
+          "lift": -0.096,
+          "p": 0.0
         },
         "0.25": {
-          "lift": -0.0121,
-          "p": 0.4563
+          "lift": -0.0405,
+          "p": 0.0663
         },
         "0.5": {
-          "lift": -0.0028,
-          "p": 0.8289
+          "lift": -0.0144,
+          "p": 0.2863
         },
         "1.0": {
-          "lift": 0.0207,
-          "p": 0.2768
+          "lift": 0.0265,
+          "p": 0.0212
         }
       },
       "positive": false
     },
     "game": {
-      "source": "movie+tv+book",
+      "source": "movie",
       "music": false,
-      "lift@100": 0.1211,
+      "lift@100": 0.1452,
       "frac_significant": 4,
       "lifts": {
         "0.0": {
-          "lift": 0.0852,
-          "p": 0.0309
+          "lift": 0.1024,
+          "p": 0.0002
         },
         "0.25": {
-          "lift": 0.0814,
-          "p": 0.0295
+          "lift": 0.101,
+          "p": 0.0005
         },
         "0.5": {
-          "lift": 0.1295,
-          "p": 0.0003
+          "lift": 0.1243,
+          "p": 0.0
         },
         "1.0": {
-          "lift": 0.1211,
-          "p": 0.0014
+          "lift": 0.1452,
+          "p": 0.0
         }
       },
       "positive": true
@@ -100,24 +100,24 @@
     "book": {
       "source": "tv+game",
       "music": false,
-      "lift@100": 0.0228,
+      "lift@100": 0.022,
       "frac_significant": 0,
       "lifts": {
         "0.0": {
-          "lift": -0.2167,
-          "p": 0.0
+          "lift": -0.085,
+          "p": 0.0001
         },
         "0.25": {
-          "lift": -0.0576,
-          "p": 0.0121
+          "lift": -0.047,
+          "p": 0.0159
         },
         "0.5": {
-          "lift": -0.0199,
-          "p": 0.3159
+          "lift": -0.0197,
+          "p": 0.2109
         },
         "1.0": {
-          "lift": 0.0228,
-          "p": 0.2552
+          "lift": 0.022,
+          "p": 0.2437
         }
       },
       "positive": false
@@ -125,48 +125,48 @@
   },
   "learning_curves": {
     "movie": {
-      "best_source": "tv",
+      "best_source": "book",
       "music": false,
       "skill_by_fraction": {
-        "0.0": 0.119,
-        "0.25": 0.2949,
-        "0.5": 0.3218,
-        "1.0": 0.3448
+        "0.0": 0.0069,
+        "0.25": 0.2592,
+        "0.5": 0.2939,
+        "1.0": 0.3241
       },
-      "target_alone_skill": 0.345
+      "target_alone_skill": 0.3213
     },
     "tv": {
+      "best_source": "book",
+      "music": false,
+      "skill_by_fraction": {
+        "0.0": 0.0408,
+        "0.25": 0.1055,
+        "0.5": 0.1335,
+        "1.0": 0.1797
+      },
+      "target_alone_skill": 0.1489
+    },
+    "game": {
       "best_source": "movie",
       "music": false,
       "skill_by_fraction": {
-        "0.0": 0.1522,
-        "0.25": 0.1555,
-        "0.5": 0.165,
-        "1.0": 0.1939
+        "0.0": 0.2391,
+        "0.25": 0.2333,
+        "0.5": 0.262,
+        "1.0": 0.2853
       },
-      "target_alone_skill": 0.1655
-    },
-    "game": {
-      "best_source": "movie+tv+book",
-      "music": false,
-      "skill_by_fraction": {
-        "0.0": 0.0905,
-        "0.25": 0.0853,
-        "0.5": 0.1287,
-        "1.0": 0.125
-      },
-      "target_alone_skill": 0.0117
+      "target_alone_skill": 0.121
     },
     "book": {
       "best_source": "tv+game",
       "music": false,
       "skill_by_fraction": {
-        "0.0": -0.093,
-        "0.25": 0.1452,
-        "0.5": 0.2126,
-        "1.0": 0.2773
+        "0.0": 0.1577,
+        "0.25": 0.2111,
+        "0.5": 0.2497,
+        "1.0": 0.309
       },
-      "target_alone_skill": 0.2427
+      "target_alone_skill": 0.2784
     }
   },
   "positive_findings": [
@@ -174,78 +174,361 @@
       "target": "game",
       "source": "movie",
       "music": false,
-      "frac_significant": 3,
-      "lift@100": 0.1105
-    },
-    {
-      "target": "game",
-      "source": "movie",
-      "music": true,
-      "frac_significant": 3,
-      "lift@100": 0.1105
+      "frac_significant": 4,
+      "lift@100": 0.1452
     },
     {
       "target": "game",
       "source": "movie+book",
       "music": false,
-      "frac_significant": 3,
-      "lift@100": 0.1045
-    },
-    {
-      "target": "game",
-      "source": "movie+book",
-      "music": true,
-      "frac_significant": 3,
-      "lift@100": 0.1045
+      "frac_significant": 4,
+      "lift@100": 0.1362
     },
     {
       "target": "game",
       "source": "movie+tv",
       "music": false,
-      "frac_significant": 2,
-      "lift@100": 0.1198
-    },
-    {
-      "target": "game",
-      "source": "movie+tv",
-      "music": true,
-      "frac_significant": 2,
-      "lift@100": 0.1198
+      "frac_significant": 4,
+      "lift@100": 0.106
     },
     {
       "target": "game",
       "source": "movie+tv+book",
       "music": false,
       "frac_significant": 4,
-      "lift@100": 0.1211
-    },
-    {
-      "target": "game",
-      "source": "movie+tv+book",
-      "music": true,
-      "frac_significant": 4,
-      "lift@100": 0.1211
+      "lift@100": 0.109
     },
     {
       "target": "game",
       "source": "tv",
       "music": false,
-      "frac_significant": 3,
-      "lift@100": 0.0207
+      "frac_significant": 2,
+      "lift@100": 0.0952
     },
     {
       "target": "game",
-      "source": "tv",
-      "music": true,
-      "frac_significant": 3,
-      "lift@100": 0.0207
+      "source": "tv+book",
+      "music": false,
+      "frac_significant": 2,
+      "lift@100": 0.0883
     }
   ],
   "similarity_corr": {
-    "spearman_centroid_dist_vs_zeroshot_skill": 0.0848,
-    "spearman_mmd_vs_zeroshot_skill": 0.0848,
+    "spearman_centroid_dist_vs_zeroshot_skill": 0.1912,
+    "spearman_mmd_vs_zeroshot_skill": 0.1912,
     "n_pairs": 12
   },
+  "zero_shot": {
+    "movie": {
+      "rho_full_model": 0.6772,
+      "best": {
+        "source": "tv+game+book",
+        "rho": 0.4897,
+        "rho_sd": 0.077,
+        "rho_se": 0.0109,
+        "skill": 0.1561,
+        "pct_of_full_model": 0.7231,
+        "n_folds": 50
+      },
+      "by_source": [
+        {
+          "source": "tv+game+book",
+          "rho": 0.4897,
+          "rho_sd": 0.077,
+          "rho_se": 0.0109,
+          "skill": 0.1561,
+          "pct_of_full_model": 0.7231,
+          "n_folds": 50
+        },
+        {
+          "source": "tv",
+          "rho": 0.4301,
+          "rho_sd": 0.0773,
+          "rho_se": 0.0109,
+          "skill": 0.1248,
+          "pct_of_full_model": 0.6351,
+          "n_folds": 50
+        },
+        {
+          "source": "tv+book",
+          "rho": 0.4195,
+          "rho_sd": 0.0755,
+          "rho_se": 0.0107,
+          "skill": 0.1364,
+          "pct_of_full_model": 0.6195,
+          "n_folds": 50
+        },
+        {
+          "source": "tv+game",
+          "rho": 0.3732,
+          "rho_sd": 0.097,
+          "rho_se": 0.0137,
+          "skill": 0.0917,
+          "pct_of_full_model": 0.5511,
+          "n_folds": 50
+        },
+        {
+          "source": "game+book",
+          "rho": 0.3197,
+          "rho_sd": 0.0823,
+          "rho_se": 0.0116,
+          "skill": 0.0926,
+          "pct_of_full_model": 0.4721,
+          "n_folds": 50
+        },
+        {
+          "source": "book",
+          "rho": 0.1373,
+          "rho_sd": 0.0932,
+          "rho_se": 0.0132,
+          "skill": 0.0069,
+          "pct_of_full_model": 0.2028,
+          "n_folds": 50
+        },
+        {
+          "source": "game",
+          "rho": 0.0913,
+          "rho_sd": 0.0953,
+          "rho_se": 0.0135,
+          "skill": -0.0691,
+          "pct_of_full_model": 0.1348,
+          "n_folds": 50
+        }
+      ]
+    },
+    "tv": {
+      "rho_full_model": 0.4262,
+      "best": {
+        "source": "movie",
+        "rho": 0.5241,
+        "rho_sd": 0.1891,
+        "rho_se": 0.0267,
+        "skill": 0.1649,
+        "pct_of_full_model": 1.2296,
+        "n_folds": 50
+      },
+      "by_source": [
+        {
+          "source": "movie",
+          "rho": 0.5241,
+          "rho_sd": 0.1891,
+          "rho_se": 0.0267,
+          "skill": 0.1649,
+          "pct_of_full_model": 1.2296,
+          "n_folds": 50
+        },
+        {
+          "source": "movie+game+book",
+          "rho": 0.4706,
+          "rho_sd": 0.1957,
+          "rho_se": 0.0277,
+          "skill": 0.1537,
+          "pct_of_full_model": 1.1041,
+          "n_folds": 50
+        },
+        {
+          "source": "movie+book",
+          "rho": 0.4534,
+          "rho_sd": 0.18,
+          "rho_se": 0.0255,
+          "skill": 0.1224,
+          "pct_of_full_model": 1.0638,
+          "n_folds": 50
+        },
+        {
+          "source": "movie+game",
+          "rho": 0.4354,
+          "rho_sd": 0.2133,
+          "rho_se": 0.0302,
+          "skill": 0.1458,
+          "pct_of_full_model": 1.0215,
+          "n_folds": 50
+        },
+        {
+          "source": "game+book",
+          "rho": 0.3315,
+          "rho_sd": 0.2027,
+          "rho_se": 0.0287,
+          "skill": 0.09,
+          "pct_of_full_model": 0.7777,
+          "n_folds": 50
+        },
+        {
+          "source": "book",
+          "rho": 0.1501,
+          "rho_sd": 0.2183,
+          "rho_se": 0.0309,
+          "skill": 0.0408,
+          "pct_of_full_model": 0.3522,
+          "n_folds": 50
+        },
+        {
+          "source": "game",
+          "rho": 0.1489,
+          "rho_sd": 0.2528,
+          "rho_se": 0.0357,
+          "skill": 0.0139,
+          "pct_of_full_model": 0.3493,
+          "n_folds": 50
+        }
+      ]
+    },
+    "game": {
+      "rho_full_model": 0.3073,
+      "best": {
+        "source": "movie",
+        "rho": 0.5987,
+        "rho_sd": 0.2851,
+        "rho_se": 0.0403,
+        "skill": 0.2391,
+        "pct_of_full_model": 1.9481,
+        "n_folds": 50
+      },
+      "by_source": [
+        {
+          "source": "movie",
+          "rho": 0.5987,
+          "rho_sd": 0.2851,
+          "rho_se": 0.0403,
+          "skill": 0.2391,
+          "pct_of_full_model": 1.9481,
+          "n_folds": 50
+        },
+        {
+          "source": "movie+book",
+          "rho": 0.5844,
+          "rho_sd": 0.3128,
+          "rho_se": 0.0442,
+          "skill": 0.2235,
+          "pct_of_full_model": 1.9014,
+          "n_folds": 50
+        },
+        {
+          "source": "movie+tv",
+          "rho": 0.5408,
+          "rho_sd": 0.3188,
+          "rho_se": 0.0451,
+          "skill": 0.215,
+          "pct_of_full_model": 1.7595,
+          "n_folds": 50
+        },
+        {
+          "source": "movie+tv+book",
+          "rho": 0.5081,
+          "rho_sd": 0.3334,
+          "rho_se": 0.0471,
+          "skill": 0.1808,
+          "pct_of_full_model": 1.6533,
+          "n_folds": 50
+        },
+        {
+          "source": "tv+book",
+          "rho": 0.4681,
+          "rho_sd": 0.3173,
+          "rho_se": 0.0449,
+          "skill": 0.178,
+          "pct_of_full_model": 1.523,
+          "n_folds": 50
+        },
+        {
+          "source": "tv",
+          "rho": 0.4041,
+          "rho_sd": 0.3094,
+          "rho_se": 0.0438,
+          "skill": 0.1034,
+          "pct_of_full_model": 1.3148,
+          "n_folds": 50
+        },
+        {
+          "source": "book",
+          "rho": 0.3326,
+          "rho_sd": 0.3767,
+          "rho_se": 0.0533,
+          "skill": 0.1768,
+          "pct_of_full_model": 1.0822,
+          "n_folds": 50
+        }
+      ]
+    },
+    "book": {
+      "rho_full_model": 0.6351,
+      "best": {
+        "source": "movie+tv",
+        "rho": 0.6003,
+        "rho_sd": 0.1784,
+        "rho_se": 0.0252,
+        "skill": 0.1644,
+        "pct_of_full_model": 0.9452,
+        "n_folds": 50
+      },
+      "by_source": [
+        {
+          "source": "movie+tv",
+          "rho": 0.6003,
+          "rho_sd": 0.1784,
+          "rho_se": 0.0252,
+          "skill": 0.1644,
+          "pct_of_full_model": 0.9452,
+          "n_folds": 50
+        },
+        {
+          "source": "movie+tv+game",
+          "rho": 0.5746,
+          "rho_sd": 0.1541,
+          "rho_se": 0.0218,
+          "skill": 0.1043,
+          "pct_of_full_model": 0.9048,
+          "n_folds": 50
+        },
+        {
+          "source": "movie",
+          "rho": 0.57,
+          "rho_sd": 0.1769,
+          "rho_se": 0.025,
+          "skill": 0.123,
+          "pct_of_full_model": 0.8974,
+          "n_folds": 50
+        },
+        {
+          "source": "movie+game",
+          "rho": 0.5619,
+          "rho_sd": 0.1978,
+          "rho_se": 0.028,
+          "skill": 0.1018,
+          "pct_of_full_model": 0.8848,
+          "n_folds": 50
+        },
+        {
+          "source": "tv",
+          "rho": 0.5137,
+          "rho_sd": 0.2075,
+          "rho_se": 0.0293,
+          "skill": 0.1248,
+          "pct_of_full_model": 0.8089,
+          "n_folds": 50
+        },
+        {
+          "source": "tv+game",
+          "rho": 0.5097,
+          "rho_sd": 0.2194,
+          "rho_se": 0.031,
+          "skill": 0.1577,
+          "pct_of_full_model": 0.8025,
+          "n_folds": 50
+        },
+        {
+          "source": "game",
+          "rho": 0.2227,
+          "rho_sd": 0.3023,
+          "rho_se": 0.0428,
+          "skill": -0.1098,
+          "pct_of_full_model": 0.3506,
+          "n_folds": 50
+        }
+      ]
+    }
+  },
   "verdict": "TASTE TRANSFERS: at least one target shows a positive transfer finding (augmented lift > 0, paired p < 0.05, at >= 2 fractions).",
-  "verdict_is_positive": true
+  "verdict_is_positive": true,
+  "zero_shot_verdict": "ZERO-SHOT TRANSFER IS REAL: with NO training data of its own, a target is ranked from other domains alone at a substantial fraction of what its own fully-trained model achieves. Best per target -- tv+game+book->movie rho=+0.490 (72% of the target's own fully-trained model); movie->tv rho=+0.524 (123% of the target's own fully-trained model); movie->game rho=+0.599 (195% of the target's own fully-trained model); movie+tv->book rho=+0.600 (95% of the target's own fully-trained model). Reported as Spearman rank correlation: the rating distribution is concentrated (62% of films in three adjacent half-star bins), so MAE-based skill barely separates a model from a constant and conflates ordering with calibration."
 }

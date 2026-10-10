@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-import ast
 import sys
 from pathlib import Path
 
@@ -10,6 +9,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 sys.path.append(str(Path(__file__).resolve().parent))  # app/ dir for shared helpers
 from src import config
+from src.common.parsing import canon_genres, read_media_csv
 from ridgeline import genre_rating_ridgeline
 
 from mobile import apply_mobile_css
@@ -20,14 +20,6 @@ st.title("🧠 Personal Media Intelligence Hub")
 
 
 # --- CROSS-MEDIA WATCH / CONSUMPTION METRICS ---
-def _read_csv(p):
-    """Encoding-robust read — some enriched CSVs get re-saved as cp1252 by Excel."""
-    try:
-        return pd.read_csv(p)
-    except UnicodeDecodeError:
-        return pd.read_csv(p, encoding='latin1')
-
-
 def _num(series):
     return pd.to_numeric(series, errors='coerce')
 
@@ -39,7 +31,7 @@ def load_library_stats():
 
     # Movies: count + total watch hours (runtime)
     try:
-        dm = _read_csv(config.MOVIES_ENRICHED_DATA_PATH)
+        dm = read_media_csv(config.MOVIES_ENRICHED_DATA_PATH)
         hrs = _num(dm['runtime']).sum() / 60
         stats['movies'] = {'count': len(dm), 'sub': f"~{int(hrs):,} hrs watched"}
     except Exception:
@@ -50,7 +42,7 @@ def load_library_stats():
     # including ones that aired after you stopped and unreleased ones.
     try:
         from src.shows.season_data import attach_watched_counts
-        ds = attach_watched_counts(_read_csv(config.TV_SHOWS_ENRICHED_DATA_PATH))
+        ds = attach_watched_counts(read_media_csv(config.TV_SHOWS_ENRICHED_DATA_PATH))
         hrs = ds['hours_watched'].sum()
         stats['shows'] = {'count': len(ds), 'sub': f"~{int(hrs):,} hrs watched"}
     except Exception:
@@ -59,7 +51,7 @@ def load_library_stats():
     # Music: count + listening hours + lyric words
     try:
         path = config.MUSIC_ENRICHED_DATA_PATH if config.MUSIC_ENRICHED_DATA_PATH.exists() else config.MUSIC_FULL_VIEW_PATH
-        mu = _read_csv(path)
+        mu = read_media_csv(path)
         length_col = 'mb_length_ms' if 'mb_length_ms' in mu.columns else ('duration_ms' if 'duration_ms' in mu.columns else None)
         hrs = _num(mu[length_col]).sum() / 3.6e6 if length_col else 0
         words = int(_num(mu['lyric_word_count']).fillna(0).sum()) if 'lyric_word_count' in mu.columns else 0
@@ -72,7 +64,7 @@ def load_library_stats():
 
     # Books: count + total pages (falls back to word estimate; data may be sparse)
     try:
-        bk = _read_csv(config.BOOKS_ENRICHED_DATA_PATH)
+        bk = read_media_csv(config.BOOKS_ENRICHED_DATA_PATH)
         pages = int(_num(bk['pageCount']).fillna(0).sum()) if 'pageCount' in bk.columns else 0
         words = 0
         if 'description' in bk.columns:
@@ -89,7 +81,7 @@ def load_library_stats():
 
     # Games: count + rough hours-to-beat (RAWG playtime)
     try:
-        gm = _read_csv(config.GAMES_ENRICHED_DATA_PATH)
+        gm = read_media_csv(config.GAMES_ENRICHED_DATA_PATH)
         hrs = _num(gm['playtime']).fillna(0).sum() if 'playtime' in gm.columns else 0
         sub = f"~{int(hrs):,} hrs to beat" if hrs else "playtime N/A"
         stats['games'] = {'count': len(gm), 'sub': sub}
@@ -125,7 +117,7 @@ def load_rating_curves():
     curves, all_vals = {}, []
     for label, path, col in specs:
         try:
-            d = _read_csv(path)
+            d = read_media_csv(path)
             r = pd.to_numeric(d[col], errors='coerce').dropna()
             r = r[(r > 0) & (r <= 5)]
             if not r.empty:
@@ -147,34 +139,6 @@ _DOMAIN_COLORS = {
     '📚 Books': '#c77dff', '🎮 Games': '#00e054',
 }
 
-# Light cross-taxonomy synonym merge so the same concept lines up across domains.
-_GENRE_CANON = {
-    'science fiction': 'Sci-Fi', 'sci-fi': 'Sci-Fi', 'scifi': 'Sci-Fi',
-    'sci-fi & fantasy': 'Sci-Fi', 'action & adventure': 'Adventure',
-    'rpg': 'RPG', 'hip hop': 'Hip-Hop', 'hip-hop': 'Hip-Hop', 'rap': 'Hip-Hop',
-    'anime': 'Animation',
-}
-
-
-def _canon_genre(g):
-    s = str(g).strip()
-    return _GENRE_CANON.get(s.lower(), s.title())
-
-
-def _parse_genres(x):
-    """Normalize a genre cell (Python-list string OR comma-separated) into a list."""
-    if pd.isna(x):
-        return []
-    s = str(x).strip()
-    if not s or s.lower() in ('nan', 'none'):
-        return []
-    if s.startswith('['):
-        try:
-            return [str(i).strip() for i in ast.literal_eval(s)]
-        except Exception:
-            pass
-    return [g.strip() for g in s.split(',') if g.strip()]
-
 
 @st.cache_data
 def load_cross_domain_genres():
@@ -191,15 +155,13 @@ def load_cross_domain_genres():
     frames = []
     for domain, path, gcol, rcol in specs:
         try:
-            d = _read_csv(path)
+            d = read_media_csv(path)
             if gcol not in d.columns or rcol not in d.columns:
                 continue
             d = d[[gcol, rcol]].copy()
             d['rating'] = _num(d[rcol])
-            d['genre'] = d[gcol].apply(_parse_genres)
+            d['genre'] = d[gcol].apply(canon_genres)
             d = d[['genre', 'rating']].explode('genre').dropna(subset=['genre', 'rating'])
-            d = d[d['genre'].astype(str).str.strip() != '']
-            d['genre'] = d['genre'].apply(_canon_genre)
             d['Domain'] = domain
             frames.append(d[['Domain', 'genre', 'rating']])
         except Exception:
@@ -222,7 +184,7 @@ def load_domain_ratings():
     frames = []
     for domain, path, rcol in specs:
         try:
-            d = _read_csv(path)
+            d = read_media_csv(path)
             if rcol not in d.columns:
                 continue
             r = _num(d[rcol]).dropna()
@@ -347,7 +309,7 @@ st.markdown("""
 
 **Music 🎵**
 *   **5. Music Dashboard:** Analyze your music listening habits.
-*   **6. Music Oracle:** Predict your rating for any music track.
+*   **6. Music Oracle:** Explore your listening personas and find tracks similar to ones you love.
 
 **Games 🎮**
 *   **7. Games Dashboard:** Analyze your gaming patterns.
@@ -358,7 +320,7 @@ st.markdown("""
 *   **10. Books Oracle:** Predict your rating for any book.
 
 **Cross-domain & diagnostics 🌐**
-*   **11. YouTube Dashboard** · **12. Latent Space Explorer** · **13. Model Calibration** · **14. Taste Drift** · **15. Transfer Atlas**
+*   **11. YouTube Dashboard** · **12. Latent Space Explorer** · **13. Model Calibration** · **14. Taste Drift** · **15. Transfer Atlas** · **16. Collaboration Network**
 """)
 
 # Sidebar controls

@@ -7,7 +7,6 @@ import re
 import sys
 import numpy as np
 from pathlib import Path
-from collections import Counter
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
@@ -19,6 +18,7 @@ from rating_distribution import render_rating_distribution
 
 from critic_delta import render_critic_delta
 from mobile import apply_mobile_css
+from dashboard_common import calculate_entropy
 st.set_page_config(page_title="Games Dashboard", page_icon="🎮", layout="wide")
 apply_mobile_css()
 
@@ -48,21 +48,6 @@ STOPS = set([
     'game', 'games', 'play', 'player', 'players', 'story', 'plot', 'world', 'find', 'finds', 'one', 'two',
     'back', 'new', 'must', 'will', 'only', 'other', 'years', 'year', 'most', 'just', 'more', 'there', 'soon', 'their', 'also', 'series',
 ])
-
-
-def calculate_entropy(series):
-    import math
-    all_items = []
-    for val in series.dropna():
-        if isinstance(val, list):
-            all_items.extend([str(i).strip() for i in val if str(i).strip().lower() not in ['unknown', 'nan', 'none', '']])
-        elif str(val).strip().lower() not in ['unknown', 'nan', 'none', '']:
-            all_items.append(str(val).strip())
-    if not all_items:
-        return 0
-    counts = Counter(all_items)
-    total = len(all_items)
-    return -sum((c / total) * math.log2(c / total) for c in counts.values())
 
 
 @st.cache_data

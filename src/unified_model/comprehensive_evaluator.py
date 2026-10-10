@@ -12,10 +12,13 @@ import catboost as ctb
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.unified_model.unified_utils import DomainAligner, compute_temporal_weights
+from src.unified_model.unified_utils import (AlignedTextPCA, compute_temporal_weights,
+                                             replace_text_block, text_feature_cols)
 from src.reporting.metrics_writer import write_latest_metrics
 from src.reporting.standalone_benchmarks import generate_standalone_oof
 from src.unified_model.unified_repeated_cv import run_unified_ablation_study
+from src.unified_model.unified_feature_engineering import UNIFIED_ENCODE, TE_PRIOR
+from src.common import taste_features as tf
 
 LAMBDA_DECAY = 0.000429
 
@@ -38,13 +41,37 @@ def _fit_mean_ensemble(X_train, y_train, X_test, w_train):
     return (m1.predict(X_test) + m2.predict(X_test)) / 2
 
 
+def _reencode_entities(X_train, X_test, src_train, src_test, y_train, raw):
+    """Creator/studio encodings fit on this fold's training rows only. The CSV's
+    columns come from one KFold shared by all 50 registry folds, so a test row's
+    rating leaked into training-row features."""
+    for col, limit in UNIFIED_ENCODE:
+        cells = raw.get(col)
+        if cells is None:
+            continue
+        name = 'creator' if col == 'director' else col
+        enc, sup, art = tf.oof_entity_encode([cells[i] for i in src_train], y_train,
+                                             m=TE_PRIOR, limit=limit)
+        X_train[f'{name}_encoded'], X_train[f'{name}_n'] = enc, sup
+        te = [tf.apply_entity_map(cells[i], art['map'], art['counts'], art['mean'], limit)
+              for i in src_test]
+        X_test[f'{name}_encoded'] = [e for e, _ in te]
+        X_test[f'{name}_n'] = [n for _, n in te]
+
+
 def unified_oof_on_registry(df, registry):
     """
     Unified Mean-Ensemble OOF on the 50 frozen registry folds.
     Returns a per-(item, repeat) frame: media_type, source_id, target_reg, pred(raw).
     Music is never in the registry, so this covers the 1,264 rated items only.
     """
-    pca_cols = [c for c in df.columns if c.startswith('pca_')]
+    # Raw creator/studio cells by source_id; written by build_universal_dataset.
+    raw = joblib.load(config.UNIFIED_PREPROCESSOR_STATE).get('entity_raw')
+    if not raw:
+        print("      WARNING: preprocessor_state has no 'entity_raw' (features predate it); "
+              "using the CSV's shared-KFold entity encodings, which leak test targets. "
+              "Rebuild unified features to fix.")
+    pca_cols = text_feature_cols(df)
     X_cols = [c for c in df.columns if c not in
               ['target_reg', 'target_ordinal', 'target_class', 'source_id',
                'media_type', 'rating_date', 'global_id']]
@@ -61,11 +88,14 @@ def unified_oof_on_registry(df, registry):
         m_train = df.loc[train_mask, 'media_type']
         m_test = df.loc[test_mask, 'media_type']
         d_train = pd.to_datetime(df.loc[train_mask, 'rating_date'])
+        if raw:
+            _reencode_entities(X_train, X_test, df.loc[train_mask, 'source_id'].tolist(),
+                               df.loc[test_mask, 'source_id'].tolist(),
+                               y_train.to_numpy(dtype=float), raw)
 
-        aligner = DomainAligner(method='centroid')
-        aligner.fit(X_train[pca_cols].values, m_train)
-        X_train.loc[:, pca_cols] = aligner.transform(X_train[pca_cols].values, m_train)
-        X_test.loc[:, pca_cols] = aligner.transform(X_test[pca_cols].values, m_test)
+        block = AlignedTextPCA().fit(X_train[pca_cols].values, m_train)
+        X_train = replace_text_block(X_train, pca_cols, block, m_train)
+        X_test = replace_text_block(X_test, pca_cols, block, m_test)
 
         w_train = compute_temporal_weights(d_train, lambda_decay=LAMBDA_DECAY)
         preds = _fit_mean_ensemble(X_train, y_train, X_test, w_train)

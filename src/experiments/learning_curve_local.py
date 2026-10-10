@@ -35,21 +35,14 @@ from sklearn.metrics import mean_absolute_error
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.reporting.standalone_benchmarks import _load_domain, DOMAIN_FIT, DROP_COLS, _round_half
+from src.reporting.standalone_benchmarks import (_load_domain, DOMAIN_FIT, DROP_COLS, _round_half,
+                                               load_registry, registry_folds, set_calibration, skill)
 
 DOMAINS = ["movie", "tv", "game", "book"]
 FRACTIONS = (0.25, 0.50, 0.75, 1.00)
 REPEATS = 3
 SEED = 42
 STEEP, SHALLOW = 0.04, 0.01
-
-
-def skill(y_true, y_pred_raw, train_mean):
-    yp = _round_half(np.asarray(y_pred_raw))
-    base = mean_absolute_error(y_true, np.full_like(y_true, train_mean, dtype=float))
-    if base == 0:
-        return 0.0
-    return 1.0 - mean_absolute_error(y_true, yp) / base
 
 
 def _verdict(edge, total):
@@ -65,22 +58,19 @@ def _verdict(edge, total):
 def run():
     uni = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
     uni["global_id"] = uni["media_type"] + "_" + uni["source_id"].astype(str)
-    with open(config.UNIFIED_MODEL_DIR / "fold_registry.json") as f:
-        registry = json.load(f)
+    registry = load_registry()
 
     print("LOCAL-MODEL learning curves (deployed architectures, own features)")
     print(f"Fractions {[int(f*100) for f in FRACTIONS]}%  | repeats {REPEATS}  | 50 frozen folds\n")
 
     rows = []
     for dom in DOMAINS:
+        set_calibration(dom)  # same per-domain calibration as the benchmark table
         loc = _load_domain(dom, uni, registry)
         feat = [c for c in loc.columns if c not in DROP_COLS]
         fit_fn = DOMAIN_FIT[dom]
         print(f"=== {dom.upper()}  (rated N={len(loc)}, local features={len(feat)}) ===")
-        for fold_id in range(50):
-            test_mask = loc["global_id"].apply(lambda g: fold_id in registry.get(g, []))
-            if not test_mask.any():
-                continue
+        for fold_id, test_mask in registry_folds(loc, registry):
             tr = loc[~test_mask]
             te = loc[test_mask]
             if len(tr) < 4 or len(te) == 0:
@@ -104,7 +94,7 @@ def run():
                     rows.append(dict(domain=dom, fraction=frac, fold=fold_id, repeat=rep,
                                      n_train=len(sub), n_test=len(y_te),
                                      MAE=mean_absolute_error(y_te, _round_half(pred)),
-                                     skill=skill(y_te, pred, tmean)))
+                                     skill=skill(y_te, _round_half(np.asarray(pred)), tmean)))
         print(f"    done ({sum(1 for r in rows if r['domain']==dom)} rows)\n")
 
     res = pd.DataFrame(rows)

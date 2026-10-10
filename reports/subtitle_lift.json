@@ -1,0 +1,43 @@
+{
+  "n_films": 990,
+  "n_subtitle_features": 25,
+  "repeats": 10,
+  "results": {
+    "base": {
+      "skill": 0.3803,
+      "skill_sd": 0.0056,
+      "mae": 0.4769,
+      "n_features": 107
+    },
+    "base+subs": {
+      "skill": 0.3763,
+      "skill_sd": 0.0053,
+      "mae": 0.48,
+      "n_features": 132
+    },
+    "crowd": {
+      "skill": 0.3194,
+      "skill_sd": 0.0053,
+      "mae": 0.5238,
+      "n_features": 8
+    },
+    "crowd+subs": {
+      "skill": 0.3201,
+      "skill_sd": 0.0062,
+      "mae": 0.5233,
+      "n_features": 33
+    },
+    "base+subs_minus_base": {
+      "skill_gain": -0.004,
+      "skill_gain_sd": 0.0039,
+      "mae_change": 0.0031,
+      "repeats_improved": 1
+    },
+    "crowd+subs_minus_crowd": {
+      "skill_gain": 0.0006,
+      "skill_gain_sd": 0.0038,
+      "mae_change": -0.0005,
+      "repeats_improved": 6
+    }
+  }
+}

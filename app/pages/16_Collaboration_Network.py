@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.io as pio
 import ast
 import re
 import sys
@@ -16,42 +15,11 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for sha
 from src import config
 
 from mobile import apply_mobile_css
+from dashboard_common import apply_hub_theme
 st.set_page_config(page_title="Collaboration Network", page_icon="🕸️", layout="wide")
 apply_mobile_css()
 
-# --- CUSTOM STYLING (matches the rest of the hub) ---
-st.markdown("""
-<style>
-    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
-        background-color: #14171C;
-        color: #E0E0E0;
-        font-family: 'Graphik', 'Helvetica', sans-serif;
-    }
-    [data-testid="stSidebar"] { background-color: #2C343F; }
-    h1, h2, h3, h4, h5, h6 {
-        color: #40bcf4 !important;
-        font-family: 'Graphik', 'Helvetica', sans-serif;
-    }
-    .stMetric {
-        background-color: #2C343F;
-        padding: 15px;
-        border-radius: 8px;
-        border: 1px solid #556678;
-    }
-    div[data-testid="metric-container"] label { color: #00e054 !important; }
-    div[data-testid="metric-container"] div[data-testid="stMetricValue"] { color: #ff8000 !important; }
-    hr { border-top: 1px solid #556678; }
-</style>
-""", unsafe_allow_html=True)
-
-pio.templates["hub_theme"] = go.layout.Template(
-    layout=go.Layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#E0E0E0", family="Graphik, Helvetica, sans-serif"),
-    )
-)
-pio.templates.default = "hub_theme"
+apply_hub_theme()
 
 DOMAIN_COLORS = {"Movies": "#ff8000", "TV": "#40bcf4", "Music": "#00e054"}
 

@@ -75,15 +75,69 @@ GENRE_SYNONYMS = {
     "sci fi": "Science Fiction",
     "scifi": "Science Fiction",
     "science-fiction": "Science Fiction",
+    "science fiction": "Science Fiction",
+    # --- cross-domain unification -------------------------------------------------
+    # Each domain's API supplies its own vocabulary for the same concept. Left
+    # unmapped, "Aventure" (Hardcover, French) and "Adventure" (TMDB) are two
+    # orthogonal one-hot columns, so the shared genre axis cannot connect a book to a
+    # film -- the same defect that the lang_en / lang_English merge fixed for language.
+    # Counts below are occurrences in the current corpus.
+    "aventure": "Adventure",              # 11, books (fr)
+    "aventura": "Adventure",              # 3, books (es)
+    "adventure stories": "Adventure",     # 4
+    "adventure and adventurers": "Adventure",  # 9
+    "jeune adulte": "Young Adult",        # 11, books (fr)
+    "young adult fiction": "Young Adult",  # 3
+    "enfants": "Family",                # 5, books (fr)
+    "juvenile fiction": "Family",       # 24 + 11 case variant
+    "children's fiction": "Family",     # 8
+    "children's stories": "Family",     # 7
+    "children's audiobooks": "Family",  # 10
+    "child and youth fiction": "Family",
+    "fantasy fiction": "Fantasy",         # 3
+    "fantasy & magic": "Fantasy",         # 3
+    "magic": "Fantasy",                   # 7
+    "science fiction & fantasy": "Science Fiction",  # 6
+    "graphic novels": "Comics",           # 6
+    "comics & graphic novels": "Comics",  # 3
+    "horror tales": "Horror",             # 4
+    "humorous stories": "Humor",          # 4
+    "humour": "Humor",
+    "anime": "Animation",                 # 25 movies + 2 tv; a style, folded to Animation
+    "kids": "Family",                     # 5, tv
+    "children": "Family",                 # 25, books -- bridges the children's cluster
+    "rpg": "Role-Playing",
+    "role playing": "Role-Playing",
 }
-# Note: TV's "Sci-Fi & Fantasy" / "Action & Adventure" are NOT here. They expand to
-# two genres each, which is a different operation; that mapping stays in
-# unified_feature_engineering.py where the expansion already happens.
+
+# Labels that are not genres. They arrive mostly from Hardcover's free-text category
+# field and would otherwise become one-hot columns: a character name, a language, a
+# plot noun. Dropped before canonicalisation.
+GENRE_DROP = {
+    "general", "etc", "spanish", "english", "french", "foreign language study",
+    "mice", "journalists", "camps", "brothers and sisters", "diaries",
+    "quests (expeditions)", "geronimo stilton (fictitious character)", "strips",
+    "literature", "greek fiction", "bildungsromans",
+}
+
+# TV supplies two compound labels that each mean two genres. Expanding them here (rather
+# than in the unified builder, where it used to live) means every consumer of
+# canon_genres gets the same expansion.
+GENRE_EXPAND = {
+    "sci-fi & fantasy": ("Science Fiction", "Fantasy"),
+    "action & adventure": ("Action", "Adventure"),
+    "war & politics": ("War",),
+}
 
 
 def canon_genre(g):
-    """Map one genre label onto the canonical (TMDB) spelling."""
+    """Map one genre label onto the canonical (TMDB) spelling.
+
+    Returns None for a label in GENRE_DROP, so callers must handle None.
+    """
     s = str(g).strip()
+    if not s or s.lower() in GENRE_DROP:
+        return None
     return GENRE_SYNONYMS.get(s.lower(), s)
 
 
@@ -92,13 +146,41 @@ def canon_genres(x):
 
     Order is preserved because the first element becomes `primary_genre`, which is
     half of the director x genre target-encoding key.
+
+    Three normalizations happen here so that every consumer shares one vocabulary:
+    compound TV labels expand ("Sci-Fi & Fantasy" -> Science Fiction + Fantasy),
+    synonyms and non-English labels fold together ("Aventure" -> Adventure), and
+    non-genre noise is dropped ("Mice", "Spanish", "General").
     """
     out = []
     for g in parse_list(x):
-        c = canon_genre(g)
-        if c and c not in out:
-            out.append(c)
+        key = str(g).strip().lower()
+        cands = GENRE_EXPAND.get(key) or (canon_genre(g),)
+        for c in cands:
+            if c and c not in out:
+                out.append(c)
     return out
+
+
+def genres_in_multiple_domains(genre_lists_by_domain, min_domains=2):
+    """Genres that appear in at least `min_domains` domains.
+
+    A genre carried by exactly one domain is a DOMAIN INDICATOR, not a shared feature:
+    "Fiction" sits on 87% of books and on nothing else, and "Shooter"/"Platformer" are
+    games-only. Feeding those into a model whose thesis is cross-domain generalisation
+    lets it recover domain identity from a column meant to bridge domains -- the same
+    failure as the split lang_en / lang_English one-hot. Callers building the shared
+    genre axis should keep only what this returns.
+
+    genre_lists_by_domain: {domain: iterable of already-canonicalised genre lists}
+    """
+    from collections import defaultdict
+    seen = defaultdict(set)
+    for domain, lists in genre_lists_by_domain.items():
+        for gl in lists:
+            for g in gl:
+                seen[g].add(domain)
+    return {g for g, ds in seen.items() if len(ds) >= min_domains}
 
 
 def people_key(x):
@@ -173,6 +255,14 @@ def categorize_rating(r):
         return 'General'
     return 'General'
 
+def clean_year(val):
+    """First 4-digit run in the value ('2019-05-01', '01-05-2019', 2019.0), else None."""
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        return None
+    m = re.search(r'(\d{4})', str(val))
+    return int(m.group(1)) if m else None
+
+
 def round_half(x, lo=0.5, hi=5.0):
     """Clip to the valid star range and snap to the 0.5 grid.
 
@@ -197,6 +287,7 @@ _LANG_CODES = {
     'ar': 'Arabic', 'he': 'Hebrew', 'fa': 'Persian', 'id': 'Indonesian',
     'vi': 'Vietnamese', 'cs': 'Czech', 'el': 'Greek', 'hu': 'Hungarian',
     'ro': 'Romanian', 'uk': 'Ukrainian', 'la': 'Latin',
+    'mandarin': 'Chinese', 'cantonese': 'Chinese',
 }
 
 
@@ -272,3 +363,37 @@ def read_media_csv(path, **kw):
         print(f"   NOTE: {getattr(path, 'name', path)} was not valid UTF-8; "
               f"read as latin-1 and mojibake-repaired on load.")
         return df
+
+
+# TMDB gives origin_country as ISO alpha-2 ("US"), and some rows store `country` as a
+# stringified list ("['US']"). Left alone that produced BOTH ctry_US (5 shows) and
+# ctry_United States (116) in the TV matrix -- two columns for one country, the same
+# split norm_language fixes for the language axis.
+_ISO2_COUNTRY = {
+    "US": "United States", "GB": "United Kingdom", "UK": "United Kingdom",
+    "JP": "Japan", "IN": "India", "CA": "Canada", "DE": "Germany",
+    "FR": "France", "KR": "South Korea", "PL": "Poland", "FI": "Finland",
+    "AU": "Australia", "NZ": "New Zealand", "IE": "Ireland", "ES": "Spain",
+    "IT": "Italy", "CN": "China", "HK": "Hong Kong", "TW": "Taiwan",
+    "SE": "Sweden", "NO": "Norway", "DK": "Denmark", "NL": "Netherlands",
+    "BE": "Belgium", "BR": "Brazil", "MX": "Mexico", "AR": "Argentina",
+    "RU": "Russia", "TR": "Turkey", "TH": "Thailand", "ZA": "South Africa",
+}
+
+
+def norm_country(val):
+    """'US' -> 'United States'; "['US']" -> 'United States'. Names pass through."""
+    if val is None or (isinstance(val, float) and val != val):
+        return ''
+    s = re.sub(r"[\[\]'\"<>]", "", str(val)).strip()
+    if not s:
+        return ''
+    out = []
+    for part in s.split(','):
+        p = part.strip()
+        if not p:
+            continue
+        name = _ISO2_COUNTRY.get(p.upper(), p) if len(p) <= 3 else p
+        if name not in out:
+            out.append(name)
+    return ', '.join(out)

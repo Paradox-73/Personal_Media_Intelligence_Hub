@@ -15,7 +15,8 @@ from src import config
 from src.common.parsing import (  # canonical shared parsers
     parse_list, people_key, sanitize_col, clean_money)
 from src.common import taste_features as tf
-from src.common.parsing import fix_mojibake
+from src.common.wikipedia_plots import plot_for
+from src.common.parsing import fix_mojibake, clean_year
 from src.common.text_embedding import encode_pooled, encode_pooled_single
 
 # --- CONFIG ---
@@ -28,19 +29,10 @@ TE_PRIOR = 2
 # 66 rated games; `publishers` and `tags` were fetched and never read.
 GAME_ENCODE = [("developers", 2), ("publishers", 2), ("tags", 6), ("genres", 3)]
 
-def clean_year(val):
-    try:
-        if pd.isna(val) or val == '': return 0
-        s = str(val).strip()
-        if '-' in s:
-            parts = s.split('-')
-            if len(parts[0]) == 4: return int(parts[0])
-            if len(parts[-1]) == 4: return int(parts[-1])
-        return int(float(s[:4]))
-    except:
-        return 0
-
-
+RAWG_PLATFORM_LABELS = {
+    "PlayStation 2": "PS2", "PSP": "PSP", "PC": "PC",
+    "Android": "Mobile", "iOS": "Mobile", "macOS": "PC", "Linux": "PC",
+}
 
 def process_features():
     print("🛠️ Starting Game Feature Engineering...")
@@ -67,7 +59,7 @@ def process_features():
     print(f"   Ratings Breakdown -> Rated: {(df['status']=='Rated').sum()}, Incomplete: {(df['status']=='Incomplete').sum()}, Unrated: {(df['status']=='Unrated').sum()}")
     
     # 2. Extract Year
-    df['year'] = df['released'].apply(clean_year)
+    df['year'] = df['released'].apply(lambda v: clean_year(v) or 0)
     
     # 3. Numeric Features
     num_cols = ['year', 'metacritic', 'rating', 'ratings_count', 'reviews_count']
@@ -186,7 +178,8 @@ def _game_header(raw):
 
 def _game_body(raw):
     desc = raw.get('description_raw') or raw.get('description') or ""
-    return "Description: " + fix_mojibake(str(desc or ""))
+    blurb = fix_mojibake(str(desc or ""))
+    return "Description: " + plot_for('game', raw.get('name') or raw.get('title'), blurb)
 
 
 def _game_text(raw):
@@ -228,6 +221,8 @@ def transform_single_game(raw_data, state):
         plat = plat[0] if len(plat) else ''
     if isinstance(plat, dict):
         plat = plat.get('name', '')
+    # RAWG names a platform differently from the training labels {Mobile, PC, PS2, PSP}.
+    plat = RAWG_PLATFORM_LABELS.get(plat, plat)
     pcol = sanitize_col(f"plat_{plat}")
     if pcol in X.columns:
         X.at[0, pcol] = 1
@@ -270,17 +265,15 @@ def transform_single_game(raw_data, state):
         except (TypeError, ValueError):
             X.at[0, 'playtime'] = 0.0
 
-    # Text embedding -> PCA
-    try:
-        emb = encode_pooled_single(_game_header(raw_data), _game_body(raw_data),
-                                  _get_transformer())
-        pcav = state['pca'].transform(emb)[0]
-        for i in range(len(pcav)):
-            col = f"pca_{i}"
-            if col in X.columns:
-                X.at[0, col] = pcav[i]
-    except Exception:
-        pass
+    # Text embedding -> PCA. No try/except: the batch CSV is built through this
+    # function, and a swallowed failure would silently score every game with zeros.
+    emb = encode_pooled_single(_game_header(raw_data), _game_body(raw_data),
+                              _get_transformer())
+    pcav = state['pca'].transform(emb)[0]
+    for i in range(len(pcav)):
+        col = f"pca_{i}"
+        if col in X.columns:
+            X.at[0, col] = pcav[i]
 
     return X
 
@@ -324,7 +317,7 @@ def find_similar_games(raw_data, input_df, state, n=3):
         out.append({
             'title': row.get('name', 'Unknown'),
             'platform': row.get('platform_from_text', 'Unknown'),
-            'year': clean_year(row.get('released')),
+            'year': clean_year(row.get('released')) or 0,
             'similarity': float(sims[idx]),
             'raw_data': row.to_dict(),
         })

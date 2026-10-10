@@ -36,7 +36,8 @@ from sklearn.metrics import mean_absolute_error
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.unified_model.unified_utils import DomainAligner
+from src.reporting.standalone_benchmarks import load_registry, registry_folds, skill
+from src.unified_model.unified_utils import DomainAligner, text_feature_cols
 
 RATED_DOMAINS = ["movie", "tv", "game", "book"]
 MUSIC_WEIGHT = 0.4  # pseudo-labeled music sample weight (Task 2.1: 0.3-0.5)
@@ -55,7 +56,16 @@ def shared_space_columns(cols):
     """
     keep = []
     for c in cols:
-        if c.startswith("pca_") or c.startswith("gen_") or c.startswith("g_"):
+        # `emb_*` is the full 384-d description embedding. It replaced `pca_*`, the
+        # 10-component compression of it. That distinction is the whole experiment:
+        # PCA keeps global variance and degrades the local neighbourhood structure
+        # cross-domain similarity lives in (in `pca_0..9` the nearest neighbours of
+        # the Scott Pilgrim film are Ted and Ferris Bueller; in the full space they
+        # are the TV series and all six book volumes). Accept BOTH names so the grid
+        # runs on whichever representation the matrix currently holds -- and so a
+        # matrix change can never silently reduce this to a 1-feature run again.
+        if (c.startswith("emb_") or c.startswith("pca_")
+                or c.startswith("gen_") or c.startswith("g_")):
             keep.append(c)
         elif c in {"year", "popularity", "critic_avg_5"}:
             keep.append(c)
@@ -92,8 +102,15 @@ def _round(x):
 
 
 def _fit_predict(X_tr, y_tr, m_tr, X_te, m_te, w_tr=None):
-    """CORAL-align (fit on train) then fit XGB and predict (rounded)."""
-    pca_cols = [c for c in X_tr.columns if c.startswith("pca_")]
+    """CORAL-align (fit on train) then fit XGB and predict (rounded).
+
+    `text_feature_cols` accepts emb_* AND pca_*. This used to hardcode "pca_", so when
+    the shared space moved from a 10-component PCA to the full 384-d embedding the
+    selector matched nothing and the alignment step silently became a no-op. The grid
+    published on 2026-08-30 was run that way -- unaligned, identically across every
+    cell, so its comparisons hold but its absolute numbers are unaligned transfer.
+    """
+    pca_cols = text_feature_cols(X_tr)
     Xtr, Xte = X_tr.copy(), X_te.copy()
     if pca_cols:
         aligner = DomainAligner(method="coral")
@@ -103,13 +120,6 @@ def _fit_predict(X_tr, y_tr, m_tr, X_te, m_te, w_tr=None):
     model = _xgb()
     model.fit(Xtr, y_tr, sample_weight=w_tr)
     return _round(model.predict(Xte))
-
-
-def skill_score(y_true, y_pred, train_mean):
-    base = mean_absolute_error(y_true, np.full_like(y_true, train_mean, dtype=float))
-    if base == 0:
-        return 0.0
-    return 1.0 - mean_absolute_error(y_true, y_pred) / base
 
 
 def subset_label(s):
@@ -129,11 +139,24 @@ def run_grid(repeats_per_cell=1, fractions=(0.0, 0.25, 0.5, 1.0),
     df["global_id"] = df["media_type"] + "_" + df["source_id"].astype(str)
     feat = select_features(df, max_genres=40)
     print(f"Shared-space features: {len(feat)} (genre one-hots capped at 40)")
+    if len(feat) < 5:
+        raise SystemExit(
+            f"ABORT: only {len(feat)} shared-space feature(s) selected -- "
+            f"`shared_space_columns` matched almost nothing in this matrix. "
+            f"Columns present: {sorted(set(c.split('_')[0] for c in df.columns))[:12]}. "
+            f"Running the grid on this would produce meaningless numbers.")
 
-    with open(config.UNIFIED_MODEL_DIR / "fold_registry.json") as f:
-        registry = json.load(f)
+    registry = load_registry()
 
     music_df = df[df["media_type"] == "music"].copy()
+    # If there are no music rows, the `with_music=True` arm adds nothing and produces
+    # a bit-for-bit duplicate of the `False` arm -- doubling the entire grid for zero
+    # information. Music is currently de-rated and excluded from the unified dataset
+    # (0 rows), so this halves the run.
+    if include_music and music_df.empty:
+        print("   note: 0 music rows -- skipping the with-music arm (it would duplicate "
+              "every cell). Grid size halved.")
+        include_music = False
     rows = []
 
     for target in RATED_DOMAINS:
@@ -152,10 +175,7 @@ def run_grid(repeats_per_cell=1, fractions=(0.0, 0.25, 0.5, 1.0),
         tgt_ids = tdf["global_id"].values
 
         # Per-fold test masks for the target (registry folds).
-        for fold_id in fold_ids:
-            test_mask = tdf["global_id"].apply(lambda g: fold_id in registry.get(g, []))
-            if not test_mask.any():
-                continue
+        for fold_id, test_mask in registry_folds(tdf, registry, fold_ids=fold_ids):
             tr_target = tdf[~test_mask]
             te_target = tdf[test_mask]
             y_te = te_target["target_reg"].values
@@ -167,7 +187,7 @@ def run_grid(repeats_per_cell=1, fractions=(0.0, 0.25, 0.5, 1.0),
             rows.append(dict(target=target, source="(target-only)", music=False,
                              protocol="A", fraction=1.0, fold=fold_id, repeat=0,
                              N=len(y_te), MAE=mean_absolute_error(y_te, predA),
-                             skill=skill_score(y_te, predA, train_mean),
+                             skill=skill(y_te, predA, train_mean),
                              spearman=_safe_spearman(y_te, predA)))
 
             for src, with_music in source_configs:
@@ -183,7 +203,7 @@ def run_grid(repeats_per_cell=1, fractions=(0.0, 0.25, 0.5, 1.0),
                 rows.append(dict(target=target, source=lbl, music=with_music,
                                  protocol="B", fraction=0.0, fold=fold_id, repeat=0,
                                  N=len(y_te), MAE=mean_absolute_error(y_te, predB),
-                                 skill=skill_score(y_te, predB, train_mean),
+                                 skill=skill(y_te, predB, train_mean),
                                  spearman=_safe_spearman(y_te, predB)))
 
                 # ---- Protocol C: augmented (S + frac of T train) ----
@@ -203,7 +223,7 @@ def run_grid(repeats_per_cell=1, fractions=(0.0, 0.25, 0.5, 1.0),
                         rows.append(dict(target=target, source=lbl, music=with_music,
                                          protocol="C", fraction=frac, fold=fold_id, repeat=rep,
                                          N=len(y_te), MAE=mean_absolute_error(y_te, predC),
-                                         skill=skill_score(y_te, predC, train_mean),
+                                         skill=skill(y_te, predC, train_mean),
                                          spearman=_safe_spearman(y_te, predC)))
         print(f"  target={target}: cumulative rows={len(rows)}")
         # Checkpoint: flush partial results after each target so a crash mid-grid

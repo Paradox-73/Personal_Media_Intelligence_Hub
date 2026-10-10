@@ -222,6 +222,7 @@ def search_video_id(youtube, query, quota):
   except HttpError as error:
     quota.charge(COST_SEARCH)
     print(f"  Error searching for '{query}': {error}")
+    raise
   return None
 
 
@@ -397,7 +398,13 @@ def main():
         print("  Quota budget reached. Remaining titles wait for the next run.")
         break
       print(f"Searching for: '{title}'")
-      video_id = search_video_id(youtube, title, quota)
+      try:
+        video_id = search_video_id(youtube, title, quota)
+      except HttpError:
+        # An API error (quota spent, outage) is not "no match": leave this and
+        # the remaining titles uncached so the next run searches them again.
+        print("  Stopping searches. Remaining titles wait for the next run.")
+        break
       state["searched"][title] = video_id
       save_state(state)
       if video_id:

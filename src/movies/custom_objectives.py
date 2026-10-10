@@ -31,17 +31,3 @@ class AsymmetricEdgePenaltyObjective:
         hess = W_y * np.ones_like(y_true)
         
         return grad, hess
-
-class CustomEdgePenaltyObjective:
-    """
-    Legacy class for compatibility.
-    """
-    def __init__(self, alpha=1.0, mu=3.0):
-        self.alpha = alpha
-        self.mu = mu
-        
-    def __call__(self, y_true, y_pred):
-        W_y = np.exp(self.alpha * np.abs(y_true - self.mu))
-        grad = W_y * (y_pred - y_true)
-        hess = W_y * np.ones_like(y_true)
-        return grad, hess

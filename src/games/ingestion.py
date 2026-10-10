@@ -18,19 +18,9 @@ from src.common.parsing import read_media_csv
 load_dotenv()
 
 RAWG_KEY = os.getenv("RAWG_API_KEY")
-
-def clean_year(val):
-    try:
-        if pd.isna(val) or val == '': return None
-        # Handle formats like DD-MM-YYYY or YYYY
-        s = str(val).strip()
-        if '-' in s:
-            parts = s.split('-')
-            if len(parts[0]) == 4: return int(parts[0])
-            if len(parts[-1]) == 4: return int(parts[-1])
-        return int(float(s[:4]))
-    except:
-        return None
+# The key goes in params=, and errors print only the exception type: a requests
+# error message contains the full URL, key included.
+RAWG_URL = "https://api.rawg.io/api/games"
 
 def is_effectively_empty(val):
     if val is None: return True
@@ -48,9 +38,9 @@ def fetch_rawg_data(game_name, platform=None):
         print("❌ RAWG_API_KEY missing.")
         return None
     
-    url = f"https://api.rawg.io/api/games?key={RAWG_KEY}&search={game_name}&search_precise=true"
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(RAWG_URL, params={"key": RAWG_KEY, "search": game_name,
+                                                  "search_precise": "true"}, timeout=10)
         data = response.json()
         if data.get('results'):
             # Try to find the best match
@@ -58,22 +48,22 @@ def fetch_rawg_data(game_name, platform=None):
             game_id = best_match['id']
             
             # Fetch full details
-            detail_url = f"https://api.rawg.io/api/games/{game_id}?key={RAWG_KEY}"
-            detail_res = requests.get(detail_url, timeout=10)
+            detail_res = requests.get(f"{RAWG_URL}/{game_id}", params={"key": RAWG_KEY}, timeout=10)
             return detail_res.json()
     except Exception as e:
-        print(f"Error fetching from RAWG: {e}")
+        print(f"Error fetching from RAWG: {type(e).__name__}")
     return None
 
 def search_games_by_query(query, max_results=5):
     """Live RAWG search for the Oracle. Returns lightweight result dicts."""
     if not RAWG_KEY or not query:
         return []
-    url = f"https://api.rawg.io/api/games?key={RAWG_KEY}&search={query}&page_size={max_results}"
     try:
-        results = requests.get(url, timeout=10).json().get('results', [])
+        results = requests.get(RAWG_URL, params={"key": RAWG_KEY, "search": query,
+                                                 "page_size": max_results},
+                               timeout=10).json().get('results', [])
     except Exception as e:
-        print(f"RAWG search error: {e}")
+        print(f"RAWG search error: {type(e).__name__}")
         return []
 
     out = []
@@ -95,9 +85,9 @@ def fetch_game_details_by_id(game_id):
     if not RAWG_KEY or not game_id:
         return None
     try:
-        g = requests.get(f"https://api.rawg.io/api/games/{game_id}?key={RAWG_KEY}", timeout=10).json()
+        g = requests.get(f"{RAWG_URL}/{game_id}", params={"key": RAWG_KEY}, timeout=10).json()
     except Exception as e:
-        print(f"RAWG details error: {e}")
+        print(f"RAWG details error: {type(e).__name__}")
         return None
     if not g or not g.get('name'):
         return None

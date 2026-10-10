@@ -13,8 +13,9 @@ from sklearn.preprocessing import MultiLabelBinarizer
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.common.parsing import (  # canonical shared parsers
-    parse_list, people_key, sanitize_col, clean_money)
+    parse_list, people_key, sanitize_col, clean_money, clean_year)
 from src.common import taste_features as tf
+from src.common.wikipedia_plots import plot_for
 from src.common.text_embedding import encode_pooled, encode_pooled_single
 
 # --- CONFIG ---
@@ -30,20 +31,6 @@ BOOK_ENCODE = [
     ("moods", 4), ("hc_tags", 5),
 ]
 
-def clean_year(val):
-    try:
-        if pd.isna(val) or val == '': return 0
-        s = str(val).strip()
-        # Handle formats like DD-MM-YYYY, YYYY-MM-DD, or just YYYY
-        match = re.search(r'(\d{4})', s)
-        if match:
-            return int(match.group(1))
-        return 0
-    except:
-        return 0
-
-
-
 def process_features():
     print("🛠️ Starting Book Feature Engineering...")
 
@@ -57,11 +44,12 @@ def process_features():
         df = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH, encoding='latin1')
     
     # 1. Clean Target
-    df = df.dropna(subset=['my_rating']).copy()
-    df['my_rating_clean'] = pd.to_numeric(df['my_rating'], errors='coerce').fillna(0)
+    # A non-numeric rating ("DNF") is dropped, not trained as a 0-star label.
+    df['my_rating_clean'] = pd.to_numeric(df['my_rating'], errors='coerce')
+    df = df.dropna(subset=['my_rating_clean']).copy()
     
     # 2. Extract Year
-    df['year'] = df['publishedDate'].apply(clean_year)
+    df['year'] = df['publishedDate'].apply(lambda v: clean_year(v) or 0)
     
     # 3. Numeric Features
     num_cols = ['year', 'pageCount', 'averageRating', 'ratingsCount']
@@ -109,7 +97,14 @@ def process_features():
     # the tail was being cut off. `_book_header` is shared with the inference path
     # and the similarity search, so the three cannot drift apart.
     df['text_header'] = [_book_header(r) for r in df.to_dict('records')]
-    _body = "Description: " + df['description'].fillna('').astype(str)
+    # Call the SAME function the inference path calls. This line used to build the body
+    # inline as "Description: " + description, while `_book_body` (used at serve time)
+    # routes the same text through `plot_for`, which substitutes the full Wikipedia plot
+    # where one exists. Books therefore trained WITHOUT Wikipedia text and were scored
+    # WITH it -- the inverse of the movie skew, and the reason Books' MAE was byte
+    # identical (0.2981) before and after the Wikipedia fetch landed: the fetched text
+    # never reached the training frame at all.
+    _body = pd.Series([_book_body(r) for r in df.to_dict('records')], index=df.index)
     df['text_content'] = df['text_header'] + " " + _body
 
     transformer_model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -179,7 +174,8 @@ def _book_header(raw):
 
 
 def _book_body(raw):
-    return "Description: " + str(raw.get('description') or '')
+    blurb = str(raw.get('description') or '')
+    return "Description: " + plot_for('book', raw.get('title'), blurb)
 
 
 def _book_text(raw):
@@ -229,17 +225,15 @@ def transform_single_book(raw_data, state):
         if f'{col}_n' in X.columns:
             X.at[0, f'{col}_n'] = sup
 
-    # Text embedding -> PCA
-    try:
-        emb = encode_pooled_single(_book_header(raw_data), _book_body(raw_data),
-                                   _get_transformer())
-        pcav = state['pca'].transform(emb)[0]
-        for i in range(len(pcav)):
-            col = f"pca_{i}"
-            if col in X.columns:
-                X.at[0, col] = pcav[i]
-    except Exception:
-        pass
+    # Text embedding -> PCA. No try/except: the batch CSV is built through this
+    # function, and a swallowed failure would silently score every book with zeros.
+    emb = encode_pooled_single(_book_header(raw_data), _book_body(raw_data),
+                               _get_transformer())
+    pcav = state['pca'].transform(emb)[0]
+    for i in range(len(pcav)):
+        col = f"pca_{i}"
+        if col in X.columns:
+            X.at[0, col] = pcav[i]
 
     return X
 
@@ -281,7 +275,7 @@ def find_similar_books(raw_data, input_df, state, n=3):
         out.append({
             'title': row.get('title', 'Unknown'),
             'author': row.get('authors', 'Unknown'),
-            'year': clean_year(row.get('publishedDate')),
+            'year': clean_year(row.get('publishedDate')) or 0,
             'similarity': float(sims[idx]),
             'raw_data': row.to_dict(),
         })

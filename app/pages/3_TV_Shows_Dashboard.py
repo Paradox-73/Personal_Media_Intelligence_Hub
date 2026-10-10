@@ -1,19 +1,16 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-import plotly.io as pio
-import ast
 import re
 import sys
 import numpy as np
 from pathlib import Path
-from collections import Counter
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
 from src import config
+from src.common.parsing import parse_list, norm_language
 from src.shows.season_data import load_seasons, attach_watched_counts
 from geo_utils import aggregate_country_counts, make_world_map
 from milestones import render_milestones
@@ -23,182 +20,12 @@ from rating_distribution import render_rating_distribution
 
 from critic_delta import render_critic_delta
 from mobile import apply_mobile_css
+from dashboard_common import (HUB_PALETTE, apply_hub_theme, lb_metric, render_stars, calculate_entropy,
+                              get_frequent_items_with_avg, render_people_tab)
 st.set_page_config(page_title="TV Intelligence Dashboard", page_icon="📺", layout="wide")
 apply_mobile_css()
 
-# --- CUSTOM STYLING ---
-st.markdown("""
-<style>
-    /* Font Fallbacks */
-    html, body, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {
-        background-color: #14171C;
-        color: #E0E0E0;
-        font-family: 'Graphik', 'Helvetica', sans-serif;
-    }
-    
-    [data-testid="stSidebar"] {
-        background-color: #2C343F;
-    }
-    
-    h1, h2, h3, h4, h5, h6 {
-        color: #40bcf4 !important;
-        font-family: 'Graphik', 'Helvetica', sans-serif;
-    }
-    
-    .stMetric {
-        background-color: #2C343F;
-        padding: 15px;
-        border-radius: 8px;
-        border: 1px solid #556678;
-    }
-    
-    div[data-testid="metric-container"] label {
-        color: #00e054 !important;
-    }
-    
-    div[data-testid="metric-container"] div[data-testid="stMetricValue"] {
-        color: #ff8000 !important;
-    }
-    
-    .stTabs [data-baseweb="tab-list"] {
-        background-color: #14171C;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        color: #E0E0E0;
-    }
-    
-    .stTabs [aria-selected="true"] {
-        color: #ff8000 !important;
-        border-bottom-color: #ff8000 !important;
-    }
-    
-    hr {
-        border-top: 1px solid #556678;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Define palette for plotly
-HUB_PALETTE = ["#ff8000", "#00e054", "#40bcf4", "#556678", "#2C343F"]
-
-# Set default Plotly template
-pio.templates["hub_theme"] = go.layout.Template(
-    layout=go.Layout(
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#E0E0E0", family="Graphik, Helvetica, sans-serif"),
-        colorway=HUB_PALETTE,
-        xaxis=dict(gridcolor="#2C343F", zerolinecolor="#2C343F", tickfont=dict(color="#556678")),
-        yaxis=dict(gridcolor="#2C343F", zerolinecolor="#2C343F", tickfont=dict(color="#556678")),
-    )
-)
-pio.templates.default = "hub_theme"
-
-# --- HELPER FUNCTIONS ---
-
-def render_stars(rating, max_rating=5):
-    """Renders Letterboxd-style stars."""
-    if pd.isna(rating): return ""
-    full_stars = int(rating)
-    half_star = 1 if (rating - full_stars) >= 0.5 else 0
-    stars = "★" * full_stars + ("½" if half_star else "")
-    return f"<span style='color:#00e054; font-family: courier; font-size: 1.2em;'>{stars}</span>"
-
-def parse_list_col(x):
-    if pd.isna(x): return []
-    try:
-        if isinstance(x, str) and '[' not in x and ',' in x:
-            return [i.strip() for i in x.split(',')]
-        return ast.literal_eval(str(x))
-    except: return [str(x)]
-
-# Canonicalize language labels so ISO codes and full names collapse together
-# (e.g. "en"/"English", "hi"/"Hindi", "ja"/"Japanese" all map to one label).
-LANGUAGE_MAP = {
-    'en': 'English', 'eng': 'English', 'english': 'English',
-    'hi': 'Hindi', 'hin': 'Hindi', 'hindi': 'Hindi',
-    'ja': 'Japanese', 'jpn': 'Japanese', 'japanese': 'Japanese',
-    'ko': 'Korean', 'kor': 'Korean', 'korean': 'Korean',
-    'fr': 'French', 'fra': 'French', 'french': 'French',
-    'es': 'Spanish', 'spa': 'Spanish', 'spanish': 'Spanish',
-    'de': 'German', 'ger': 'German', 'deu': 'German', 'german': 'German',
-    'it': 'Italian', 'ita': 'Italian', 'italian': 'Italian',
-    'ru': 'Russian', 'rus': 'Russian', 'russian': 'Russian',
-    'pt': 'Portuguese', 'por': 'Portuguese', 'portuguese': 'Portuguese',
-    'nl': 'Dutch', 'dut': 'Dutch', 'dutch': 'Dutch',
-    'zh': 'Chinese', 'cn': 'Chinese', 'zho': 'Chinese', 'chinese': 'Chinese',
-    'mandarin': 'Chinese', 'cantonese': 'Chinese',
-    'pa': 'Punjabi', 'punjabi': 'Punjabi',
-    'bn': 'Bengali', 'ben': 'Bengali', 'bengali': 'Bengali',
-    'ta': 'Tamil', 'tamil': 'Tamil',
-    'te': 'Telugu', 'telugu': 'Telugu',
-    'mr': 'Marathi', 'marathi': 'Marathi',
-    'sv': 'Swedish', 'swedish': 'Swedish',
-    'no': 'Norwegian', 'nb': 'Norwegian', 'norwegian': 'Norwegian',
-    'th': 'Thai', 'thai': 'Thai',
-    'uk': 'Ukrainian', 'ukrainian': 'Ukrainian',
-    'la': 'Latin', 'latin': 'Latin',
-}
-
-def normalize_language(val):
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return val
-    key = str(val).strip().lower()
-    if key in ('', 'nan', 'none', 'unknown'):
-        return str(val).strip()
-    return LANGUAGE_MAP.get(key, str(val).strip().title())
-
-def get_frequent_items_with_avg(df, col_name, top_n=10):
-    df_exp = df.explode(col_name)
-    df_exp = df_exp[~df_exp[col_name].isin(['Unknown', 'nan', np.nan, ''])]
-    stats = df_exp.groupby(col_name).agg(
-        Count=('user_rating', 'size'), 
-        avg_rating=('user_rating', 'mean')
-    ).reset_index()
-    stats['avg_rating'] = stats['avg_rating'].round(3)
-    return stats.sort_values('Count', ascending=False).head(top_n)
-
-def get_highly_rated_items(df, col_name, top_n=10, min_count=2):
-    df_exploded = df.explode(col_name)
-    df_exploded = df_exploded[~df_exploded[col_name].isin(['Unknown', 'nan', np.nan, ''])]
-    stats = df_exploded.groupby(col_name).agg(
-        avg_rating=('user_rating', 'mean'),
-        count=('user_rating', 'count')
-    ).reset_index()
-    stats = stats[stats['count'] >= min_count]
-    stats['avg_rating'] = stats['avg_rating'].round(3)
-    return stats.sort_values('avg_rating', ascending=False).head(top_n)
-
-def get_lowest_rated_items(df, col_name, top_n=10, min_count=2):
-    df_exploded = df.explode(col_name)
-    df_exploded = df_exploded[~df_exploded[col_name].isin(['Unknown', 'nan', np.nan, ''])]
-    stats = df_exploded.groupby(col_name).agg(
-        avg_rating=('user_rating', 'mean'),
-        count=('user_rating', 'count')
-    ).reset_index()
-    stats = stats[stats['count'] >= min_count]
-    stats['avg_rating'] = stats['avg_rating'].round(3)
-    return stats.sort_values('avg_rating', ascending=True).head(top_n)
-
-def calculate_entropy(series):
-    import math
-    all_items = []
-    for val in series.dropna():
-        if isinstance(val, list):
-            valid_items = [str(i).strip() for i in val if str(i).strip().lower() not in ['unknown', 'nan', 'none', '']]
-            all_items.extend(valid_items)
-        else:
-            if str(val).strip().lower() not in ['unknown', 'nan', 'none', '']:
-                all_items.append(str(val).strip())
-    if not all_items: return 0
-    counts = Counter(all_items)
-    total_items = len(all_items)
-    entropy = 0.0
-    for count in counts.values():
-        probability = count / total_items
-        entropy -= probability * math.log2(probability)
-    return entropy
+apply_hub_theme()
 
 # --- LOAD DATA ---
 @st.cache_data
@@ -216,11 +43,11 @@ def load_data():
         # Parse Lists
         list_cols = ['genres', 'created_by', 'actors', 'production_companies', 'country', 'writer']
         for c in list_cols:
-            if c in df.columns: df[f'{c}_list'] = df[c].apply(parse_list_col)
+            if c in df.columns: df[f'{c}_list'] = df[c].apply(parse_list)
 
         # Collapse equivalent language labels (en == English, ja == Japanese, etc.)
         if 'language' in df.columns:
-            df['language'] = df['language'].apply(normalize_language)
+            df['language'] = df['language'].map(norm_language, na_action='ignore')
 
         df['decade'] = (df['year'] // 10) * 10
 
@@ -268,16 +95,6 @@ s_watched = seasons[seasons['watched']] if has_seasons else pd.DataFrame()
 
 # 1. METRICS & RATINGS HISTOGRAM
 c1, c2, c3, c4, c5, c6 = st.columns(6)
-
-def lb_metric(label, value, help_text=None):
-    tooltip = f'title="{help_text}"' if help_text else ""
-    cursor = "help" if help_text else "default"
-    st.markdown(f"""
-    <div {tooltip} style="background-color: #2C343F; padding: 10px 15px; border-radius: 4px; border-bottom: 2px solid #556678; cursor: {cursor};">
-        <div style="color: #99AABB; font-size: 0.8em; text-transform: uppercase; font-weight: bold; letter-spacing: 0.05em;">{label}</div>
-        <div style="color: #FFFFFF; font-size: 1.8em; font-weight: 500;">{value}</div>
-    </div>
-    """, unsafe_allow_html=True)
 
 if season_view:
     with c1: lb_metric("Seasons Rated", f"{len(s_watched):,}",
@@ -533,36 +350,9 @@ st.divider()
 st.subheader("👥 Cast, Creators & Networks")
 tab_cre, tab_act, tab_wri, tab_net = st.tabs(["✍️ Creators", "🎭 Actors", "✍️ Writers", "📡 Networks"])
 
-def render_people_tab(col_list, label, min_count_threshold=2):
-    ent = calculate_entropy(df[col_list])
-    st.caption(f"**{label} Diversity (Entropy):** {ent:.2f}")
-    c_freq, c_high, c_low = st.columns(3)
-    with c_freq:
-        st.caption(f"**Most Watched {label}**")
-        freq = get_frequent_items_with_avg(df, col_list)
-        fig = px.bar(freq, x='Count', y=col_list, orientation='h', color='Count', color_continuous_scale=[[0, HUB_PALETTE[3]], [1, HUB_PALETTE[0]]])
-        fig.update_layout(yaxis={'categoryorder':'total ascending'})
-        st.plotly_chart(fig, use_container_width=True)
-    with c_high:
-        st.caption(f"**Highest Rated {label}** (Min {min_count_threshold} Shows)")
-        rated = get_highly_rated_items(df, col_list, min_count=min_count_threshold)
-        if not rated.empty:
-            fig = px.bar(rated, x='avg_rating', y=col_list, orientation='h', color='avg_rating', 
-                         color_continuous_scale=[[0, HUB_PALETTE[1]], [1, HUB_PALETTE[2]]], range_x=[0, 5])
-            fig.update_layout(yaxis={'categoryorder':'total ascending'})
-            st.plotly_chart(fig, use_container_width=True)
-    with c_low:
-        st.caption(f"**Lowest Rated {label}** (Min {min_count_threshold} Shows)")
-        low_rated = get_lowest_rated_items(df, col_list, min_count=min_count_threshold)
-        if not low_rated.empty:
-            fig = px.bar(low_rated, x='avg_rating', y=col_list, orientation='h', color='avg_rating', 
-                         color_continuous_scale=[[0, "#ff4b4b"], [1, HUB_PALETTE[0]]], range_x=[0, 5])
-            fig.update_layout(yaxis={'categoryorder':'total descending'})
-            st.plotly_chart(fig, use_container_width=True)
-
-with tab_cre: render_people_tab('created_by_list', "Creators", 2)
-with tab_act: render_people_tab('actors_list', "Actors", 3)
-with tab_wri: render_people_tab('writer_list', "Writers", 2)
+with tab_cre: render_people_tab(df, 'created_by_list', "Creators", 2, "Shows")
+with tab_act: render_people_tab(df, 'actors_list', "Actors", 3, "Shows")
+with tab_wri: render_people_tab(df, 'writer_list', "Writers", 2, "Shows")
 with tab_net:
     if 'network' in df.columns:
         net_stats = df.groupby('network').agg(Count=('user_rating', 'size'), Avg_Rating=('user_rating', 'mean')).reset_index()

@@ -32,6 +32,7 @@ from dotenv import load_dotenv
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common.parsing import read_media_csv
 from src.shows.season_data import SEASON_FEATURES_PATH
 
 load_dotenv()
@@ -68,7 +69,7 @@ def _empty(v):
 
 def tmdb_season(tid, sn, cache):
     k = f"{int(tid)}_{int(sn)}"
-    if k in cache:
+    if k in cache and "_error" not in cache[k]:  # retry past failures
         return cache[k]
     rec = {}
     try:
@@ -93,14 +94,14 @@ def tmdb_season(tid, sn, cache):
                 "guest_star_count": len(guests),
             }
     except Exception as e:  # noqa: BLE001
-        rec = {"_error": str(e)}
+        return {"_error": str(e)}
     cache[k] = rec
     return rec
 
 
 def omdb_season(imdb, sn, cache):
     k = f"{imdb}_{int(sn)}"
-    if k in cache:
+    if k in cache and "_error" not in cache[k]:  # retry past failures
         return cache[k]
     rec = {}
     try:
@@ -120,7 +121,7 @@ def omdb_season(imdb, sn, cache):
                        "imdb_ep_first": r[0], "imdb_ep_last": r[-1],
                        "imdb_ep_trend": slope}
     except Exception as e:  # noqa: BLE001
-        rec = {"_error": str(e)}
+        return {"_error": str(e)}
     cache[k] = rec
     return rec
 
@@ -142,10 +143,7 @@ def main():
     g.add_argument("--apply", action="store_true")
     args = ap.parse_args()
 
-    try:
-        df = pd.read_csv(SEASON_FEATURES_PATH)
-    except UnicodeDecodeError:
-        df = pd.read_csv(SEASON_FEATURES_PATH, encoding="cp1252")
+    df = read_media_csv(SEASON_FEATURES_PATH)
     for c in NEW_COLS:
         if c not in df.columns:
             df[c] = pd.NA

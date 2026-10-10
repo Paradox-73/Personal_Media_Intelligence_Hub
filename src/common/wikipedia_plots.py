@@ -53,6 +53,7 @@ USAGE
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 import time
@@ -65,6 +66,7 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common.parsing import clean_year
 from src.linking.build_entity_links import DOMAINS, UA, resolve_qid
 
 CACHE_DIR = config.CACHE_DIR / "wikipedia"
@@ -340,3 +342,61 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# --------------------------------------------------------------------------- #
+# Feature-pipeline hook
+# --------------------------------------------------------------------------- #
+_PLOT_CACHE = None
+
+
+def plot_lookup(refresh=False):
+    """{(media_type, lowercased title): [(year, plot_text), ...]} for every item that has one.
+
+    Keyed on TITLE + YEAR, not the `row` column: the CSV was fetched when books held
+    100 rows and TV 173, and both have grown since, so a positional join would
+    silently misalign the newest items onto someone else's plot. The year keeps
+    remakes apart (Ghostbusters 1984/2016 carry different plots).
+    """
+    global _PLOT_CACHE
+    if _PLOT_CACHE is not None and not refresh:
+        return _PLOT_CACHE
+    out = {}
+    if OUT_PATH.exists():
+        w = pd.read_csv(OUT_PATH)
+        for mt, title, yr, txt in zip(w["media_type"], w["title"], w["year"],
+                                      w.get("plot_text", [])):
+            if isinstance(txt, str) and txt.strip():
+                out.setdefault((str(mt), str(title).strip().lower()), []).append(
+                    (clean_year(yr), txt.strip()))
+    _PLOT_CACHE = out
+    return out
+
+
+def plot_for(media_type, title, fallback="", year=None):
+    """Wikipedia plot for this item, else `fallback`.
+
+    Coverage is uneven by construction -- movies 93.5%, TV 65.3%, games 54.2%,
+    books 49.0% -- because a Diary of a Wimpy Kid volume has no standalone article
+    and FIFA 09 has no plot to summarise. So a domain is a MIX of encyclopedic plot
+    prose and marketing blurb, which is a register split inside one domain. That is
+    a real confound and it is why this is opt-in per pipeline rather than silently
+    applied; the honest read of any gain is "on this mixture", and the covered-only
+    subset is the like-for-like comparison.
+    """
+    if not title:
+        return fallback
+    # WIKI_PLOTS_OFF=tv,game turns the Wikipedia plot off for those media types
+    # (falls back to the blurb), for like-for-like ablations of the text change.
+    if str(media_type) in {m.strip() for m in os.environ.get("WIKI_PLOTS_OFF", "").split(",") if m.strip()}:
+        return fallback
+    cands = plot_lookup().get((str(media_type), str(title).strip().lower()), [])
+    y = clean_year(year)
+    exact = [txt for yr, txt in cands if y is not None and yr == y]
+    if exact:
+        return exact[0]
+    # Without a year match, only an unambiguous title may borrow a plot: a remake
+    # or a new same-titled item must not inherit another item's plot.
+    if len(cands) == 1 and (y is None or cands[0][0] is None):
+        return cands[0][1]
+    return fallback

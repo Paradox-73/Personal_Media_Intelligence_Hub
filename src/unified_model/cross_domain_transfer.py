@@ -81,13 +81,13 @@ def load_domain_text(domain):
     elif domain == 'game':
         try:
             df = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH)
-        except:
+        except UnicodeDecodeError:
             df = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH, encoding='latin1')
         df['text'] = "Title: " + df['name'].fillna('') + ". " + df['description_raw'].fillna('')
     elif domain == 'book':
         try:
             df = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH)
-        except:
+        except UnicodeDecodeError:
             df = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH, encoding='latin1')
         df['text'] = "Title: " + df['title'].fillna('') + ". " + df['description'].fillna('')
     else:
@@ -131,14 +131,14 @@ def run_experiments():
     
     # Games
     try: df_g = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH)
-    except: df_g = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH, encoding='latin1')
+    except UnicodeDecodeError: df_g = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH, encoding='latin1')
     df_g = df_g.dropna(subset=['my_rating'])
     df_g['text'] = "Title: " + df_g['name'].fillna('') + ". " + df_g['description_raw'].fillna('')
     df_g['media_type'] = 'game'
     
     # Books
     try: df_b = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH)
-    except: df_b = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH, encoding='latin1')
+    except UnicodeDecodeError: df_b = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH, encoding='latin1')
     df_b = df_b.dropna(subset=['my_rating'])
     
     b_desc = df_b.get('description')
@@ -157,7 +157,14 @@ def run_experiments():
     # Ensure df_all and df_text_combined are aligned
     # Both are created by concatenating movies, tv, games, books in that order.
     # NOTE: Music is in unified_feature_engineering but we skip it here as target.
-    df_all = df_all[df_all['media_type'] != 'music'].copy().reset_index(drop=True)
+    # `target_reg > 0` alongside the music drop: unrated items are stored as 0.0 (a
+    # fillna in the builder, not NaN), which is off the bottom of the 0.5-5.0 grid.
+    # Dropping music alone leaves six "Incomplete" games as impossible labels.
+    _n_pre = (df_all['media_type'] != 'music').sum()
+    df_all = df_all[(df_all['media_type'] != 'music')
+                    & (df_all['target_reg'] > 0)].copy().reset_index(drop=True)
+    if _n_pre != len(df_all):
+        print(f"   Dropped {_n_pre - len(df_all)} unrated/0-target row(s).")
     if len(df_all) != len(df_text_combined):
         print(f"Warning: Alignment mismatch! Unified: {len(df_all)}, Text: {len(df_text_combined)}")
         # This might happen if unified_feature_engineering dropped more rows later.

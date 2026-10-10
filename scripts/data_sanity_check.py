@@ -280,12 +280,12 @@ def check_unified(verbose=False):
         try:
             from src.unified_model.unified_feature_engineering import MusicProfile  # noqa: F401
             st = joblib.load(state)
-            if st.get("aligner") is None:
-                fail("unified", "preprocessor_state has NO 'aligner' — a feature rebuild "
-                                "stripped it; inference will silently skip alignment "
-                                "until advanced_unified_model_trainer runs again")
+            if st.get("aligner") is None or not st.get("model_columns"):
+                fail("unified", "preprocessor_state has no 'aligner'/'model_columns' — a "
+                                "feature rebuild stripped them; the unified Oracle cannot "
+                                "score until advanced_unified_model_trainer runs again")
             else:
-                ok("preprocessor_state carries the DomainAligner")
+                ok("preprocessor_state carries the DomainAligner and model_columns")
         except Exception as e:
             warn("unified", f"could not inspect preprocessor_state: {e}")
 

@@ -210,5 +210,6 @@ def predict_unified(raw_data: dict, media_type: str):
         else:
             pred = (p_xgb + p_cat) / 2
         return float(np.clip(pred, 0.5, 5.0))
-    except Exception:
+    except Exception as e:  # noqa: BLE001 -- the Oracle page shows "no prediction", so say why
+        print(f"predict_unified({media_type}) failed: {e!r}")
         return None

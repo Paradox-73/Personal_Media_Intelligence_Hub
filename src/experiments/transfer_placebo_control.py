@@ -17,6 +17,7 @@ import numpy as np, pandas as pd
 from scipy.stats import wilcoxon
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[2]))
 from src import config
+from src.reporting.standalone_benchmarks import load_registry, registry_folds
 import src.experiments.transfer_study as ts
 from src.experiments.transfer_study import select_features, _fit_predict, SEED
 
@@ -29,15 +30,12 @@ def main():
     df = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
     df["global_id"] = df["media_type"] + "_" + df["source_id"].astype(str)
     feat = select_features(df, max_genres=40)
-    registry = json.load(open(config.UNIFIED_MODEL_DIR / "fold_registry.json"))
+    registry = load_registry()
     tdf = df[df["media_type"] == TARGET].copy()
     sdf_base = df[df["media_type"].isin(SOURCE)].copy()
 
     rows = []
-    for fold_id in range(50):
-        tm = tdf["global_id"].apply(lambda g: fold_id in registry.get(g, []))
-        if not tm.any():
-            continue
+    for fold_id, tm in registry_folds(tdf, registry):
         tr_t, te_t = tdf[~tm], tdf[tm]
         y_te = te_t["target_reg"].values
         pA = _fit_predict(tr_t[feat], tr_t["target_reg"], tr_t["media_type"],

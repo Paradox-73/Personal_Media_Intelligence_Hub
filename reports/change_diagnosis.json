@@ -1,0 +1,158 @@
+{
+  "tv_seeds": {
+    "runs": [
+      {
+        "seed": 42,
+        "N": 175,
+        "skill": 0.2085,
+        "MAE": 0.6943,
+        "spearman": 0.5651
+      },
+      {
+        "seed": 1,
+        "N": 175,
+        "skill": 0.2117,
+        "MAE": 0.6914,
+        "spearman": 0.5693
+      },
+      {
+        "seed": 2,
+        "N": 175,
+        "skill": 0.202,
+        "MAE": 0.7,
+        "spearman": 0.5749
+      },
+      {
+        "seed": 3,
+        "N": 175,
+        "skill": 0.2117,
+        "MAE": 0.6914,
+        "spearman": 0.5722
+      },
+      {
+        "seed": 4,
+        "N": 175,
+        "skill": 0.228,
+        "MAE": 0.6771,
+        "spearman": 0.5714
+      }
+    ],
+    "skill_mean": 0.2124,
+    "skill_sd": 0.0096,
+    "skill_range": [
+      0.202,
+      0.228
+    ]
+  },
+  "unified_text": {
+    "pca10": {
+      "all": {
+        "N": 1514,
+        "skill": 0.3035,
+        "MAE": 0.5297,
+        "spearman": 0.6794
+      },
+      "movie": {
+        "N": 1163,
+        "skill": 0.333,
+        "MAE": 0.4996,
+        "spearman": 0.7046
+      },
+      "tv": {
+        "N": 175,
+        "skill": 0.1889,
+        "MAE": 0.7114,
+        "spearman": 0.5922
+      },
+      "game": {
+        "N": 66,
+        "skill": 0.1927,
+        "MAE": 0.6667,
+        "spearman": 0.5924
+      },
+      "book": {
+        "N": 110,
+        "skill": 0.2759,
+        "MAE": 0.4773,
+        "spearman": 0.7392
+      }
+    },
+    "emb384": {
+      "all": {
+        "N": 1514,
+        "skill": 0.2866,
+        "MAE": 0.5426,
+        "spearman": 0.674
+      },
+      "movie": {
+        "N": 1163,
+        "skill": 0.314,
+        "MAE": 0.5138,
+        "spearman": 0.7015
+      },
+      "tv": {
+        "N": 175,
+        "skill": 0.1824,
+        "MAE": 0.7171,
+        "spearman": 0.5822
+      },
+      "game": {
+        "N": 66,
+        "skill": 0.2018,
+        "MAE": 0.6591,
+        "spearman": 0.6191
+      },
+      "book": {
+        "N": 110,
+        "skill": 0.2414,
+        "MAE": 0.5,
+        "spearman": 0.6805
+      }
+    }
+  },
+  "tv_seeds@nowiki": {
+    "runs": [
+      {
+        "seed": 42,
+        "N": 175,
+        "skill": 0.2378,
+        "MAE": 0.6686,
+        "spearman": 0.5768
+      },
+      {
+        "seed": 1,
+        "N": 175,
+        "skill": 0.228,
+        "MAE": 0.6771,
+        "spearman": 0.5792
+      },
+      {
+        "seed": 2,
+        "N": 175,
+        "skill": 0.2573,
+        "MAE": 0.6514,
+        "spearman": 0.5831
+      },
+      {
+        "seed": 3,
+        "N": 175,
+        "skill": 0.2182,
+        "MAE": 0.6857,
+        "spearman": 0.5734
+      },
+      {
+        "seed": 4,
+        "N": 175,
+        "skill": 0.2541,
+        "MAE": 0.6543,
+        "spearman": 0.5793
+      }
+    ],
+    "skill_mean": 0.2391,
+    "skill_sd": 0.0167,
+    "skill_range": [
+      0.2182,
+      0.2573
+    ]
+  }
+}

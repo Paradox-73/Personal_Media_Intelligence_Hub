@@ -28,6 +28,7 @@ from sklearn.metrics import mean_absolute_error
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.reporting.standalone_benchmarks import load_registry, registry_folds
 from src.unified_model.unified_utils import DomainAligner
 from src.experiments.transfer_study import select_features
 
@@ -42,8 +43,7 @@ def run(target="game", source=("movie", "book")):
     df = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
     df["global_id"] = df["media_type"] + "_" + df["source_id"].astype(str)
     feat = select_features(df, max_genres=40)  # domain-blind (post-fix)
-    with open(config.UNIFIED_MODEL_DIR / "fold_registry.json") as f:
-        registry = json.load(f)
+    registry = load_registry()
 
     tdf = df[df.media_type == target].copy()
     sdf = df[df.media_type.isin(source)].copy()
@@ -51,10 +51,8 @@ def run(target="game", source=("movie", "book")):
     source_mean = sdf["target_reg"].mean()
 
     rows = []
-    for fold in range(50):
-        te = tdf[tdf.global_id.apply(lambda g: fold in registry.get(g, []))]
-        if te.empty:
-            continue
+    for fold, te_mask in registry_folds(tdf, registry):
+        te = tdf[te_mask]
         tr = tdf[~tdf.global_id.isin(te.global_id)]
         y = te["target_reg"].values
         game_mean = tr["target_reg"].mean()

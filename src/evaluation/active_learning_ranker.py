@@ -9,6 +9,7 @@ from sklearn.preprocessing import StandardScaler
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.unified_model.unified_utils import text_feature_cols
 
 def run_active_learning_ranking():
     print("🎯 Starting Active Learning Ranker (v3: Raw Uncertainty + kNN Novelty)...")
@@ -32,7 +33,7 @@ def run_active_learning_ranking():
         print("❌ Preprocessor state missing.")
         return
     state = joblib.load(state_path)
-    pca_cols = [c for c in df_train.columns if c.startswith('pca_')]
+    pca_cols = text_feature_cols(df_train)
     
     # Filter for unrated items
     df_preds['user_rating'] = pd.to_numeric(df_preds['user_rating'], errors='coerce').fillna(0)
@@ -124,8 +125,14 @@ def run_active_learning_ranking():
                 _w = float(_meta["conformal_width_80"])
                 if _w > 0:
                     conformal_widths[_dom] = _w
-            except Exception:  # noqa: BLE001 - keep the literal fallback
-                pass
+            except Exception as _e:  # noqa: BLE001 - keep the literal fallback
+                # Say so. This silently published a hardcoded width for games while
+                # the measured one was 0.84 -- the queue told you the model was far
+                # less certain than it actually was, and nothing indicated the number
+                # was a literal rather than a measurement.
+                print(f"   WARNING: no conformal_width_80 for '{_dom}' "
+                      f"({type(_e).__name__}); publishing the hardcoded fallback "
+                      f"{conformal_widths.get(_dom)} instead of a measured width.")
         
         def get_interval(row):
             w = conformal_widths.get(row['media_type'], 1.0)

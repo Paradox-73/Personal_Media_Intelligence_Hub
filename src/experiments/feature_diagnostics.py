@@ -37,7 +37,7 @@ from sklearn.metrics import mean_absolute_error
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.reporting.standalone_benchmarks import _load_domain, DROP_COLS, _round_half
+from src.reporting.standalone_benchmarks import _load_domain, DROP_COLS, _round_half, load_registry, registry_folds
 
 DOMAINS = ["movie", "tv", "game", "book"]
 LOCAL_PATHS = {
@@ -171,8 +171,7 @@ def base_learner_ablation(out):
     print("=" * 74)
     uni = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
     uni["global_id"] = uni["media_type"] + "_" + uni["source_id"].astype(str)
-    with open(config.UNIFIED_MODEL_DIR / "fold_registry.json") as f:
-        registry = json.load(f)
+    registry = load_registry()
     builders = {"xgb": _xgb, "cat": _cat, "svr": _svr}
     out["base_ablation"] = {}
     for dom in ["movie", "tv"]:
@@ -180,10 +179,7 @@ def base_learner_ablation(out):
         feat = [c for c in loc.columns if c not in DROP_COLS]
         # collect per (item, repeat) raw preds for each member + blends
         recs = []
-        for fold_id in range(50):
-            tmask = loc["global_id"].apply(lambda g: fold_id in registry.get(g, []))
-            if not tmask.any():
-                continue
+        for fold_id, tmask in registry_folds(loc, registry):
             tr, te = loc[~tmask], loc[tmask]
             Xtr, ytr, Xte = tr[feat], tr["target_reg"], te[feat]
             member_pred = {}

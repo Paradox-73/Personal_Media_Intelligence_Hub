@@ -23,8 +23,8 @@ genre encoding + critic-average + year + log-popularity + missingness masks), we
 augmented — measured against each target's own local model on the frozen registry folds.
 """)
 
-SUMMARY = Path("reports/transfer_grid_summary.json")
-RESULTS = Path("reports/transfer_grid_results.csv")
+SUMMARY = config.BASE_DIR / "reports/transfer_grid_summary.json"
+RESULTS = config.BASE_DIR / "reports/transfer_grid_results.csv"
 
 if not SUMMARY.exists():
     st.error("Run `python -m src.experiments.transfer_study` then "

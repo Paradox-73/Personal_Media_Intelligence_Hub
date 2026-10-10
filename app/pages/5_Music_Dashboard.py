@@ -301,13 +301,13 @@ def load_data():
         artist_src = 'artists' if 'artists' in df.columns else 'mb_canonical_artist'
         df['primary_artist'] = df[artist_src].apply(primary_artist)
 
-        # Genres: prefer Spotify artist_genres, fall back to MusicBrainz genres/tags
-        genre_src = None
+        # Genres: prefer Spotify artist_genres, and per track fall back to
+        # MusicBrainz genres, then tags, the way geo_country coalesces below.
+        genre_list = pd.Series([[] for _ in range(len(df))], index=df.index, dtype=object)
         for cand in ['artist_genres', 'mb_genres', 'mb_tags', 'genre']:
             if cand in df.columns:
-                genre_src = cand
-                break
-        df['genre_list'] = df[genre_src].apply(parse_genres) if genre_src else [[] for _ in range(len(df))]
+                genre_list = genre_list.where(genre_list.str.len() > 0, df[cand].apply(parse_genres))
+        df['genre_list'] = genre_list
 
         df['decade'] = (df['release_year'] // 10) * 10
 

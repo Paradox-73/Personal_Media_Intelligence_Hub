@@ -14,7 +14,8 @@ from scipy.stats import wilcoxon
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.movies.custom_objectives import AsymmetricEdgePenaltyObjective
-from src.unified_model.unified_utils import DomainAligner, compute_temporal_weights
+from src.unified_model.unified_utils import (AlignedTextPCA, compute_temporal_weights,
+                                             replace_text_block, text_feature_cols)
 from src.reporting.metrics_writer import write_latest_metrics
 
 def run_unified_ablation_study():
@@ -29,11 +30,21 @@ def run_unified_ablation_study():
     # Task 0.4: RATED-ONLY
     # Music has target_reg but it's pseudo-labels. Rated items are movie, tv, game, book.
     # In unified_feature_engineering, media_type is set.
-    df = df_full[df_full['media_type'] != 'music'].copy()
-    print(f"📊 Filtered to RATED-ONLY items: N={len(df)}")
+    #
+    # `target_reg > 0` is the second half of the filter and is NOT optional. Unrated
+    # items are stored as target_reg == 0.0 -- a fillna in the builder, not NaN -- so
+    # dropping music alone left six "Incomplete" games training and scoring against an
+    # impossible label (0.0 is off the bottom of the 0.5-5.0 half-star grid). That is
+    # the same defect already fixed in the fold registry, the trainer and the
+    # comprehensive evaluator; this module was missed, so it ran on N=1413 while every
+    # other artifact ran on N=1407, and its numbers reach latest_metrics.json.
+    df = df_full[(df_full['media_type'] != 'music') & (df_full['target_reg'] > 0)].copy()
+    _n_dropped = (df_full['media_type'] != 'music').sum() - len(df)
+    print(f"📊 Filtered to RATED-ONLY items: N={len(df)}"
+          + (f" ({_n_dropped} unrated/0-target row(s) excluded)" if _n_dropped else ""))
 
     df['rating_date'] = pd.to_datetime(df['rating_date'])
-    pca_cols = [c for c in df.columns if c.startswith('pca_')]
+    pca_cols = text_feature_cols(df)
     
     X_full = df.drop(columns=['target_reg', 'target_ordinal', 'source_id', 'media_type', 'rating_date', 'global_id'], errors='ignore')
     y = df['target_reg']
@@ -58,6 +69,7 @@ def run_unified_ablation_study():
         
         all_y_true = []
         all_y_pred = []
+        all_ids = []
         
         # We need to iterate over the 50 folds (10-fold x 5-repeat)
         for fold_id in range(50):
@@ -72,10 +84,9 @@ def run_unified_ablation_study():
             m_train, m_test = media_types[train_mask], media_types[test_mask]
             d_train = dates[train_mask]
             
-            aligner = DomainAligner(method='centroid')
-            aligner.fit(X_train[pca_cols].values, m_train)
-            X_train.loc[:, pca_cols] = aligner.transform(X_train[pca_cols].values, m_train)
-            X_test.loc[:, pca_cols] = aligner.transform(X_test[pca_cols].values, m_test)
+            block = AlignedTextPCA().fit(X_train[pca_cols].values, m_train)
+            X_train = replace_text_block(X_train, pca_cols, block, m_train)
+            X_test = replace_text_block(X_test, pca_cols, block, m_test)
 
             w_train = compute_temporal_weights(d_train, lambda_decay=0.000429)
             
@@ -92,12 +103,16 @@ def run_unified_ablation_study():
             
             all_y_true.extend(y_test.tolist())
             all_y_pred.extend(preds.tolist())
+            all_ids.extend(df.loc[test_mask, 'global_id'].tolist())
             
             if (fold_id + 1) % 10 == 0:
                 print(f"   Processed {fold_id + 1} folds...")
             
-        y_true_arr = np.array(all_y_true)
-        y_pred_arr = np.array(all_y_pred)
+        # Each item is tested in 5 of the 50 folds: score one averaged prediction per item,
+        # otherwise every item counts 5 times and the paired test's p-value is too small.
+        per_item = pd.DataFrame({'id': all_ids, 't': all_y_true, 'p': all_y_pred}).groupby('id', sort=True).mean()
+        y_true_arr = per_item['t'].to_numpy()
+        y_pred_arr = per_item['p'].to_numpy()
         y_pred_rounded = np.round(np.clip(y_pred_arr, 0.5, 5.0) * 2) / 2
         
         mae = mean_absolute_error(y_true_arr, y_pred_rounded)
@@ -112,15 +127,16 @@ def run_unified_ablation_study():
     
     # Calculate significance
     y_true = base_results['Y_TRUE']
-    base_err = np.abs(y_true - fold_preds["Base"])
-    ens_err = np.abs(y_true - fold_preds["MeanEnsemble"])
+    _rh = lambda a: np.round(np.clip(a, 0.5, 5.0) * 2) / 2
+    base_err = np.abs(y_true - _rh(fold_preds["Base"]))
+    ens_err = np.abs(y_true - _rh(fold_preds["MeanEnsemble"]))
     _, p_val = wilcoxon(base_err, ens_err)
     
     # Effect size: paired Cohen's d on the per-item absolute-error differences.
     diff = base_err - ens_err
     cohens_d = np.mean(diff) / np.std(diff) if np.std(diff) > 0 else 0.0
     mae_delta = base_results['MAE'] - ens_results['MAE']
-    # ~5k paired samples make microscopic effects "significant"; flag triviality.
+    # ~1.5k paired items make microscopic effects "significant"; flag triviality.
     triviality = "trivial" if abs(mae_delta) < 0.02 else "material"
     print(f"   Ensemble vs Base: dMAE={mae_delta:+.4f}  Cohen's d={cohens_d:.4f}  "
           f"p={p_val:.4g}  -> significant-but-{triviality}")

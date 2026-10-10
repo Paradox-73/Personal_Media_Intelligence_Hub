@@ -10,10 +10,13 @@ Updates:
 import os
 import pandas as pd
 import numpy as np
-import config
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[2]))  # repo root, so `python src/music/<mod>.py` works too
+from src.music import config
 from pathlib import Path
 import random
-from feature_engineering import split_terms
+from src.music.feature_engineering import split_terms
 
 POOL_CSV = config.PROCESSED_DIR / "music_pool.csv"
 NEGATIVES_CSV = config.RAW_DIR / "negatives.csv"

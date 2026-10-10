@@ -31,6 +31,7 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from src import config
+from src.unified_model.unified_utils import text_feature_cols
 
 warnings.filterwarnings("ignore")
 
@@ -96,6 +97,14 @@ def _movies():
     return df, batch, (lambda raw: transform_single_movie(raw, state)), state
 
 
+def _shows():
+    from src.shows.feature_engineering import transform_single_show
+    df = _read(config.TV_SHOWS_ENRICHED_DATA_PATH).dropna(subset=["user_rating"]).reset_index(drop=True)
+    batch = _read(config.TV_SHOWS_TRAINING_DATA_PATH)
+    state = joblib.load(config.TV_SHOWS_PREPROCESSOR_STATE)
+    return df, batch, (lambda raw: transform_single_show(raw, state)), state
+
+
 def _unified(media_type):
     """The unified backbone, exercised through the same entry point the Oracles use."""
     from src.unified_model.unified_oracle import _load, _to_backbone
@@ -118,21 +127,38 @@ def _unified(media_type):
     # would be invisible in the noise.
     aligner = state.get("aligner")
     if aligner is not None:
-        pca_cols = [c for c in batch.columns if c.startswith("pca_")]
+        # `text_feature_cols` accepts emb_* AND pca_*. Hardcoding "pca_" here meant that
+        # when the matrix moved to the full 384-d embedding this selector matched
+        # nothing, the batch side was left unaligned against an aligned serve side, and
+        # the audit reported all 384 emb_* columns as skewed in every unified domain --
+        # the precise false alarm the comment above was written to prevent.
+        pca_cols = text_feature_cols(batch)
         if pca_cols:
-            batch = batch.copy()
-            batch.loc[:, pca_cols] = aligner.transform(
-                batch[pca_cols].values, np.array([media_type] * len(batch)))
+            # replace_text_block handles both states: a plain aligner keeps emb_*,
+            # AlignedTextPCA turns them into pca_0..9 exactly as the trainer does.
+            from src.unified_model.unified_utils import replace_text_block
+            batch = replace_text_block(batch, pca_cols, aligner,
+                                       np.array([media_type] * len(batch)))
 
+    # Filter exactly as build_universal_dataset does: it drops unrated movies/TV but
+    # keeps every game and book (unrated ones with target 0). Filtering games/books
+    # here too shifted rows, so game A's features were diffed against game B's.
     src_map = {
-        "book": (config.BOOKS_ENRICHED_DATA_PATH, "my_rating"),
-        "game": (config.GAMES_ENRICHED_DATA_PATH, "my_rating"),
+        "book": (config.BOOKS_ENRICHED_DATA_PATH, None),
+        "game": (config.GAMES_ENRICHED_DATA_PATH, None),
         "movie": (config.MOVIES_ENRICHED_DATA_PATH, "user_rating"),
         "tv": (config.TV_SHOWS_ENRICHED_DATA_PATH, "user_rating"),
     }
     path, rating_col = src_map[media_type]
     df = _read(path)
-    df = df[df[rating_col].notna()].reset_index(drop=True)
+    if rating_col:
+        df = df.dropna(subset=[rating_col])
+    df = df.reset_index(drop=True)
+    # Row i of df is the item with source_id batch.source_id[i]; a length mismatch
+    # means the enriched CSV changed since the features were built.
+    if len(df) != len(batch):
+        raise RuntimeError(f"unified:{media_type}: {len(df)} enriched rows vs {len(batch)} "
+                           f"feature rows -- features are stale, rebuild them")
 
     def fn(raw):
         return transform_single_media(_to_backbone(raw, media_type), state,
@@ -145,6 +171,7 @@ DOMAINS = {
     "books": _books,
     "games": _games,
     "movies": _movies,
+    "shows": _shows,
     "unified:book": lambda: _unified("book"),
     "unified:game": lambda: _unified("game"),
     "unified:movie": lambda: _unified("movie"),
@@ -154,7 +181,11 @@ DOMAINS = {
 
 def audit(name, n_sample=12, verbose=True):
     """Transform n_sample real library rows and diff against the batch frame."""
-    df, batch, fn, state = DOMAINS[name]()
+    try:
+        df, batch, fn, state = DOMAINS[name]()
+    except Exception as e:  # noqa: BLE001 -- a broken adapter must fail the audit, not pass it
+        print(f"  ❌ {name}: could not load: {e!r}")
+        return [("__load__", float("inf"), 0.0, repr(e))]
 
     n = min(n_sample, len(df), len(batch))
     if n == 0:
@@ -169,8 +200,8 @@ def audit(name, n_sample=12, verbose=True):
         try:
             rows.append(fn(df.iloc[i].to_dict()))
         except Exception as e:
-            print(f"  ⚠️  {name}: transform failed on row {i}: {e}")
-            return []
+            print(f"  ❌ {name}: transform failed on row {i}: {e!r}")
+            return [("__transform__", float("inf"), 0.0, repr(e))]
     infer = pd.concat(rows, ignore_index=True)
 
     feat_cols = [c for c in infer.columns if c in batch.columns]
@@ -193,7 +224,13 @@ def audit(name, n_sample=12, verbose=True):
                 findings.append((c, d, s, f"constant {b[c].iloc[0]:.4g} in training, "
                                           f"inference sends {a[c].iloc[0]:.4g}"))
         else:
-            tol = PCA_REL_TOL if c.startswith("pca_") else REL_TOL
+            # The looser text tolerance must follow the text block whatever it is
+            # called. Keying it on "pca_" alone meant that after the move to the full
+            # 384-d embedding every emb_* column was judged against REL_TOL (0.10), the
+            # tolerance meant for engineered features, rather than the 0.35 that exists
+            # precisely because batched and single-item sentence-transformer encodes are
+            # not bitwise identical. That flagged ~375 columns per domain as skew.
+            tol = PCA_REL_TOL if (c.startswith("pca_") or c.startswith("emb_")) else REL_TOL
             if d > tol * s:
                 findings.append((c, d, s, f"mean|Δ|={d:.4g} vs train σ={s:.4g}"))
 
@@ -221,7 +258,9 @@ def audit(name, n_sample=12, verbose=True):
             print(f"     ⚠️  {len(missing)} batch column(s) the single-item path never emits: "
                   f"{missing[:8]}{' …' if len(missing) > 8 else ''}")
 
-    return real
+    # A batch column the single-item path never emits is served as 0 or not at all.
+    return real + [(c, float("inf"), 0.0, "never emitted by the single-item path")
+                   for c in missing]
 
 
 def main(argv):

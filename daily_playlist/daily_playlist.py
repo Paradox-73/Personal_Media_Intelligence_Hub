@@ -35,7 +35,11 @@ except ImportError:
 
 SCOPE = "user-library-read playlist-modify-public playlist-modify-private"
 
-LASTFM_ROOT = "http://ws.audioscrobbler.com/2.0/"
+LASTFM_ROOT = "https://ws.audioscrobbler.com/2.0/"
+
+# Last.fm JSON error codes that mean "try again": operation failed, service
+# offline, temporarily unavailable, rate limit exceeded.
+LASTFM_TRANSIENT_ERRORS = {8, 11, 16, 29}
 
 def _env(name, default=None):
     """os.environ.get, but an empty/whitespace value falls back to default.
@@ -139,14 +143,17 @@ def lastfm(method, **params):
                 continue
             r.raise_for_status()
             data = r.json()
-            if "error" in data:
-                # Last.fm-level error (e.g. bad params); don't hammer it.
-                raise RuntimeError(f"Last.fm {method} error: {data.get('message')}")
-            return data
         except requests.RequestException:
             if attempt == 3:
                 raise
             time.sleep(2 * (attempt + 1))
+            continue
+        if "error" not in data:
+            return data
+        # Permanent errors (e.g. bad params) are not retried; transient ones are.
+        if data.get("error") not in LASTFM_TRANSIENT_ERRORS or attempt == 3:
+            raise RuntimeError(f"Last.fm {method} error {data.get('error')}: {data.get('message')}")
+        time.sleep(2 * (attempt + 1))
     return {}
 
 
@@ -193,8 +200,13 @@ def lastfm_recent_keys(days, max_pages):
 
 def lastfm_similar(artist, title, limit):
     """Return list of (artist, title, match_score) similar to the seed track."""
-    data = lastfm("track.getSimilar", artist=artist, track=title,
-                  limit=limit, autocorrect=1)
+    try:
+        data = lastfm("track.getSimilar", artist=artist, track=title,
+                      limit=limit, autocorrect=1)
+    except (RuntimeError, requests.RequestException) as e:
+        # One bad seed costs that seed, not the whole daily run.
+        log(f"Skipping similar-track seed {artist} - {title}: {e}")
+        return []
     out = []
     for t in data.get("similartracks", {}).get("track", []):
         try:
@@ -387,7 +399,15 @@ def set_playlist_tracks(sp, playlist_id, uris):
     first = uris[:100]
     sp.playlist_replace_items(playlist_id, first)
     for i in range(100, len(uris), 100):
-        sp.playlist_add_items(playlist_id, uris[i:i + 100])
+        # The playlist is already cut to 100 here, so a failed chunk is retried.
+        for attempt in range(3):
+            try:
+                sp.playlist_add_items(playlist_id, uris[i:i + 100])
+                break
+            except (spotipy.SpotifyException, requests.RequestException):
+                if attempt == 2:
+                    raise
+                time.sleep(5 * (attempt + 1))
 
 
 def update_description(sp, playlist_id, counts):
@@ -478,8 +498,9 @@ def main():
         random.shuffle(leftover)
         add(leftover[:need])
 
-    if not chosen:
-        die("No tracks assembled; aborting so the playlist isn't wiped.")
+    if not chosen or len(chosen) < PLAYLIST_SIZE // 2:
+        die(f"Only {len(chosen)} of {PLAYLIST_SIZE} tracks assembled; aborting so "
+            "the playlist isn't replaced by a short one.")
 
     # Interleave a little so buckets aren't in three solid blocks.
     random.shuffle(chosen)

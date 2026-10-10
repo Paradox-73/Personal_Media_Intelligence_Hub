@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import joblib
 import ast
+import functools
 import sys
 import re
 from pathlib import Path
@@ -20,6 +21,7 @@ from src.common.parsing import (  # canonical shared parsers
 # Adult, mislabelling 12.4% of the movie library.
 from src.common.parsing import categorize_rating, norm_language
 from src.common import taste_features as tf
+from src.common.wikipedia_plots import plot_for
 from src.common.text_embedding import encode_pooled, encode_pooled_single
 
 def _movie_header(raw):
@@ -34,12 +36,25 @@ def _movie_header(raw):
         if v is None or (isinstance(v, float) and v != v):
             return ''
         return str(v)
+    # CAP THE PEOPLE LISTS. This header is repeated on EVERY window, so its length is
+    # subtracted from the encoder budget once per window -- and `actors` is the full
+    # billed cast, median 41 names and up to 331. Uncapped, the header alone ran a
+    # median of 230 tokens against MiniLM's 256 limit: 42.7% of films overflowed on
+    # the header ALONE (their plot was never read at all) and 69.0% of header+window
+    # strings were truncated. That is the same length confound chunk-pooling was
+    # written to remove, hiding on the largest domain, and it made the pooling a
+    # no-op for movies. Top billing carries the taste signal; the 40th name does not.
+    # TV already caps cast at 120 chars -- movies capped nothing.
+    def top_n(val, n):
+        parts = [p.strip() for p in people_key(val).split(',') if p.strip()]
+        return ", ".join(parts[:n])
+
     return ("Title: " + (g('title') or 'Unknown') +
-            ". Genre: " + people_key(raw.get('genre')) +
-            ". Directed by: " + (people_key(raw.get('director')) or 'Unknown') +
-            ". Written by: " + people_key(raw.get('writer')) +
-            ". Starring: " + people_key(raw.get('actors')) +
-            ". Tagline: " + g('tagline') + ".")
+            ". Genre: " + top_n(raw.get('genre'), 5) +
+            ". Directed by: " + (top_n(raw.get('director'), 3) or 'Unknown') +
+            ". Written by: " + top_n(raw.get('writer'), 3) +
+            ". Starring: " + top_n(raw.get('actors'), 6) +
+            ". Tagline: " + g('tagline')[:160] + ".")
 
 
 def _movie_body(raw):
@@ -48,11 +63,17 @@ def _movie_body(raw):
         if v is None or (isinstance(v, float) and v != v):
             return ''
         return str(v)
-    return (g('plot') + " " + g('overview')).strip()
+    blurb = (g('plot') + " " + g('overview')).strip()
+    # Prefer the Wikipedia plot when we have one: a TMDB overview is a 2-sentence
+    # logline, the plot section is an ordered 640-word retelling. Falls back to the
+    # blurb, so a domain is a MIXTURE of the two registers -- see plot_for().
+    return plot_for('movie', raw.get('title'), blurb)
 
 
-def _movie_text(raw):
-    return f"{_movie_header(raw)} {_movie_body(raw)}"
+@functools.lru_cache(maxsize=None)
+def _sentence_model(name):
+    # Loading the encoder costs seconds; batch scoring calls transform_single_movie per row.
+    return SentenceTransformer(name)
 
 
 # --- CONFIG ---
@@ -212,7 +233,6 @@ def process_features():
     _records = df.to_dict('records')
     df['text_header'] = [_movie_header(r) for r in _records]
     _body = pd.Series([_movie_body(r) for r in _records], index=df.index)
-    df['text_content'] = df['text_header'] + " " + _body
     transformer_model = SentenceTransformer('all-MiniLM-L6-v2')
     text_embeddings = encode_pooled(df['text_header'].tolist(), _body.tolist(),
                                     transformer_model, show_progress_bar=True)
@@ -226,45 +246,6 @@ def process_features():
     df['genre_list'] = df['genre'].apply(canon_genres)
     mlb = MultiLabelBinarizer()
     X_genre = pd.DataFrame(mlb.fit_transform(df['genre_list']), columns=[f"gen_{c}" for c in mlb.classes_], index=df.index)
-
-    # 5.1 Target Encoding for Directors/Creators (Leakage-Safe)
-    print("   Applying Leakage-Safe Target Encoding...")
-    from sklearn.model_selection import KFold
-    
-    def target_encode(train_df, col, target='user_rating', m=10):
-        # Bayesian smoothing: (n * mean + m * global_mean) / (n + m)
-        global_mean = train_df[target].mean()
-        
-        # We must compute this strictly out-of-fold to avoid leakage
-        kf = KFold(n_splits=5, shuffle=True, random_state=42)
-        encoded = pd.Series(index=train_df.index, dtype=float)
-        
-        # Flatten creators if it's a list (for directors/actors).
-        # ALWAYS go through parse_list. This used to pick a branch by inspecting
-        # row 0 only -- if row 0 happened to be comma-form, every bracket-form row
-        # ("['Christopher Nolan', 'X']", which is 967 of 1062 director cells) was
-        # sent through .str.split(', ') and shredded into keys like "['Christopher".
-        # parse_list handles both storage shapes, so the branch was never needed.
-        temp_df = train_df[[col, target]].copy()
-        temp_df[col] = temp_df[col].apply(parse_list)
-
-        # Function to get mean for a set of items (e.g. multiple directors)
-        def get_item_mean(items, mapping, g_mean):
-            if not items: return g_mean
-            vals = [mapping.get(i, g_mean) for i in items]
-            return np.mean(vals)
-
-        for train_idx, val_idx in kf.split(temp_df):
-            # Compute mapping on training folds
-            fold_train = temp_df.iloc[train_idx].explode(col)
-            stats = fold_train.groupby(col)[target].agg(['count', 'mean'])
-            mapping = (stats['count'] * stats['mean'] + m * global_mean) / (stats['count'] + m)
-            mapping = mapping.to_dict()
-            
-            # Apply to validation fold
-            encoded.iloc[val_idx] = temp_df.iloc[val_idx][col].apply(lambda x: get_item_mean(x, mapping, global_mean))
-        
-        return encoded.fillna(global_mean)
 
     # 5.2 Director x Genre Interaction
     # Simplification: Top genre x Director encoding
@@ -403,7 +384,9 @@ def transform_single_movie(movie_data, state):
 
     def safe_num(val, default_val):
         if pd.isna(val) or str(val).lower() in ['nan', 'n/a', 'none', '']: return default_val
-        try: return float(str(val).replace(',', '').replace('%', '').strip())
+        # Same cleanup as process_features, including the "87 min" runtime unit.
+        s = re.sub(r'\s*(min|mins|minutes|hrs|h)\.?$', '', str(val).replace(',', '').replace('%', ''))
+        try: return float(s.strip())
         except: return default_val
 
     # Mapping movie_data keys to feature columns
@@ -452,7 +435,14 @@ def transform_single_movie(movie_data, state):
 
     def map_language_single(lang_str, top_langs):
         if pd.isna(lang_str): return 'Other'
-        langs = [l.strip() for l in str(lang_str).split(',')]
+        # `norm_language` FIRST, exactly as process_features does at the top of the
+        # batch path. Without it the raw source value is matched against a normalized
+        # vocabulary: TMDB supplies the ISO code "en" while `top_languages` holds
+        # "English", so no language ever matched and EVERY movie scored through this
+        # path got lang_Other=1 with the real language left at 0 -- a combination
+        # almost no training row has. The parity audit measured mean|delta| of exactly
+        # 1.0 on lang_Other, i.e. wrong on every single sampled row.
+        langs = [l.strip() for l in norm_language(lang_str).split(',')]
         for lang in langs:
             if lang in top_langs:
                 return lang
@@ -547,8 +537,7 @@ def transform_single_movie(movie_data, state):
     # Richer text — MUST match the training recipe in process_features() above,
     # which is now guaranteed by sharing _movie_header/_movie_body rather than by
     # keeping two hand-copied f-strings in sync.
-    text_content = _movie_text(movie_data)
-    transformer_model = SentenceTransformer(state['sentence_transformer'])
+    transformer_model = _sentence_model(state['sentence_transformer'])
     embedding = encode_pooled_single(_movie_header(movie_data), _movie_body(movie_data),
                                      transformer_model)
     pca_vec = state['pca'].transform(embedding)

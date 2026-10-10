@@ -6,11 +6,17 @@ they can be plotted on a Plotly choropleth without any external dependency
 (no ``pycountry`` required).
 """
 
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+
+_INDIA_PATH = Path(__file__).resolve().parent / "assets" / "india_soi.geojson"
+INDIA_GEOJSON = json.loads(_INDIA_PATH.read_text(encoding="utf-8")) if _INDIA_PATH.exists() else None
 
 # Canonical ISO-3 -> display name. Drives both the reverse lookup used for the
 # map tooltips and (lower-cased) the forward name -> ISO-3 resolution below.
@@ -118,14 +124,6 @@ def _to_iso3(name):
     return None
 
 
-def iso2_to_name(code):
-    """Best-effort full country name for an ISO alpha-2 code (else the code)."""
-    if not code:
-        return None
-    iso3 = ISO2_TO_ISO3.get(str(code).strip().upper())
-    return ISO3_TO_NAME.get(iso3, str(code).strip().upper())
-
-
 def aggregate_country_counts(df, country_col, rating_col="user_rating"):
     """Explode ``country_col`` (a list-per-row column) and count items per country.
 
@@ -189,6 +187,21 @@ def make_world_map(agg, *, low_color, high_color, value_col="Count", title=None,
             "<br>Avg rating: %{customdata[1]:.2f}<extra></extra>"
         ),
     )
+
+    # Plotly's built-in world shapes (Natural Earth) leave Jammu & Kashmir,
+    # Ladakh and Arunachal Pradesh out of India, so those regions stayed dark
+    # while the rest of India lit up. Redraw India on top using the Survey of
+    # India boundary (app/assets/india_soi.geojson), on the same colour scale.
+    ind = plot[plot["iso3"] == "IND"]
+    if not ind.empty and INDIA_GEOJSON is not None:
+        fig.add_trace(go.Choropleth(
+            geojson=INDIA_GEOJSON, locations=["IND"], featureidkey="id",
+            z=ind[color_col].tolist(), coloraxis="coloraxis",
+            customdata=ind[["Count", "avg_rating"]].values, hovertext=ind["country"].tolist(),
+            marker_line_color="#14171C", marker_line_width=0.4,
+            hovertemplate=("<b>%{hovertext}</b><br>Items: %{customdata[0]}"
+                           "<br>Avg rating: %{customdata[1]:.2f}<extra></extra>"),
+        ))
 
     if log_scale:
         mx = int(plot[value_col].max())

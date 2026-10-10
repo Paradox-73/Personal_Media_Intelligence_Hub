@@ -12,6 +12,7 @@ from collections import Counter
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+from src import config
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
 from mobile import apply_mobile_css
@@ -61,10 +62,10 @@ px.defaults.color_discrete_sequence = RED_SEQUENCE
 px.defaults.color_continuous_scale = RED_SCALE
 
 # --- PATHS ---
-RAW_HISTORY = Path("data/raw/youtube/watch-history.json")
-SUBSCRIPTIONS_PATH = Path("data/raw/youtube/subscriptions.csv")  # From Takeout
-VIDEO_STATS_PATH = Path("data/processed/youtube/youtube_video_details.csv")
-CHANNEL_STATS_PATH = Path("data/processed/youtube/youtube_channel_details.csv")
+RAW_HISTORY = config.BASE_DIR / "data/raw/youtube/watch-history.json"
+SUBSCRIPTIONS_PATH = config.BASE_DIR / "data/raw/youtube/subscriptions.csv"  # From Takeout
+VIDEO_STATS_PATH = config.BASE_DIR / "data/processed/youtube/youtube_video_details.csv"
+CHANNEL_STATS_PATH = config.BASE_DIR / "data/processed/youtube/youtube_channel_details.csv"
 
 # Standard YouTube Category Map (snippet.categoryId -> human label)
 CATEGORY_MAP = {
@@ -81,7 +82,7 @@ CATEGORY_MAP = {
 # --- HELPER FUNCTIONS ---
 def clean_title(title):
     if pd.isna(title): return "Unknown"
-    return str(title).replace("Watched ", "").strip()
+    return str(title).removeprefix("Watched ").strip()
 
 def extract_channel_info(subtitles):
     """Returns (channel_name, channel_url) from the history 'subtitles' field."""

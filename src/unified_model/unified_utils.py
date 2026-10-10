@@ -145,3 +145,60 @@ def get_music_gate_mask(media_types):
         return gate_map.get(media_types.lower(), 0.0)
         
     return media_types.map(lambda x: gate_map.get(str(x).lower(), 0.0)).fillna(0.0).values
+
+
+N_TEXT_PCA = 10
+
+
+class AlignedTextPCA(BaseEstimator, TransformerMixin):
+    """The unified model's text input: centroid-align the 384-d embedding per
+    domain, then a 10-component PCA, both fitted on the TRAINING rows only.
+
+    The feature CSV keeps the full 384-d `emb_*` block (lookalike search and the
+    Latent Space Explorer need the local neighbourhood structure). Feeding all
+    384 dims to the rating model was measured on 2026-10-02 against this block on
+    the same 1,514 items and 50 frozen folds (one-off script since deleted,
+    reports/change_diagnosis.json): skill 0.287 (384-d) vs 0.304 (PCA-10), movie
+    slice 0.314 vs 0.333, books 0.241 vs 0.276. So the model reads PCA-10."""
+
+    def __init__(self, n_components=N_TEXT_PCA, method="centroid"):
+        self.n_components = n_components
+        self.method = method
+
+    def fit(self, X, media_types):
+        from sklearn.decomposition import PCA
+        media_types = np.asarray(media_types)
+        self.aligner_ = DomainAligner(method=self.method).fit(np.asarray(X, float), media_types)
+        self.pca_ = PCA(n_components=self.n_components, random_state=42).fit(
+            self.aligner_.transform(np.asarray(X, float), media_types))
+        return self
+
+    def transform(self, X, media_types):
+        return self.pca_.transform(self.aligner_.transform(np.asarray(X, float), np.asarray(media_types)))
+
+    @property
+    def out_cols(self):
+        return [f"pca_{i}" for i in range(self.n_components)]
+
+
+def replace_text_block(frame, text_cols, block, media_types):
+    """`frame` with its text columns swapped for the fitted block's output.
+
+    AlignedTextPCA -> the 384 emb_* columns become pca_0..9 (appended at the end);
+    a plain DomainAligner (older saved states) keeps the same columns, aligned."""
+    vals = block.transform(frame[text_cols].values, np.asarray(media_types))
+    cols = getattr(block, "out_cols", None) or list(text_cols)
+    rest = frame.drop(columns=list(text_cols))
+    return pd.concat([rest, pd.DataFrame(vals, columns=cols, index=frame.index)], axis=1)
+
+
+def text_feature_cols(df):
+    """The unified text block, whatever it is currently called.
+
+    The aligner used to select `pca_*` in four separate files. When the matrix moved
+    from a 10-component PCA to the full 384-d embedding those selectors would each
+    have silently matched nothing, leaving the block unaligned with no error. One
+    definition, accepting both names, so that cannot happen.
+    """
+    cols = [c for c in df.columns if c.startswith("emb_")]
+    return cols or [c for c in df.columns if c.startswith("pca_")]

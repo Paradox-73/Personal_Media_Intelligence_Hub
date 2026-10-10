@@ -39,13 +39,83 @@ src/experiments/text_norm_variants.py and reports/text_norm_variants.csv:
 
     chunk-pool max scores marginally higher on books alone (0.110) but loses
     movie->game transfer, so the plain mean ships.
+
+SAVED RESULTS
+    Every window's vector is saved to data/cache/text_embeddings/<model>.npz,
+    keyed by a hash of the exact window text. A re-run only sends windows whose
+    text is new (a new film, an edited plot) through the model; the rest are read
+    back. Wikipedia plots made movie text ~5 windows per film, which took the
+    movie feature step from 25 s to ~5 min on CPU; with saved results a re-run
+    costs about as much as the handful of new films. Same text in, same vector
+    out, so results do not change. Single-item calls (the Oracle) read the file
+    but do not write it, so a lookup never rewrites the whole file.
 """
+import hashlib
+import os
 import re
 
 import numpy as np
 
 # Leave headroom under the 256-token limit for the header and special tokens.
 DEFAULT_WINDOW_TOKENS = 180
+
+_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                          "data", "cache", "text_embeddings")
+_memory = {}  # model name -> {text hash: vector}, so one process reads the file once
+
+
+def _model_name(model):
+    try:
+        return model[0].auto_model.config._name_or_path
+    except Exception:  # noqa: BLE001
+        return type(model).__name__
+
+
+def _cache_path(name):
+    return os.path.join(_CACHE_DIR, re.sub(r"[^A-Za-z0-9._-]+", "_", name) + ".npz")
+
+
+def _load(name):
+    if name not in _memory:
+        store, path = {}, _cache_path(name)
+        if os.path.exists(path):
+            with np.load(path) as z:
+                store = dict(zip(z["keys"].tolist(), z["vecs"]))
+        _memory[name] = store
+    return _memory[name]
+
+
+def _save(name):
+    store = _memory[name]
+    os.makedirs(_CACHE_DIR, exist_ok=True)
+    path = _cache_path(name)
+    tmp = path + ".tmp.npz"
+    np.savez(tmp, keys=np.array(list(store), dtype="U40"),
+             vecs=np.stack(list(store.values())).astype(np.float32))
+    os.replace(tmp, path)  # atomic: a reader never sees a half-written file
+
+
+def _key(text):
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _encode_cached(texts, model, batch_size, show_progress_bar, save):
+    """model.encode(texts, normalize_embeddings=True), reusing saved vectors."""
+    name = _model_name(model)
+    store = _load(name)
+    keys = [_key(t) for t in texts]
+    todo = list(dict.fromkeys(k for k in keys if k not in store))
+    if todo:
+        first = {}
+        for k, t in zip(keys, texts):
+            first.setdefault(k, t)
+        new = model.encode([first[k] for k in todo], normalize_embeddings=True,
+                           batch_size=batch_size, show_progress_bar=show_progress_bar)
+        for k, v in zip(todo, np.asarray(new, dtype=np.float32)):
+            store[k] = v
+        if save:
+            _save(name)
+    return np.stack([store[k] for k in keys]).astype(np.float32)
 
 
 def _sentences(text):
@@ -99,9 +169,7 @@ def encode_pooled(headers, descriptions, model, max_tokens=DEFAULT_WINDOW_TOKENS
             flat.append(f"{h} {w}".strip())
             owner.append(i)
 
-    emb = model.encode(flat, normalize_embeddings=True, batch_size=batch_size,
-                       show_progress_bar=show_progress_bar)
-    emb = np.asarray(emb, dtype=np.float32)
+    emb = _encode_cached(flat, model, batch_size, show_progress_bar, save=len(headers) > 1)
     owner = np.asarray(owner)
 
     out = np.zeros((len(headers), emb.shape[1]), dtype=np.float32)

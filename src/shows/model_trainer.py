@@ -25,42 +25,6 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.movies.custom_objectives import AsymmetricEdgePenaltyObjective
 
-from sklearn.base import BaseEstimator, RegressorMixin
-
-class SimplexWeightedAverager(RegressorMixin, BaseEstimator):
-    """
-    Constrained non-negative weighted average (simplex-constrained).
-    Weights are derived from OOF performance or a simple optimization.
-    At small N, this is more robust than a learned RidgeCV.
-    """
-    _estimator_type = "regressor"
-    
-    def __init__(self):
-        self.weights_ = None
-        self.n_features_in_ = None
-
-    def fit(self, X, y):
-        from scipy.optimize import minimize
-        self.n_features_in_ = X.shape[1]
-        
-        def objective(w):
-            preds = X @ w
-            return mean_absolute_error(y, preds)
-        
-        cons = ({'type': 'eq', 'fun': lambda w: np.sum(w) - 1})
-        bounds = [(0, 1) for _ in range(self.n_features_in_)]
-        initial_w = np.ones(self.n_features_in_) / self.n_features_in_
-        
-        res = minimize(objective, initial_w, method='SLSQP', bounds=bounds, constraints=cons)
-        self.weights_ = res.x
-        return self
-
-    def predict(self, X):
-        return X @ self.weights_
-
-    def get_params(self, deep=True):
-        return {}
-
 def print_performance_report(model_name: str, y_true: pd.Series, y_pred: np.ndarray):
     """Calculates and prints a standardized performance report for a model."""
     print("="*55)
@@ -111,7 +75,7 @@ def tune_and_train_xgboost(X_train, y_train, X_test, y_test):
         scores = cross_val_score(model, X_train, y_train, cv=rkf, scoring='neg_mean_absolute_error')
         return np.mean(scores)
 
-    study = optuna.create_study(direction="maximize")
+    study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=42))
     study.optimize(objective, n_trials=20)
     
     final_obj = AsymmetricEdgePenaltyObjective(

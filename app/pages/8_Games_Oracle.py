@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.games.ingestion import search_games_by_query, fetch_game_details_by_id
+from src.games.predict_ratings import library_reference, calibrated_rating
 from src.games.feature_engineering import transform_single_game, find_similar_games, explain_similarity_games
 from src.unified_model.unified_oracle import predict_unified
 
@@ -44,6 +45,13 @@ def load_artifacts():
 
 
 regressor, classifier, state, meta = load_artifacts()
+
+
+@st.cache_resource
+def load_calibration_reference():
+    """Same calibration reference the dashboard CSV is built with (src.games.predict_ratings)."""
+    _, _, ref_preds, ref_ratings = library_reference(regressor, state)
+    return ref_preds, ref_ratings
 
 if regressor is None:
     st.error("❌ Games models not found! Run ingestion and training for Games first.")
@@ -143,9 +151,9 @@ if st.session_state['selected_game_raw_data']:
             with st.spinner("Analyzing Embeddings & Models..."):
                 input_df = transform_single_game(raw_data, state)
 
-                def round_half(x): return max(0.5, min(5.0, np.round(np.clip(x, 0, 5) * 2) / 2))
+                ref_preds, ref_ratings = load_calibration_reference()
 
-                final_score = round_half(regressor.predict(input_df)[0])
+                final_score = float(calibrated_rating(regressor.predict(input_df), ref_preds, ref_ratings)[0])
                 pred_probs = classifier.predict_proba(input_df)[0]
                 classes = ["Skip it ❌", "Watchable 🎮", "Must-Play ⭐"]
                 verdict = classes[int(np.argmax(pred_probs))]

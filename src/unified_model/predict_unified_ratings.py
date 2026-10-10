@@ -1,385 +1,82 @@
-import pandas as pd
-import joblib
-import numpy as np
 import sys
-import ast
-import re
-import json
 from pathlib import Path
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sentence_transformers import SentenceTransformer
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import mean_absolute_error, r2_score
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.common.parsing import (  # canonical shared parsers
-    parse_list, people_key, sanitize_col, clean_money)
+from src.common.parsing import clean_year, read_media_csv
+from src.unified_model.unified_feature_engineering import transform_single_media
+from src.unified_model.unified_oracle import _load, _to_backbone
 
-from src.unified_model.unified_utils import get_music_affinity_features, get_music_gate_mask
-from src.common.text_embedding import encode_pooled
-from src.unified_model.unified_feature_engineering import unified_header, unified_body
-# categorize_rating MUST come from the builder, not the local copy below: the two
-# had drifted, and the local `'R' in r` version buckets 'Not Rated'/'Unrated' as
-# Adult and 'Teen' as General -- 151 of 1407 rows (10.7%) got the wrong rated_* one-hot.
-from src.unified_model.unified_feature_engineering import (
-    categorize_rating as _builder_categorize_rating, UNIFIED_ENCODE, TE_PRIOR)
-from src.common.parsing import canon_genre
-from src.common import taste_features as tf
-
-# Define MusicProfile in __main__ to satisfy joblib
-from dataclasses import dataclass
-from typing import List, Dict, Any
-
-@dataclass
-class MusicProfile:
-    centroids: np.ndarray
-    cluster_labels: List[str]
-    cluster_meta: List[Dict[str, Any]]
-    X_lib: np.ndarray
-    pu_model: Any
-    pool_score_dist: np.ndarray
-    top_genres: List[tuple]
-    audio_fingerprint: Dict[str, float]
-    feature_names: List[str]
-    feature_groups: Dict[str, List[str]]
-
-class SimplexWeightedAverager:
-    def __init__(self):
-        self.weights = None
-        self.n_models = 0
-    def predict(self, X):
-        return X @ self.weights
+# (enriched CSV, rating column) per domain. Music is de-rated and not in the model.
+SOURCES = {
+    "movie": (config.MOVIES_ENRICHED_DATA_PATH, "user_rating"),
+    "tv": (config.TV_SHOWS_ENRICHED_DATA_PATH, "user_rating"),
+    "game": (config.GAMES_ENRICHED_DATA_PATH, "my_rating"),
+    "book": (config.BOOKS_ENRICHED_DATA_PATH, "my_rating"),
+}
 
 
+def build_library_features(state):
+    """Every library row through the Oracle's own path (_to_backbone ->
+    transform_single_media). A separate batch re-implementation of that path drifted
+    twice and once served 21 of the model's 32 columns as 0."""
+    rows, X = [], []
+    for mt, (path, rating_col) in SOURCES.items():
+        df = read_media_csv(path)
+        print(f"   {mt}: {len(df)} rows")
+        for raw in df.to_dict("records"):
+            meta = _to_backbone(raw, mt)
+            X.append(transform_single_media(meta, state, media_type=mt))
+            rows.append({"display_name": meta.get("title") or raw.get("letterboxd_name") or "Unknown",
+                         "year": clean_year(meta.get("year") or meta.get("released")),
+                         "media_type": mt,
+                         "user_rating": raw.get(rating_col)})
+    return pd.DataFrame(rows), pd.concat(X, ignore_index=True)
 
-def categorize_rating(r):
-    r = str(r).upper()
-    if 'R' in r or 'NC-17' in r or 'TV-MA' in r: return 'Adult'
-    if 'PG' in r or 'TV-14' in r: return 'Teen'
-    return 'General'
-
-
-def clean_year(val):
-    try:
-        if pd.isna(val) or val == '': return None
-        s = str(val).strip()
-        match = re.search(r'(\d{4})', s)
-        if match: return int(match.group(1))
-        return int(float(s[:4]))
-    except:
-        return None
 
 def batch_predict_unified_ratings():
     print("🚀 Starting Batch Prediction (Unified Ensemble Mode)...")
+    c = _load()
+    df, X_final = build_library_features(c["state"])
 
-    # --- 1. Load Models & State ---
-    ensemble_dir = config.UNIFIED_ENSEMBLE_DIR
-    model_paths = {
-        "MeanEnsemble": ensemble_dir / "stacking_ensemble_regressor.joblib",
-        "XGB_Base": ensemble_dir / "xgb_base_regressor.joblib",
-        "CatBoost_Base": ensemble_dir / "catboost_base_regressor.joblib",
-        "Ordinal_EV": ensemble_dir / "ordinal_classifier.joblib"
-    }
-    
-    models = {}
-    for name, path in model_paths.items():
-        if path.exists():
-            models[name] = joblib.load(path)
-        else:
-            print(f"⚠️ Warning: Model file not found for '{name}' at {path}.")
-            
-    if not models:
-        print("❌ ERROR: No models loaded.")
-        return
-    
-    state_path = config.UNIFIED_PREPROCESSOR_STATE
-    if not state_path.exists():
-        print(f"❌ ERROR: Unified Preprocessor State not found at {state_path}.")
-        return
-    state = joblib.load(state_path)
-    print(f"✅ Loaded {len(models)} models and preprocessor state.")
-    
-    # --- 2. Load and Combine Data ---
-    try:
-        df_movies = pd.read_csv(config.MOVIES_ENRICHED_DATA_PATH)
-        df_shows = pd.read_csv(config.TV_SHOWS_ENRICHED_DATA_PATH)
-        df_games = pd.read_csv(config.GAMES_ENRICHED_DATA_PATH)
-        df_books = pd.read_csv(config.BOOKS_ENRICHED_DATA_PATH)
-        
-        df_movies['media_type'] = 'movie'
-        df_movies['is_tv_show'] = 0; df_movies['is_game'] = 0; df_movies['is_book'] = 0
-        
-        df_shows['media_type'] = 'tv'
-        df_shows['is_tv_show'] = 1; df_shows['is_game'] = 0; df_shows['is_book'] = 0
-        # build_universal_dataset folds the season-by-season narrative into `overview`
-        # for TV. Do the same here or every scored show is embedded from a one-line
-        # logline while the model was trained on the full multi-season text.
-        try:
-            from src.shows.season_data import attach_season_narrative, SEASON_NARRATIVE_COL
-            df_shows = attach_season_narrative(df_shows)
-            _sn = df_shows[SEASON_NARRATIVE_COL].fillna('').astype(str).str.strip()
-            df_shows['overview'] = (df_shows['overview'].fillna('').astype(str).str.strip()
-                                    + " " + _sn).str.strip()
-        except Exception as _e:
-            print(f"   ⚠️ season narrative unavailable ({_e}); TV text will not match training")
-        df_shows = df_shows.rename(columns={'name': 'title', 'created_by': 'director', 'genres': 'genre', 'age_rating': 'rated'})
-
-        df_games['media_type'] = 'game'
-        df_games = df_games.rename(columns={'name': 'title', 'my_rating': 'user_rating', 'genres': 'genre', 'developers': 'director', 'metacritic': 'metascore', 'rating': 'imdb_rating', 'ratings_count': 'imdb_votes', 'description_raw': 'overview', 'age_rating': 'rated'})
-        df_games['is_tv_show'] = 0; df_games['is_game'] = 1; df_games['is_book'] = 0
-        df_games['year'] = df_games['released'].apply(clean_year)
-        
-        df_books['media_type'] = 'book'
-        df_books = df_books.rename(columns={'my_rating': 'user_rating', 'authors': 'director', 'categories': 'genre', 'averageRating': 'imdb_rating', 'ratingsCount': 'imdb_votes', 'description': 'overview', 'publishedDate': 'released', 'pageCount': 'runtime'})
-        df_books['is_tv_show'] = 0; df_books['is_game'] = 0; df_books['is_book'] = 1
-        df_books['year'] = df_books['released'].apply(clean_year)
-        
-        dfs = [df_movies, df_shows, df_games, df_books]
-        # Check if music is available and intended
-        if config.MUSIC_ENRICHED_DATA_PATH.exists():
-            df_music = pd.read_csv(config.MUSIC_ENRICHED_DATA_PATH)
-            df_music = df_music.rename(columns={'name': 'title', 'artists': 'director', 'artist_genres': 'genre', 'rating': 'user_rating', 'release_year': 'year', 'popularity': 'imdb_rating'})
-            df_music['media_type'] = 'music'
-            df_music['is_tv_show'] = 0; df_music['is_game'] = 0; df_music['is_book'] = 0; df_music['is_music'] = 1
-            dfs.append(df_music)
-            
-        df = pd.concat(dfs, ignore_index=True)
-        print(f"   Total: {len(df)} records across {df['media_type'].nunique()} domains.")
-    except Exception as e:
-        print(f"❌ ERROR loading enriched data: {e}")
-        return
-
-    # --- 3. Feature Engineering ---
-    print("   Processing unified features...")
-    df['rotten_tomatoes_rating'] = pd.to_numeric(df['rotten_tomatoes_rating'].astype(str).str.replace('%', '', regex=False), errors='coerce')
-    df['box_office_clean'] = df['box_office'].apply(clean_money)
-    df['box_office_log'] = np.log1p(df['box_office_clean'])
-    df['total_wins'] = df['awards'].astype(str).str.extract(r'(\d+)\s+win', flags=re.IGNORECASE)[0].astype(float).fillna(0)
-    df['total_nominations'] = df['awards'].astype(str).str.extract(r'(\d+)\s+nomination', flags=re.IGNORECASE)[0].astype(float).fillna(0)
-    
-    mask_short_scale = (df['is_game'] == 1) | (df['is_book'] == 1)
-    df['ir_100'] = pd.to_numeric(df['imdb_rating'], errors='coerce') * 10
-    df.loc[mask_short_scale, 'ir_100'] = pd.to_numeric(df.loc[mask_short_scale, 'imdb_rating'], errors='coerce') * 20
-    df['va_100'] = pd.to_numeric(df['vote_average'], errors='coerce') * 10
-    df['metascore'] = pd.to_numeric(df['metascore'], errors='coerce')
-    df['critic_avg_5'] = (df[['ir_100', 'metascore', 'rotten_tomatoes_rating', 'va_100']].mean(axis=1) / 100 * 5)
-    
-    for col, med_val in state['median_values'].items():
-        if col in df.columns:
-            # Strip thousands separators BEFORE coercing, exactly as the builder does.
-            # OMDb returns imdb_votes grouped Indian-style ("7,13,701"); a bare
-            # to_numeric turned 756 of 1062 movies into NaN and then into the global
-            # median, so 70% of films were scored on a fake vote count.
-            df[col] = pd.to_numeric(
-                df[col].astype('string').str.replace(',', '', regex=False),
-                errors='coerce').fillna(med_val)
-        else:
-            df[col] = med_val
-    
-    df['language_cleaned'] = df['language'].apply(lambda x: next((l.strip() for l in str(x).split(',') if l.strip() in state['top_languages']), 'Other'))
-    X_lang = pd.get_dummies(df['language_cleaned'], prefix='lang')
-    
-    # The PCA in `state` was fit by build_universal_dataset() on chunk-pooled,
-    # L2-normalised vectors of "Title: .. Genre: .. Tags: .." + overview. This path
-    # used to build "Title: .. Lead Creative: .. <overview>" and encode it raw -- a
-    # different sentence template AND a different vector norm, so every batch-scored
-    # row was projected through a PCA fitted on a space it did not live in.
-    # `tags` fills the Tags slot of the embedding header. The builder sets it per
-    # domain; this path never created the column at all, so unified_header fell
-    # through to NaN and every TV row (173/173) and most books (71/104) were embedded
-    # as "Tags: ." while training had the real tag list. Same bug class as the
-    # "Lead Creative" template -- it simply survived in a second place.
-    if 'tags' not in df.columns:
-        df['tags'] = ''
-    def _col(name):
-        return df[name].fillna('').astype(str) if name in df.columns else pd.Series('', index=df.index)
-    _is = lambda mt: df['media_type'] == mt
-    df.loc[_is('movie'), 'tags'] = _col('keywords')[_is('movie')]
-    df.loc[_is('tv'), 'tags'] = (_col('keywords') + ", " + _col('tvdb_tags')).str.strip(' ,')[_is('tv')]
-    if 'moods' in df.columns or 'hc_tags' in df.columns:
-        df.loc[_is('book'), 'tags'] = (_col('moods') + ", " + _col('hc_tags')).str.strip(' ,')[_is('book')]
-
-    _records = df.to_dict('records')
-    df['txt_header'] = [unified_header(r) for r in _records]
-    _desc = pd.Series([unified_body(r) for r in _records], index=df.index)
-    df['text_content'] = df['txt_header'] + " " + _desc
-    transformer_model = SentenceTransformer(state.get('sentence_transformer', 'all-MiniLM-L6-v2'))
-    text_embeddings = encode_pooled(df['txt_header'].tolist(), _desc.tolist(),
-                                    transformer_model, show_progress_bar=True)
-    pca_vec = state['pca'].transform(text_embeddings)
-    # The trainer fits the models on CENTROID-ALIGNED pca_*, and transform_single_media
-    # applies the aligner at inference. This path never did, so batch scores were the
-    # only ones served in the unaligned space (tv 0.07, book 0.13, game 0.15 mean
-    # |delta pred|; movie is the reference domain so it is exactly 0, which is why
-    # this hid for so long).
-    _aligner = state.get('aligner')
-    if _aligner is not None:
-        pca_vec = _aligner.transform(pca_vec, df['media_type'].to_numpy())
-    else:
-        print("   WARNING: state has no 'aligner' -- serving UNALIGNED pca_*. "
-              "build_universal_dataset rewrites the state without it, so the trainer "
-              "must run after any feature rebuild.")
-    X_text = pd.DataFrame(pca_vec, columns=[f'pca_{i}' for i in range(pca_vec.shape[1])], index=df.index)
-
-    # Canonicalise + split the combined TMDB buckets before transform, matching the
-    # builder. Without this the raw label 'Sci-Fi' matches no class and
-    # MultiLabelBinarizer silently drops it: 115 of 1407 rows (8.2%) lost genre bits.
-    _split = {'Sci-Fi & Fantasy': ['Science Fiction', 'Fantasy'],
-              'Action & Adventure': ['Action', 'Adventure']}
-    df['genre_list'] = df['genre'].apply(parse_list).apply(
-        lambda gl: list({canon_genre(item) for g in gl for item in _split.get(g, [g])}))
-    _known = set(state['mlb_genre'].classes_)
-    df['genre_list'] = df['genre_list'].apply(lambda gl: [g for g in gl if g in _known])
-    genre_encoded = state['mlb_genre'].transform(df['genre_list'])
-    X_genre = pd.DataFrame(genre_encoded, columns=[f"gen_{sanitize_col(c)}" for c in state['mlb_genre'].classes_], index=df.index)
-
-    df['mpaa_cat'] = df['rated'].apply(_builder_categorize_rating)
-    X_mpaa = pd.get_dummies(df['mpaa_cat'], prefix='rated')
-
-    # Music Affinity (Gated)
-    profile_path = config.MUSIC_MODEL_DIR / "profile.joblib"
-    bundle_path = config.MUSIC_MODEL_DIR / "preprocessors.joblib"
-    if profile_path.exists() and bundle_path.exists():
-        profile = joblib.load(profile_path)
-        bundle = joblib.load(bundle_path)
-        X_music = get_music_affinity_features(df['text_content'].tolist(), profile, bundle).multiply(get_music_gate_mask(df['media_type']), axis=0)
-        X_music.index = df.index
-    else:
-        X_music = pd.DataFrame()
-
-    # Missingness Masks
-    for domain in ['movie', 'tv', 'game', 'book', 'music']:
-        df[f'has_{domain}_feats'] = (df['media_type'] == domain).astype(int)
-
-    # --- CREATOR / STUDIO ENTITY ENCODINGS ---
-    # These were MISSING entirely from this path. creator_encoded and studio_encoded
-    # sit on a ~3.3-star scale and are never 0 in any of the 1407 training rows, yet
-    # X_final below zero-filled them: measured mean |delta pred| of 0.52 stars
-    # (max 1.83) on the deployed XGB. Mirror the builder's construction exactly.
-    if 'studio' not in df.columns:
-        df['studio'] = ''
-    for alt in ('production', 'production_companies', 'networks', 'network'):
-        if alt in df.columns:
-            df['studio'] = df['studio'].fillna('').astype(str).replace('nan', '')
-            df['studio'] = df['studio'].where(df['studio'].str.strip() != '',
-                                              df[alt].fillna('').astype(str))
-    if 'writer' in df.columns:
-        df['director'] = (df['director'].fillna('').astype(str).str.strip(" []")
-                          + ", "
-                          + df['writer'].fillna('').astype(str).str.strip(" []")
-                          ).str.strip(' ,')
-
-    _arts = state.get('te_artifacts') or {}
-    te_frames = {}
-    for col, limit in state.get('unified_encode', UNIFIED_ENCODE):
-        art = _arts.get(col)
-        if not art or col not in df.columns:
-            continue
-        name = 'creator' if col == 'director' else col
-        pairs = [tf.apply_entity_map(v, art['map'], art.get('counts', {}),
-                                     art['mean'], art.get('limit', limit))
-                 for v in df[col].tolist()]
-        te_frames[f'{name}_encoded'] = [p[0] for p in pairs]
-        te_frames[f'{name}_n'] = [p[1] for p in pairs]
-    X_entity = pd.DataFrame(te_frames, index=df.index) if te_frames else pd.DataFrame(index=df.index)
-
-    # --- SHARED GEOGRAPHY ONE-HOTS ---
-    # Also missing. Every one of the 1407 training rows has exactly one ctry_* set;
-    # this path sent an all-zero block, a combination no training row ever had.
-    _top_countries = state.get('top_countries') or []
-    if 'country' not in df.columns:
-        df['country'] = ''
-    X_country = pd.DataFrame(0, index=df.index,
-                             columns=[f'ctry_{c}' for c in _top_countries] + ['ctry_Other'])
-    for i, v in zip(df.index, df['country'].astype(str)):
-        hit = next((c.strip() for c in v.split(',') if c.strip() in _top_countries), 'Other')
-        X_country.at[i, f'ctry_{hit}'] = 1
-
-    mask_cols = [f'has_{d}_feats' for d in ['movie', 'tv', 'game', 'book', 'music']]
-    X_temp = pd.concat([df[list(state['median_values'].keys())], df[mask_cols], X_entity,
-                        X_lang, X_country, X_genre, X_mpaa, X_text, X_music], axis=1)
-    X_temp.columns = [sanitize_col(col) for col in X_temp.columns]
-    X_temp = X_temp.loc[:, ~X_temp.columns.duplicated()]
-
-    X_final = pd.DataFrame(0, index=df.index, columns=state['training_columns'])
-    common_cols = [c for c in state['training_columns'] if c in X_temp.columns]
-    X_final[common_cols] = X_temp[common_cols]
-    # Never zero-fill silently. A model feature the scorer forgot to build looks
-    # exactly like a feature that is legitimately 0, and that is how creator_encoded
-    # and the whole ctry_* block went unnoticed while costing 0.52 stars a row.
-    missing = [c for c in state['training_columns'] if c not in X_temp.columns]
-    if missing:
-        print(f"   WARNING: {len(missing)} training column(s) not built by this path and "
-              f"served as 0: {missing[:12]}{' ...' if len(missing) > 12 else ''}")
-
-    # --- 4. Predict ---
-    print("   Predicting ratings with unified models...")
-    df['display_name'] = df['title'].fillna(df.get('letterboxd_name', 'Unknown'))
-    
-    def get_model_features(model):
-        if hasattr(model, 'feature_names_in_'): return list(model.feature_names_in_)
-        if hasattr(model, 'feature_names'): return list(model.feature_names)
-        if hasattr(model, 'get_booster'): return model.get_booster().feature_names
-        return None
-
-    for name, model in models.items():
-        feat_names = get_model_features(model)
-        if feat_names and name != "MeanEnsemble":
-            X_model = pd.DataFrame(0, index=df.index, columns=feat_names)
-            common = [c for c in feat_names if c in X_final.columns]
-            X_model[common] = X_final[common]
-        else:
-            X_model = X_final
-
-        if name == "Ordinal_EV":
-            try:
-                probs = model.predict_proba(X_model)
-                present_vals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])[joblib.load(config.UNIFIED_ENSEMBLE_DIR / "ordinal_classes.joblib")]
-                raw_preds = np.sum(probs * present_vals, axis=1)
-            except: continue
-        elif name == "MeanEnsemble":
-            # For MeanEnsemble, we need base model predictions
-            try:
-                # Use base models with their own aligned features if needed
-                p_xgb = models['XGB_Base'].predict(pd.DataFrame(X_final, columns=get_model_features(models['XGB_Base'])))
-                p_cat = models['CatBoost_Base'].predict(pd.DataFrame(X_final, columns=get_model_features(models['CatBoost_Base'])))
-                raw_preds = model.predict(np.column_stack([p_xgb, p_cat]))
-            except:
-                raw_preds = (models['XGB_Base'].predict(X_final) + models['CatBoost_Base'].predict(X_final)) / 2
-        else:
-            raw_preds = model.predict(X_model)
-            
-        df[f'raw_pred_{name}'] = raw_preds
-        df[f'pred_{name}'] = np.round(np.clip(raw_preds, 0.5, 5.0) * 2) / 2
+    # Same three scores the Oracle's predict_unified computes, vectorised.
+    p_xgb = c["xgb"].predict(X_final)
+    p_cat = c["cat"].predict(X_final)
+    preds = {"XGB_Base": p_xgb, "CatBoost_Base": p_cat,
+             "MeanEnsemble": (c["mean"].predict(np.column_stack([p_xgb, p_cat]))
+                              if c.get("mean") is not None else (p_xgb + p_cat) / 2)}
+    for name, raw_preds in preds.items():
+        df[f"raw_pred_{name}"] = raw_preds
+        df[f"pred_{name}"] = np.round(np.clip(raw_preds, 0.5, 5.0) * 2) / 2
 
     # Include PCA features for the ranker
-    pca_cols = [c for c in X_final.columns if c.startswith('pca_')]
+    pca_cols = [col for col in X_final.columns if col.startswith("pca_")]
     df = pd.concat([df, X_final[pca_cols]], axis=1)
 
-    # --- 5. Report ---
-    if 'user_rating' in df.columns:
-        df['user_rating_numeric'] = pd.to_numeric(df['user_rating'], errors='coerce')
-        eval_df = df.dropna(subset=['user_rating_numeric']).copy()
-        if not eval_df.empty:
-            y_true = eval_df['user_rating_numeric']
-            print("\n" + "="*55 + "\n📊 UNIFIED ML ENSEMBLE PERFORMANCE REPORT\n" + "="*55)
-            for name in models.keys():
-                pred_col = f'pred_{name}'
-                if pred_col not in eval_df.columns: continue
-                y_pred = eval_df[pred_col]
-                mae = mean_absolute_error(y_true, y_pred)
-                r2 = r2_score(y_true, y_pred)
-                print(f"   Model: {name:<15} | MAE: {mae:.4f} | R²: {r2:.4f} | ±0.5 Acc: {((np.abs(y_true-y_pred)<=0.5).sum()/len(y_true))*100:.1f}%")
-            print("="*55 + "\n")
+    df["user_rating_numeric"] = pd.to_numeric(df["user_rating"], errors="coerce")
+    eval_df = df.dropna(subset=["user_rating_numeric"])
+    if not eval_df.empty:
+        y_true = eval_df["user_rating_numeric"]
+        print("\n" + "=" * 55 + "\n📊 UNIFIED ML ENSEMBLE PERFORMANCE REPORT (in-sample)\n" + "=" * 55)
+        for name in preds:
+            y_pred = eval_df[f"pred_{name}"]
+            print(f"   Model: {name:<15} | MAE: {mean_absolute_error(y_true, y_pred):.4f} | "
+                  f"R²: {r2_score(y_true, y_pred):.4f} | "
+                  f"±0.5 Acc: {((y_true - y_pred).abs() <= 0.5).mean() * 100:.1f}%")
+        print("=" * 55 + "\n")
 
-    # Save
     out_dir = config.UNIFIED_PREDICTIONS_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_cols = ['display_name', 'year', 'media_type', 'user_rating'] + [f'pred_{name}' for name in models.keys() if f'pred_{name}' in df.columns] + [f'raw_pred_{name}' for name in models.keys() if f'raw_pred_{name}' in df.columns] + pca_cols
+    out_cols = (["display_name", "year", "media_type", "user_rating"]
+                + [f"pred_{n}" for n in preds] + [f"raw_pred_{n}" for n in preds] + pca_cols)
     df[out_cols].to_csv(out_dir / "unified_predictions_ensemble.csv", index=False)
     print(f"✅ Saved unified predictions to {out_dir / 'unified_predictions_ensemble.csv'}")
+
 
 if __name__ == "__main__":
     batch_predict_unified_ratings()

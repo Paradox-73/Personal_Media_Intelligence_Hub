@@ -49,7 +49,7 @@ if df is not None:
         total = row.sum()
         if total == 0: return 0
         dist = row / total
-        return entropy(dist)
+        return entropy(dist, base=2)  # bits, same unit as the dashboards' calculate_entropy
 
     # Apply entropy calculation to each row of rolling sums
     df['entropy'] = rolling_genre_sums.apply(calculate_entropy_from_row, axis=1).values

@@ -66,7 +66,12 @@ DOMAINS = {
         # the model trains on moods_encoded / hc_tags_encoded.
         "enrich": ["src.books.enrich_extended", "--apply"],
         "feature": "src.books.feature_engineering",
-        "models": ["src.books.model_trainer"],
+        # text_similarity builds models/books/text_knn.joblib, the artifact the Books
+        # Oracle and the books active-learning queue both serve from. Nothing in the
+        # plan rebuilt it, so it sat at a 2026-08-20 vintage against an 2026-08-28
+        # preprocessor state -- i.e. the Oracle was answering out of a PCA space
+        # fitted on a smaller library than the deployed model was trained on.
+        "models": ["src.books.model_trainer", "src.books.text_similarity"],
         "predict": "src.books.predict_ratings",
     },
 }
@@ -107,6 +112,11 @@ def build_plan(args):
     for d in domains:
         steps.append(("features", f"features {d}", [PY, "-m", DOMAINS[d]["feature"]]))
     steps.append(("features", "unified features", [PY, "-m", "src.unified_model.unified_feature_engineering"]))
+    # Not behind --skip-models: build_universal_dataset rewrites preprocessor_state.pkl
+    # WITHOUT the aligner and model_columns, and only the trainer puts them back, so a
+    # feature rebuild without it leaves the unified Oracle unable to score anything.
+    steps.append(("features", "unified deployed ensemble", [PY, "-m", "src.unified_model.advanced_unified_model_trainer"]))
+    steps.append(("features", "Latent Space Explorer alignment", [PY, "-m", "src.unified_model.export_coral_alignment"]))
 
     steps.append(("registry", "frozen fold registry", [PY, "-m", "src.unified_model.create_frozen_folds"]))
     steps.append(("registry", "clear OOF caches", clear_oof_caches))
@@ -116,8 +126,7 @@ def build_plan(args):
     steps.append(("evaluate", "evaluator (absorb distillation)", [PY, "-m", "src.unified_model.comprehensive_evaluator"]))
 
     if not args.skip_models:
-        steps.append(("models", "unified deployed ensemble", [PY, "-m", "src.unified_model.advanced_unified_model_trainer"]))
-        # Score the unified model right after training it, and BEFORE the per-domain
+        # Score the unified model after training it (features phase), and BEFORE the per-domain
         # trainers, which read data/predictions/unified/*.csv for the distillation
         # prior. This step was missing from the plan entirely: the predictions file on
         # disk was two months older than the features, so games/books read a stale
@@ -133,6 +142,18 @@ def build_plan(args):
         for d in domains:
             steps.append(("predict", f"batch predict {d}", [PY, "-m", DOMAINS[d]["predict"]]))
 
+    # render_docs renders four blocks straight out of these JSONs, but nothing in the
+    # plan regenerated them -- so README and the tech report were republishing SHAP
+    # tables, confusion matrices, bias/variance and baseline-sanity numbers from an
+    # old run, sitting next to freshly computed benchmarks with no indication they
+    # were from a different library. They read the OOF CSVs, so they must run after
+    # the evaluator and before the docs.
+    if not args.skip_models:
+        for diag in ("feature_diagnostics", "classification_diagnostics",
+                     "baseline_sanity", "bias_variance"):
+            steps.append(("evaluate", f"diagnostics ({diag})",
+                          [PY, "-m", f"src.experiments.{diag}"]))
+
     steps.append(("docs", "render README + tech report", [PY, "-m", "src.reporting.render_docs"]))
 
     if not args.skip_paper:
@@ -141,6 +162,8 @@ def build_plan(args):
     if args.full:
         steps += [
             ("experiments", "transfer grid (full 50-fold)", [PY, "-m", "src.experiments.transfer_study", "full"]),
+            ("experiments", "transfer grid table", [PY, "-m", "src.experiments.transfer_grid_table"]),
+            ("experiments", "rating coherence", [PY, "-m", "src.experiments.rating_coherence"]),
             ("experiments", "transfer analysis", [PY, "-m", "src.experiments.transfer_analysis"]),
             ("experiments", "entity links (full)", [PY, "-m", "src.linking.build_entity_links", "full"]),
             ("experiments", "entity bridges", [PY, "-m", "src.linking.bridge_features"]),
@@ -149,6 +172,9 @@ def build_plan(args):
             ("experiments", "active-learning queue", [PY, "-m", "src.evaluation.active_learning_ranker"]),
             ("paper", "paper figures (refresh w/ experiments)", [PY, str(REPO / "paper" / "make_figures.py")]),
         ]
+    # Gates: a non-zero exit fails the pipeline.
+    steps.append(("verify", "inference parity audit", [PY, "-m", "scripts.audit_inference_parity"]))
+    steps.append(("verify", "data sanity check", [PY, str(REPO / "scripts" / "data_sanity_check.py")]))
     return steps
 
 
@@ -160,6 +186,10 @@ def main():
     ap.add_argument("--skip-paper", action="store_true", help="skip paper figure/table regeneration")
     ap.add_argument("--domains", type=lambda s: [d.strip() for d in s.split(",") if d.strip()],
                     help="comma-separated subset of: " + ", ".join(DOMAINS))
+    ap.add_argument("--from-step", type=int, default=1, metavar="N",
+                    help="resume at step N of the printed plan, skipping 1..N-1. "
+                         "The plan is deterministic for a given set of flags, so pass "
+                         "the SAME flags you originally used or the numbering shifts.")
     ap.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     args = ap.parse_args()
 
@@ -176,13 +206,22 @@ def main():
     for i, (phase, label, action) in enumerate(plan, 1):
         kind = "py()" if callable(action) else " ".join(action[2:]) if action[:2] == [PY, "-m"] else "script"
         print(f"  {i:2}. [{phase:11}] {label:38} {kind}")
+    if args.from_step > 1:
+        print("")
+        print("[resume] Starting at step " + str(args.from_step) + "; skipping "
+              + str(args.from_step - 1) + " already-completed step(s). "
+              + "Their outputs must already be on disk.")
     if args.dry_run:
         print("\n--dry-run: nothing executed.")
         return 0
 
     print("\nStarting...\n")
     t0 = time.time()
+    skipped = 0
     for i, (phase, label, action) in enumerate(plan, 1):
+        if i < args.from_step:
+            skipped += 1
+            continue
         ts = time.time()
         print(f"\n──[{i}/{len(plan)}] {phase}: {label}{'─' * 10}")
         if callable(action):

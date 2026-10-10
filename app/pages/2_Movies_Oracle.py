@@ -3,20 +3,18 @@ import pandas as pd
 import joblib
 import numpy as np
 import sys
-import ast
 from pathlib import Path
 
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common.parsing import parse_list, round_half
 
 # Import ingestion & engineering tools
 from src.movies.ingestion import search_movies_by_query, get_movie_metadata
 from src.movies.feature_engineering import (find_similar_movies, explain_similarity,
                                             transform_single_movie)
 from src.unified_model.unified_oracle import predict_unified
-from sentence_transformers import SentenceTransformer
-import re
 
 # Register the custom estimator under __main__ so joblib can unpickle the stacking /
 # ordinal models — they reference OrdinalExpectedValueRegressor under __main__ (the
@@ -101,11 +99,6 @@ st.header("🔮 The Oracle")
 st.markdown("Predict your rating for any movie using a Stacking Ensemble, Ordinal Probability Engine, and Semantic Text Embeddings.")
 
 # --- HELPERS ---
-def parse_list(x):
-    if isinstance(x, list): return x
-    try: return ast.literal_eval(str(x))
-    except: return []
-
 def get_ultimate_movie_metadata(tmdb_id):
     """Refactored to use core ingestion logic for parity with batch processing."""
     metadata = get_movie_metadata(None, None, tmdb_id=tmdb_id)
@@ -127,6 +120,7 @@ def load_artifacts():
         artifacts['svr'] = joblib.load(ensemble_dir / "svr_base_regressor.joblib")
         artifacts['cat'] = joblib.load(ensemble_dir / "catboost_base_regressor.joblib")
         artifacts['ordinal'] = joblib.load(ensemble_dir / "ordinal_classifier.joblib")
+        artifacts['ordinal_classes'] = joblib.load(ensemble_dir / "ordinal_classes.joblib")
         artifacts['state'] = joblib.load(config.PREPROCESSOR_STATE)
         
         if config.MODEL_CLASSIFIER.exists():
@@ -253,8 +247,6 @@ if st.session_state['selected_movie_raw_data']:
                 input_df = transform_for_parity(raw_data, state)
                 
                 # 1. Base Models & Stacking Predictions
-                def round_half(x): return np.round(np.clip(x, 0, 5) * 2) / 2
-                
                 v_stack = round_half(artifacts['stacking'].predict(align_to_model(input_df, artifacts['stacking']))[0])
                 v_svr = round_half(artifacts['svr'].predict(align_to_model(input_df, artifacts['svr']))[0])
                 v_cat = round_half(artifacts['cat'].predict(align_to_model(input_df, artifacts['cat']))[0])
@@ -265,7 +257,9 @@ if st.session_state['selected_movie_raw_data']:
                 v_ordinal_ev = None
                 if artifacts['ordinal']:
                     ord_probs = artifacts['ordinal'].predict_proba(align_to_model(input_df, artifacts['ordinal']))[0]
-                    bucket_vals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])
+                    # predict_proba columns are the classes present at train time.
+                    bucket_vals = np.array([0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0])[
+                        artifacts['ordinal_classes']]
                     v_ordinal_ev = round_half(np.sum(ord_probs * bucket_vals))
                 
                 # 3. Classifier Verdict (Tiers)
@@ -319,8 +313,8 @@ if st.session_state['selected_movie_raw_data']:
                 # Confidence Engine Chart
                 if ord_probs is not None:
                     st.markdown("#### Confidence Engine (Ordinal Spread)")
-                    st.caption("Probability distribution across all 10 rating buckets.")
-                    bucket_labels = [f"{i:.1f}" for i in np.arange(0.5, 5.5, 0.5)]
+                    st.caption("Probability distribution across the rating buckets.")
+                    bucket_labels = [f"{v:.1f}" for v in bucket_vals]
                     prob_df = pd.DataFrame({
                         "Rating Bucket": bucket_labels,
                         "Probability (%)": ord_probs * 100

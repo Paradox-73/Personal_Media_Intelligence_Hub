@@ -3,18 +3,18 @@
   "n_shows": 171,
   "cv": "GroupKFold(5) by show",
   "season_model": {
-    "mae": 0.6157,
-    "r2": 0.4244,
-    "within_half_star": 0.5078
+    "mae": 0.6513,
+    "r2": 0.3795,
+    "within_half_star": 0.463
   },
   "mean_baseline": {
     "mae": 0.8445,
     "r2": 0.0
   },
-  "skill_over_mean": 0.2709,
+  "skill_over_mean": 0.2287,
   "next_season_forecast": {
     "n": 104,
-    "model_mae": 0.2682,
+    "model_mae": 0.2726,
     "carry_forward_mae": 0.1731
   },
   "excluded_features": [
@@ -24,20 +24,20 @@
   "exclusion_reason": "leak under GroupKFold-by-show: a held-out show's earlier seasons are held out too, so their ratings are not known at prediction time",
   "verdict": "content model beats the mean baseline",
   "top_features": {
-    "show_imdb_rating": 0.4153,
-    "show_vote_average": 0.0534,
-    "gen_Animation": 0.04,
-    "imdb_season_min": 0.0287,
-    "network_CBS": 0.0251,
-    "runtime": 0.0248,
-    "imdb_ep_trend": 0.024,
-    "pca_9": 0.0224,
-    "network_The CW": 0.0222,
+    "show_imdb_rating": 0.4152,
+    "show_vote_average": 0.0507,
+    "gen_Animation": 0.0406,
+    "imdb_season_min": 0.0282,
+    "network_CBS": 0.0248,
+    "network_The CW": 0.0243,
+    "imdb_ep_trend": 0.0241,
+    "runtime": 0.0229,
+    "pca_9": 0.0223,
     "guest_star_count": 0.0172,
-    "imdb_season_mean": 0.0166,
-    "network_MTV": 0.0157,
-    "pca_0": 0.0151,
-    "pca_11": 0.014,
-    "imdb_delta_vs_prev": 0.0139
+    "network_MTV": 0.0171,
+    "imdb_season_mean": 0.0162,
+    "pca_0": 0.0157,
+    "pca_11": 0.0141,
+    "pca_6": 0.0141
   }
 }

@@ -3,7 +3,6 @@ import pandas as pd
 import joblib
 import numpy as np
 import sys
-import ast
 from pathlib import Path
 
 # Add project root to path
@@ -11,100 +10,14 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.shows.ingestion import tmdb_tv, get_tv_show_metadata_ultimate
 from src.unified_model.unified_oracle import predict_unified
-from sentence_transformers import SentenceTransformer
+from src.shows.feature_engineering import (transform_single_show, safe_eval, get_primary_network,
+                                           _sentence_model, _show_header, _show_body)
+from src.common.parsing import round_half
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
 from mobile import apply_mobile_css
 st.set_page_config(page_title="TV Shows Oracle", page_icon="🔮", layout="wide")
 apply_mobile_css()
-
-
-# --- HELPERS ---
-def safe_eval(val):
-    if isinstance(val, list): return val
-    if pd.isna(val) or val == "": return []
-    try:
-        if "[" in str(val): return ast.literal_eval(str(val))
-        return [x.strip() for x in str(val).split(',') if x.strip()]
-    except Exception:
-        return []
-
-def get_primary_network(val):
-    if isinstance(val, list):
-        return val[0].strip() if val else "Other"
-    if pd.isna(val) or val == "": return "Other"
-    try:
-        if "[" in str(val):
-            vl = ast.literal_eval(str(val))
-            if vl: return vl[0].strip()
-        return str(val).split(',')[0].strip()
-    except Exception:
-        return "Other"
-
-
-@st.cache_resource
-def get_transformer():
-    return SentenceTransformer('all-MiniLM-L6-v2')
-
-
-# --- PARITY TRANSFORMATION (mirrors src/shows/feature_engineering.py exactly) ---
-def transform_for_parity(meta, state):
-    med = state.get('median_values', {})
-    X = pd.DataFrame(0.0, index=[0], columns=state['features_columns'])
-
-    # Numericals
-    vals = {
-        'year': pd.to_numeric(meta.get('year'), errors='coerce'),
-        'vote_average': pd.to_numeric(meta.get('vote_average'), errors='coerce'),
-        'vote_count_log': np.log1p(pd.to_numeric(meta.get('vote_count'), errors='coerce') or 0),
-        'season_count': pd.to_numeric(meta.get('number_of_seasons'), errors='coerce'),
-        'is_adult': 1 if str(meta.get('age_rating')) in ['TV-MA', 'R', '18+'] else 0,
-    }
-    for k, v in vals.items():
-        if k in X.columns:
-            if pd.isna(v):
-                v = med.get(k, 1 if k == 'season_count' else 0)
-            X.at[0, k] = float(v)
-
-    # Genres (kept set only)
-    glist = safe_eval(meta.get('genres'))
-    for col in state.get('kept_genres', []):
-        if col in X.columns:
-            X.at[0, col] = 1 if col.replace('g_', '') in glist else 0
-
-    # Network one-hot
-    net = get_primary_network(meta.get('network'))
-    net_clean = net if net in state.get('top_networks', []) else "Other"
-    ncol = f"net_{net_clean}"
-    if ncol in X.columns:
-        X.at[0, ncol] = 1
-
-    # MiniLM embedding -> PCA. Built from the SAME header/body helpers the trainer
-    # uses; this string previously dropped Creator and Cast, so a show scored here
-    # embedded differently than the identical show did during training.
-    from src.shows.feature_engineering import _show_header, _show_body
-    from src.common.text_embedding import encode_pooled_single
-    from src.shows.season_data import season_overview_by_show, SEASON_NARRATIVE_COL
-    _raw = dict(meta)
-    _raw['primary_network'] = net
-    # Training embeds the season-by-season narrative; look it up by tmdb_id so a
-    # show scored here gets the same text it had in training. Absent -> empty
-    # string, which is exactly what a show with no season sheet trained on.
-    try:
-        _raw[SEASON_NARRATIVE_COL] = season_overview_by_show().get(
-            int(float(meta.get('tmdb_id') or meta.get('id') or 0)), "")
-    except (TypeError, ValueError):
-        _raw[SEASON_NARRATIVE_COL] = ""
-    try:
-        emb = encode_pooled_single(_show_header(_raw), _show_body(_raw), get_transformer())
-        pcav = state['pca'].transform(emb)[0]
-        for i, c in enumerate(state.get('pca_cols', [])):
-            if c in X.columns:
-                X.at[0, c] = pcav[i]
-    except Exception:
-        pass
-
-    return X[state['features_columns']]
 
 
 # --- LOAD ARTIFACTS ---
@@ -144,9 +57,8 @@ def find_similar_shows(meta, n=3):
     lib = lib[lib['user_rating'].notna()].copy() if 'user_rating' in lib.columns else lib.copy()
     if lib.empty:
         return []
-    model = get_transformer()
+    model = _sentence_model(state.get('sentence_transformer', 'all-MiniLM-L6-v2'))
     net = get_primary_network(meta.get('network'))
-    from src.shows.feature_engineering import _show_header, _show_body
     from src.common.text_embedding import encode_pooled
     # Same header/body helpers as training, so "similar shows" is measured in the
     # space the model actually learned in rather than a third ad-hoc string.
@@ -273,9 +185,7 @@ if st.session_state['tv_raw']:
     with c_pred:
         if consult_btn:
             with st.spinner("Analyzing Embeddings & Ensembles..."):
-                X = transform_for_parity(raw, state)
-
-                def round_half(x): return np.round(np.clip(x, 0, 5) * 2) / 2
+                X = transform_single_show(raw, state)
                 v_stack = round_half(artifacts['stacking'].predict(X)[0])
 
                 # Base models are a cosmetic breakdown; skip any that aren't usable

@@ -90,7 +90,7 @@ def tmdb_extended(tmdb_id, cache):
     """
     k = str(int(float(tmdb_id)))
     cached = cache.get(k)
-    if cached is not None and ("_error" in cached or all(c in cached for c in CREW_JOBS)):
+    if cached is not None and all(c in cached for c in (*CREW_JOBS, "cast")):
         return cached
     rec = {}
     try:
@@ -114,6 +114,7 @@ def tmdb_extended(tmdb_id, cache):
         cr = requests.get(f"https://api.themoviedb.org/3/movie/{k}/credits",
                           params={"api_key": TMDB_KEY}, timeout=TIMEOUT).json()
         crew = cr.get("crew", [])
+        rec["cast"] = [c["name"] for c in cr.get("cast", []) if c.get("name")]
         for col, jobs in CREW_JOBS.items():
             names = []
             for c in crew:
@@ -122,7 +123,8 @@ def tmdb_extended(tmdb_id, cache):
             rec[col] = names[:3] if col == "producer" else names
     except Exception as e:  # noqa: BLE001
         rec = {"_error": str(e)}
-    cache[k] = rec
+    if "_error" not in rec:  # a transient failure must be retried next run
+        cache[k] = rec
     return rec
 
 
@@ -158,6 +160,13 @@ def main():
 
     need = df.index[
         pd.concat([missing(c) for c in list(OMDB_FIELDS) + NEW_COLS], axis=1).any(axis=1)]
+    # A cast stored as a plain "A, B, C" string is OMDb's fallback: its top 3
+    # billed names only (The Notebook had no Ryan Gosling). TMDB's credits call
+    # had failed for that row at ingestion. Replace it with TMDB's full cast list.
+    omdb_cast = (~df["actors"].astype(str).str.startswith("[") & df["actors"].notna()
+                 & df["tmdb_id"].notna())
+    print(f"{int(omdb_cast.sum())} rows carry OMDb's 3-name cast instead of TMDB's full cast.")
+    need = need.union(df.index[omdb_cast])
     print(f"\n{len(need)} rows need at least one fetch.")
     if args.plan:
         print("PLAN ONLY.")
@@ -190,6 +199,9 @@ def main():
             if kws and is_effectively_empty(df.at[idx, "keywords"]):
                 df.at[idx, "keywords"] = ", ".join(kws)
                 filled["keywords"] += 1
+            if omdb_cast.get(idx, False) and rec.get("cast"):
+                df.at[idx, "actors"] = str(rec["cast"])
+                filled["actors (TMDB full cast)"] = filled.get("actors (TMDB full cast)", 0) + 1
             for col in CREW_JOBS:
                 names = rec.get(col)
                 if names and is_effectively_empty(df.at[idx, col]):
@@ -204,6 +216,12 @@ def main():
                     if col in df.columns and is_effectively_empty(df.at[idx, col]):
                         v = get(res)
                         if not is_effectively_empty(v):
+                            # OMDb returns strings ("8.3", "1,234", "119 min"); a
+                            # float64 column refuses them, so coerce to a number.
+                            if pd.api.types.is_numeric_dtype(df[col]):
+                                v = clean_float(str(v).replace(",", "").replace(" min", ""))
+                                if v is None:
+                                    continue
                             df.at[idx, col] = v
                             filled[col] += 1
 

@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.books.ingestion import search_books_by_query, fetch_book_details_by_id
+from src.books.predict_ratings import library_reference, calibrated_rating
 from src.books.feature_engineering import transform_single_book, find_similar_books, explain_similarity_books
 from src.unified_model.unified_oracle import predict_unified
 
@@ -62,6 +63,13 @@ def _get_books_text_oracle():
 
 
 regressor, classifier, state, meta = load_artifacts()
+
+
+@st.cache_resource
+def load_calibration_reference():
+    """Same calibration reference the dashboard CSV is built with (src.books.predict_ratings)."""
+    _, _, ref_preds, ref_ratings = library_reference(regressor, state)
+    return ref_preds, ref_ratings
 
 if regressor is None:
     st.error("❌ Books models not found! Run ingestion and training for Books first.")
@@ -165,6 +173,7 @@ if st.session_state['selected_book_raw_data']:
                 input_df = transform_single_book(raw_data, state)
 
                 def round_half(x): return max(0.5, min(5.0, np.round(np.clip(x, 0, 5) * 2) / 2))
+                ref_preds, ref_ratings = load_calibration_reference()
 
                 # Headline prediction = the deployed TEXT-SIMILARITY model (embedding-kNN
                 # over plot/author/description). It scores skill 0.43 for Books vs 0.24 for
@@ -178,7 +187,7 @@ if st.session_state['selected_book_raw_data']:
                 except Exception:
                     pass
 
-                feat_score = round_half(regressor.predict(input_df)[0])
+                feat_score = float(calibrated_rating(regressor.predict(input_df), ref_preds, ref_ratings)[0])
                 final_score = text_pred if text_pred is not None else feat_score
                 pred_probs = classifier.predict_proba(input_df)[0]
                 classes = ["Skip it ❌", "Worth a Read 📖", "Must-Read ⭐"]

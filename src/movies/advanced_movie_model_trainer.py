@@ -37,7 +37,7 @@ ANCHOR_COLS = ["imdb_rating", "metascore", "rotten_tomatoes_rating", "vote_avera
                "critic_avg_5"]
 # ==========================================
 
-from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.base import BaseEstimator, RegressorMixin, clone
 
 
 class AnchoredRegressor(RegressorMixin, BaseEstimator):
@@ -399,7 +399,10 @@ def train_advanced_models():
     # themselves, so all four reach the meta on the star scale. The ordinal member is
     # bucket-valued and stays unwrapped -- see AnchoredRegressor's docstring.
     estimators = [
-        ('xgb', AnchoredRegressor(xgb_reg, ANCHOR_COLS)),
+        # Plain squared error: the edge-penalty objective thresholds on the star scale
+        # but this member is fit on residuals; sample_weight already carries the edge emphasis.
+        ('xgb', AnchoredRegressor(clone(xgb_reg).set_params(objective='reg:squarederror'),
+                                  ANCHOR_COLS)),
         ('svr', AnchoredRegressor(svr_pipe, ANCHOR_COLS)),
         ('catboost', AnchoredRegressor(cat_reg, ANCHOR_COLS)),
         ('ordinal_ev', ord_wrapper)
@@ -413,7 +416,7 @@ def train_advanced_models():
     )
 
     print("   Fitting Stacking Regressor (Fused)...")
-    stacking_regressor.fit(X_train, y_reg_train)
+    stacking_regressor.fit(X_train, y_reg_train, sample_weight=sample_weights)
     stack_preds = stacking_regressor.predict(X_test)
     print_performance_report("🚀 FUSED STACKING ENSEMBLE 🚀", y_reg_test, stack_preds)
 

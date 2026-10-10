@@ -48,7 +48,7 @@ from sklearn.utils.class_weight import compute_sample_weight
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.movies.custom_objectives import AsymmetricEdgePenaltyObjective
-from src.reporting.standalone_benchmarks import _load_domain, DROP_COLS, _maybe_calibrate
+from src.reporting.standalone_benchmarks import _load_domain, DROP_COLS, _maybe_calibrate, load_registry, registry_folds, set_calibration
 
 BUCKET_MAP = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0, 4: 2.5, 5: 3.0, 6: 3.5, 7: 4.0, 8: 4.5, 9: 5.0}
 
@@ -274,15 +274,12 @@ def production_oof_for_domain(domain, uni_df, registry, alphas):
     # Per-domain calibration: ON for all except domains in CALIBRATE_SKIP (default "tv",
     # whose ranking is too weak — Spearman ~0.45 — for quantile calibration to place 5*s
     # on the right items; calibrating it hurts MAE/accuracy). See edge_boost/calibration ablation.
-    os.environ["CALIBRATE"] = "0" if domain in os.getenv("CALIBRATE_SKIP", "tv").split(",") else "1"
+    set_calibration(domain)
     loc = _load_domain(domain, uni_df, registry)
     feat_cols = [c for c in loc.columns if c not in DROP_COLS + ["target_ordinal"]]
     cfg = CFG[domain]
     rows = []
-    for fold_id in range(50):
-        test_mask = loc["global_id"].apply(lambda g: fold_id in registry.get(g, []))
-        if not test_mask.any():
-            continue
+    for fold_id, test_mask in registry_folds(loc, registry):
         tr, te = ~test_mask, test_mask
         preds = _stack_fold(loc.loc[tr, feat_cols], loc.loc[tr, "target_reg"],
                             loc.loc[tr, "target_ordinal"], loc.loc[te, feat_cols], cfg, alphas)
@@ -341,7 +338,6 @@ def generate_production_oof(uni_df, registry, domains=("movie", "tv"),
 if __name__ == "__main__":
     uni = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
     uni["global_id"] = uni["media_type"] + "_" + uni["source_id"].astype(str)
-    with open(config.UNIFIED_MODEL_DIR / "fold_registry.json") as f:
-        reg = json.load(f)
+    reg = load_registry()
     bms, _ = generate_production_oof(uni, reg, use_cache=False)
     print(json.dumps(bms, indent=2))

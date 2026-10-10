@@ -38,8 +38,9 @@ import matplotlib.pyplot as plt
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.reporting.standalone_benchmarks import load_registry, registry_folds, skill
 from src.experiments.transfer_study import (
-    RATED_DOMAINS, SEED, select_features, _fit_predict, skill_score,
+    RATED_DOMAINS, SEED, select_features, _fit_predict,
 )
 from sklearn.metrics import mean_absolute_error
 import src.experiments.transfer_study as ts
@@ -73,8 +74,7 @@ def run():
     print(f"Model: XGB({N_ESTIMATORS} trees) proxy, CORAL-on-train, skill vs train-mean baseline")
     print(f"Fractions: {[int(f*100) for f in FRACTIONS]}%  | subsample repeats: {REPEATS}  | all 50 frozen folds\n")
 
-    with open(config.UNIFIED_MODEL_DIR / "fold_registry.json") as f:
-        registry = json.load(f)
+    registry = load_registry()
 
     rows = []
     for target in RATED_DOMAINS:
@@ -82,10 +82,7 @@ def run():
         n_total = len(tdf)
         n_rated = int(tdf["target_reg"].notna().sum())
         print(f"=== {target.upper()}  (rated items: {n_rated}) ===")
-        for fold_id in range(50):
-            test_mask = tdf["global_id"].apply(lambda g: fold_id in registry.get(g, []))
-            if not test_mask.any():
-                continue
+        for fold_id, test_mask in registry_folds(tdf, registry):
             tr_target = tdf[~test_mask]
             te_target = tdf[test_mask]
             # only rated rows carry a usable target
@@ -112,7 +109,7 @@ def run():
                         domain=target, fraction=frac, fold=fold_id, repeat=rep,
                         n_train=len(sub), n_test=len(y_te),
                         MAE=mean_absolute_error(y_te, pred),
-                        skill=skill_score(y_te, pred, train_mean),
+                        skill=skill(y_te, pred, train_mean),
                     ))
         print(f"    done ({sum(1 for r in rows if r['domain']==target)} rows)\n")
 

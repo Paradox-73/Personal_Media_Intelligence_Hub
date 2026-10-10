@@ -59,6 +59,33 @@ def _round_half(x):
     return np.round(np.clip(x, 0.5, 5.0) * 2) / 2
 
 
+def skill(y_true, y_pred, baseline):
+    """1 - MAE(model) / MAE(constant baseline). Callers pass y_pred already rounded if they want it."""
+    base = mean_absolute_error(y_true, np.full_like(y_true, baseline, dtype=float))
+    if base == 0:
+        return 0.0
+    return 1.0 - mean_absolute_error(y_true, y_pred) / base
+
+
+def load_registry():
+    with open(config.UNIFIED_MODEL_DIR / "fold_registry.json") as f:
+        return json.load(f)
+
+
+def registry_folds(df, registry, fold_ids=range(50)):
+    """Yield (fold_id, test_mask) for every registry fold with at least one test row in df."""
+    for fold_id in fold_ids:
+        test_mask = df["global_id"].apply(lambda g: fold_id in registry.get(g, []))
+        if test_mask.any():
+            yield fold_id, test_mask
+
+
+def set_calibration(domain):
+    """Per-domain rank calibration, as the benchmark runs it: off for CALIBRATE_SKIP (default tv)."""
+    import os
+    os.environ["CALIBRATE"] = "0" if domain in os.getenv("CALIBRATE_SKIP", "tv").split(",") else "1"
+
+
 def _metrics(y_true, y_pred_raw):
     yp = _round_half(np.asarray(y_pred_raw))
     yt = np.asarray(y_true)
@@ -248,20 +275,15 @@ def _generate_standalone_oof(uni_df, registry, oof_out_path="reports/standalone_
     """Run all four standalone models on registry folds; return (benchmarks, oof_df)."""
     benchmarks = []
     all_oof = []
-    import os
     for domain in ["movie", "tv", "game", "book"]:
-        # Per-domain calibration: skip CALIBRATE_SKIP domains (default "tv" — ranking too weak).
-        os.environ["CALIBRATE"] = "0" if domain in os.getenv("CALIBRATE_SKIP", "tv").split(",") else "1"
+        set_calibration(domain)
         print(f"   [standalone] {domain} ...", flush=True)
         loc = _load_domain(domain, uni_df, registry)
         feat_cols = [c for c in loc.columns if c not in DROP_COLS]
         fit_fn = DOMAIN_FIT[domain]
 
         rows = []  # (source_id, target_reg, raw_pred) per (item, repeat)
-        for fold_id in range(50):
-            test_mask = loc["global_id"].apply(lambda g: fold_id in registry.get(g, []))
-            if not test_mask.any():
-                continue
+        for fold_id, test_mask in registry_folds(loc, registry):
             train_mask = ~test_mask
             X_tr, X_te = loc.loc[train_mask, feat_cols], loc.loc[test_mask, feat_cols]
             y_tr = loc.loc[train_mask, "target_reg"]
@@ -297,7 +319,6 @@ def _generate_standalone_oof(uni_df, registry, oof_out_path="reports/standalone_
 if __name__ == "__main__":
     uni = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
     uni["global_id"] = uni["media_type"] + "_" + uni["source_id"].astype(str)
-    with open(config.UNIFIED_MODEL_DIR / "fold_registry.json") as f:
-        reg = json.load(f)
+    reg = load_registry()
     bms, _ = generate_standalone_oof(uni, reg)
     print(json.dumps(bms, indent=2))

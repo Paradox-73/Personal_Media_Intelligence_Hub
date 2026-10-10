@@ -13,6 +13,7 @@ from tmdbv3api import TMDb, TV
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common.parsing import clean_year
 
 # Load Environment Variables
 load_dotenv()
@@ -20,10 +21,6 @@ load_dotenv()
 # --- 1. SETUP & SAFETY ---
 TMDB_KEY = os.getenv("TMDB_API_KEY")
 OMDB_KEY = os.getenv("OMDB_API_KEY")
-
-if not TMDB_KEY:
-    print("❌ ERROR: TMDB_API_KEY missing in .env file.")
-    sys.exit(1)
 
 tmdb = TMDb()
 tmdb.api_key = TMDB_KEY
@@ -41,16 +38,6 @@ def clean_title(title):
     # Remove country codes: "The Office (US)" -> "The Office"
     t = re.sub(r'\((US|UK|AU)\)', '', t)
     return t.strip()
-
-def clean_year(val):
-    try:
-        s = str(val).replace('.0', '').strip()
-        if not s or s.lower() in ['nan', 'none', '']: return None
-        if '-' in s: return int(s.split('-')[0])
-        if '/' in s: return int(s.split('/')[-1])
-        return int(s[:4])
-    except:
-        return None
 
 def clean_float(val):
     try:
@@ -325,6 +312,9 @@ def get_tv_show_metadata_ultimate(title, year, tmdb_id=None, tvmaze_id=None, imd
 # --- 5. EXECUTION ---
 
 def run_ingestion(limit=None):
+    if not TMDB_KEY:
+        print("❌ ERROR: TMDB_API_KEY missing in .env file.")
+        sys.exit(1)
     print("📺 STARTING TV SHOW INGESTION (Corrected Ultimate Mode)...")
     
     # Paths
@@ -347,8 +337,7 @@ def run_ingestion(limit=None):
     
     # Load Existing
     if os.path.exists(enriched_path):
-        try: df_enriched = pd.read_csv(enriched_path)
-        except: df_enriched = pd.DataFrame()
+        df_enriched = pd.read_csv(enriched_path)
     else:
         df_enriched = pd.DataFrame()
 
@@ -372,8 +361,7 @@ def run_ingestion(limit=None):
     ]
 
     final_rows = []
-    
-    if limit: df_raw = df_raw.head(limit)
+    fetched = 0
 
     for idx, raw_row in df_raw.iterrows():
         name = str(raw_row['name']).strip()
@@ -399,8 +387,12 @@ def run_ingestion(limit=None):
                     break
         
         final_row = {}
-        
+        # --limit caps API calls only; every raw row is still written back below.
+        if needs_fetch and limit and fetched >= limit:
+            needs_fetch = False
+
         if needs_fetch:
+            fetched += 1
             print(f"[{idx+1}] 🔄 Fetching: {name}")
             
             known_tmdb = existing_data.get('tmdb_id') if existing_data else None
@@ -416,11 +408,11 @@ def run_ingestion(limit=None):
             if existing_data:
                 final_row = existing_data.copy()
                 for k, v in fetched_data.items():
-                    if not is_effectively_empty(v):
+                    if is_effectively_empty(final_row.get(k)) and not is_effectively_empty(v):
                         final_row[k] = v
             else:
                 final_row = fetched_data
-        else:
+        elif existing_data:
             final_row = existing_data.copy()
 
         # Update User Stats
@@ -436,8 +428,8 @@ def run_ingestion(limit=None):
     # Save
     df_final = pd.DataFrame(final_rows)
     df_final = df_final.replace({r'\x00': ''}, regex=True)
-    df_final.to_csv(config.TV_SHOWS_ENRICHED_DATA_PATH, index=False)
-    print(f"✅ DONE. Saved to: {config.TV_SHOWS_ENRICHED_DATA_PATH}")
+    df_final.to_csv(enriched_path, index=False)
+    print(f"✅ DONE. Saved to: {enriched_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

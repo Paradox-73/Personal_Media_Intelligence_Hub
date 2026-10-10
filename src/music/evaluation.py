@@ -12,10 +12,13 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
-import config
-import feature_engineering
-import affinity
-import profile_builder
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[2]))  # repo root, so `python src/music/<mod>.py` works too
+from src.music import config
+from src.music import feature_engineering
+from src.music import affinity
+from src.music import profile_builder
 
 def run_evaluation(n_repeats=1):
     print("Loading data for evaluation...")

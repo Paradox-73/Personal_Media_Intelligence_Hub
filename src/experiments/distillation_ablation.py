@@ -6,20 +6,14 @@ import json
 from pathlib import Path
 from sklearn.model_selection import RepeatedKFold
 from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.svm import SVR
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
 from scipy.stats import wilcoxon
 
 # Add Project Root to Path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-
-def calculate_skill_score(y_true, y_pred, y_train_mean):
-    mae_model = mean_absolute_error(y_true, y_pred)
-    mae_baseline = mean_absolute_error(y_true, np.full_like(y_true, y_train_mean))
-    if mae_baseline == 0: return 0
-    return 1 - (mae_model / mae_baseline)
+from src.books.model_trainer import calculate_skill_score
+from src.reporting.standalone_benchmarks import (DOMAIN_FIT, _round_half, load_registry,
+                                               registry_folds, set_calibration)
 
 def run_distillation_ablation(domain='game'):
     print(f"🧪 Starting Distillation Ablation for {domain.upper()}...")
@@ -47,8 +41,7 @@ def run_distillation_ablation(domain='game'):
     
     df_uni['global_id'] = df_uni['media_type'] + "_" + df_uni['source_id'].astype(str)
     
-    with open(config.UNIFIED_MODEL_DIR / "fold_registry.json", "r") as f:
-        registry = json.load(f)
+    registry = load_registry()
 
     # 2. Get OOF Unified Priors
     print("   Loading OOF Unified Priors from cache...")
@@ -89,32 +82,29 @@ def run_distillation_ablation(domain='game'):
     X_base = df.drop(columns=['target_reg', 'target_class', 'target_ordinal', 'source_id', 'global_id', 'unified_prior'], errors='ignore')
     y = df['target_reg']
     
+    # The DEPLOYED local model (C, balanced weights, calibration), not a stand-in SVR.
+    set_calibration(domain)
+    fit_fn = DOMAIN_FIT[domain]
+
     def evaluate_local(use_prior=False):
-        all_true = []
-        all_pred = []
-        for fold_id in range(50):
-            test_mask = df['global_id'].apply(lambda x: fold_id in registry.get(x, []))
-            if not test_mask.any(): continue
+        parts = []
+        for fold_id, test_mask in registry_folds(df, registry):
             train_mask = ~test_mask
-            
+
             X_fold = X_base.copy()
             if use_prior:
                 X_fold['unified_prior'] = df['unified_prior']
-                
+
             X_tr, X_te = X_fold[train_mask], X_fold[test_mask]
-            y_tr, y_te = y[train_mask], y[test_mask]
-            
-            model = Pipeline([
-                ('scaler', StandardScaler()),
-                ('svr', SVR(kernel='rbf', C=1.0, epsilon=0.1))
-            ])
-            model.fit(X_tr, y_tr)
-            
-            all_true.extend(y_te.tolist())
-            all_pred.extend(model.predict(X_te).tolist())
-            
-        y_true = np.array(all_true)
-        y_pred = np.round(np.clip(np.array(all_pred), 0.5, 5.0) * 2) / 2
+            parts.append(pd.DataFrame({'global_id': df.loc[test_mask, 'global_id'].values,
+                                       'y': y[test_mask].values,
+                                       'pred': np.asarray(fit_fn(X_tr, y[train_mask], X_te))}))
+
+        # One row per item (mean of its 5 repeat predictions), as the benchmark scores it,
+        # so the paired test below does not count each item 5 times.
+        per_item = pd.concat(parts).groupby('global_id').agg(y=('y', 'first'), pred=('pred', 'mean'))
+        y_true = per_item['y'].values
+        y_pred = _round_half(per_item['pred'].values)
         mae = mean_absolute_error(y_true, y_pred)
         skill = calculate_skill_score(y_true, y_pred, y.mean())
         return mae, skill, y_pred, y_true
