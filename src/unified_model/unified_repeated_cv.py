@@ -17,8 +17,43 @@ from src.movies.custom_objectives import AsymmetricEdgePenaltyObjective
 from src.unified_model.unified_utils import (AlignedTextPCA, compute_temporal_weights,
                                              replace_text_block, text_feature_cols)
 from src.reporting.metrics_writer import write_latest_metrics
+from src.reporting.standalone_benchmarks import map_folds, model_threads, registry_folds
+from src.unified_model.unified_feature_engineering import UNIFIED_ENCODE, TE_PRIOR
+from src.common import taste_features as tf
 
-def run_unified_ablation_study():
+
+def _reencode_entities(X_train, X_test, src_train, src_test, y_train, raw):
+    """Creator/studio encodings fit on this fold's training rows only. The CSV's
+    columns come from one KFold shared by all 50 registry folds, so a test row's
+    rating leaked into training-row features."""
+    for col, limit in UNIFIED_ENCODE:
+        cells = raw.get(col)
+        if cells is None:
+            continue
+        name = 'creator' if col == 'director' else col
+        enc, sup, art = tf.oof_entity_encode([cells[i] for i in src_train], y_train,
+                                             m=TE_PRIOR, limit=limit)
+        X_train[f'{name}_encoded'], X_train[f'{name}_n'] = enc, sup
+        te = [tf.apply_entity_map(cells[i], art['map'], art['counts'], art['mean'], limit)
+              for i in src_test]
+        X_test[f'{name}_encoded'] = [e for e, _ in te]
+        X_test[f'{name}_n'] = [n for _, n in te]
+
+
+def load_entity_raw():
+    """Raw creator/studio cells by source_id (written by build_universal_dataset), or
+    None with a warning when the features predate it."""
+    raw = joblib.load(config.UNIFIED_PREPROCESSOR_STATE).get('entity_raw')
+    if not raw:
+        print("      WARNING: preprocessor_state has no 'entity_raw' (features predate it); "
+              "using the CSV's shared-KFold entity encodings, which leak test targets. "
+              "Rebuild unified features to fix.")
+    return raw
+
+
+def run_unified_ablation_study(ensemble_oof=None):
+    """ensemble_oof: the evaluator's per-(item, repeat) mean-ensemble OOF. It is the
+    MeanEnsemble arm computed identically, so passing it skips 50 XGB+CatBoost refits."""
     print("🧪 Starting Unified Model Ablation Study (RATED-ONLY, Frozen Folds)...")
 
     if not config.UNIFIED_TRAINING_DATA_PATH.exists():
@@ -60,30 +95,40 @@ def run_unified_ablation_study():
         registry = json.load(f)
     
     df['global_id'] = df['media_type'] + "_" + df['source_id'].astype(str)
-    
+    raw = load_entity_raw()
+
     # Protocol evaluation
     fold_preds = {}
 
     def evaluate_protocol(name, mode='base'):
         print(f"\n🚀 Evaluating Protocol: {name}")
-        
+        if mode == 'mean_ensemble' and ensemble_oof is not None:
+            per_item = (ensemble_oof.assign(id=ensemble_oof['media_type'] + "_" + ensemble_oof['source_id'].astype(str))
+                        .groupby('id', sort=True).agg(t=('target_reg', 'first'), p=('pred', 'mean')))
+            assert per_item.index.equals(pd.Index(sorted(df['global_id'].unique()))), "cached OOF covers different items"
+            print("   Reusing the evaluator's mean-ensemble OOF.")
+            fold_preds[name] = per_item['p'].to_numpy()
+            yp = np.round(np.clip(fold_preds[name], 0.5, 5.0) * 2) / 2
+            return {"MAE": mean_absolute_error(per_item['t'], yp), "R2": r2_score(per_item['t'], yp),
+                    "Y_TRUE": per_item['t'].to_numpy()}
+
         all_y_true = []
         all_y_pred = []
         all_ids = []
         
-        # We need to iterate over the 50 folds (10-fold x 5-repeat)
-        for fold_id in range(50):
-            # Items in test set for this fold
-            test_mask = df['global_id'].apply(lambda x: fold_id in registry.get(x, []))
+        # The 50 registry folds (10-fold x 5-repeat), run side by side.
+        def one_fold(test_mask):
             train_mask = ~test_mask
-            
-            if not test_mask.any(): continue
             
             X_train, X_test = X_full[train_mask].copy(), X_full[test_mask].copy()
             y_train, y_test = y[train_mask], y[test_mask]
             m_train, m_test = media_types[train_mask], media_types[test_mask]
             d_train = dates[train_mask]
-            
+            if raw:
+                _reencode_entities(X_train, X_test, df.loc[train_mask, 'source_id'].tolist(),
+                                   df.loc[test_mask, 'source_id'].tolist(),
+                                   y_train.to_numpy(dtype=float), raw)
+
             block = AlignedTextPCA().fit(X_train[pca_cols].values, m_train)
             X_train = replace_text_block(X_train, pca_cols, block, m_train)
             X_test = replace_text_block(X_test, pca_cols, block, m_test)
@@ -96,17 +141,16 @@ def run_unified_ablation_study():
                 preds = model.predict(X_test)
             elif mode == 'mean_ensemble':
                 m1 = xgb.XGBRegressor(n_estimators=300, learning_rate=0.03, max_depth=6, random_state=42)
-                m2 = ctb.CatBoostRegressor(iterations=500, learning_rate=0.05, depth=6, loss_function='MAE', verbose=0, random_seed=42)
+                m2 = ctb.CatBoostRegressor(iterations=500, learning_rate=0.05, depth=6, loss_function='MAE', verbose=0, random_seed=42, thread_count=model_threads())
                 m1.fit(X_train, y_train, sample_weight=w_train)
                 m2.fit(X_train, y_train, sample_weight=w_train)
                 preds = (m1.predict(X_test) + m2.predict(X_test)) / 2
             
-            all_y_true.extend(y_test.tolist())
-            all_y_pred.extend(preds.tolist())
-            all_ids.extend(df.loc[test_mask, 'global_id'].tolist())
-            
-            if (fold_id + 1) % 10 == 0:
-                print(f"   Processed {fold_id + 1} folds...")
+            return y_test.tolist(), preds.tolist(), df.loc[test_mask, 'global_id'].tolist()
+
+        for t, p, ids in map_folds(one_fold, [(m,) for _, m in registry_folds(df, registry)]):
+            all_y_true.extend(t); all_y_pred.extend(p); all_ids.extend(ids)
+        print("   Processed all folds.")
             
         # Each item is tested in 5 of the 50 folds: score one averaged prediction per item,
         # otherwise every item counts 5 times and the paired test's p-value is too small.

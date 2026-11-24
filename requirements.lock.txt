@@ -28,6 +28,7 @@ cycler==0.12.1
 debugpy==1.8.20
 decorator==5.2.1
 dotenv==0.9.9
+et_xmlfile==2.0.0
 executing==2.2.1
 fake-useragent==2.2.0
 filelock==3.24.3
@@ -85,6 +86,7 @@ nltk==3.9.2
 numba==0.64.0
 numpy==2.4.2
 oauthlib==3.3.1
+openpyxl==3.1.5
 omdb==0.10.1
 optuna==4.9.0
 packaging==26.0

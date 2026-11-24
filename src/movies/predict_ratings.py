@@ -11,10 +11,6 @@ import seaborn as sns
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.movies.feature_engineering import transform_single_movie
-# Needed so joblib can unpickle the stacking/ordinal models, which embed an
-# OrdinalExpectedValueRegressor instance (referenced as __main__ at train time).
-from src.movies.advanced_movie_model_trainer import (
-    OrdinalExpectedValueRegressor, MeanMetaRegressor, AnchoredRegressor)  # noqa: F401
 
 
 def batch_predict_ratings():
@@ -81,6 +77,9 @@ def batch_predict_ratings():
             raw = np.asarray(model.predict(X_final), dtype=float)
         # Restamp onto the user's real rating distribution so the Oracle spans the full
         # range (incl. 5*) instead of regressing to the mode; ranking-preserving.
+        if name == "Stacking" and _rated.any():
+            # The Oracle page restamps its single prediction with this same reference.
+            joblib.dump((raw[_rated], _r.values[_rated]), ensemble_dir / "calibration_ref.joblib")
         raw = calibrate_to_ratings(raw, raw[_rated], _r.values[_rated])
         df[f'pred_{name}'] = np.round(np.clip(raw, 0.5, 5.0) * 2) / 2
 

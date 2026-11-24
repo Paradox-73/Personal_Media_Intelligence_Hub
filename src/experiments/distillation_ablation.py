@@ -12,8 +12,8 @@ from scipy.stats import wilcoxon
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.books.model_trainer import calculate_skill_score
-from src.reporting.standalone_benchmarks import (DOMAIN_FIT, _round_half, load_registry,
-                                               registry_folds, set_calibration)
+from src.reporting.standalone_benchmarks import (DOMAIN_FIT, _round_half, load_domain_raw, load_registry,
+                                               reencode_fold, registry_folds, set_calibration)
 
 def run_distillation_ablation(domain='game'):
     print(f"🧪 Starting Distillation Ablation for {domain.upper()}...")
@@ -34,9 +34,13 @@ def run_distillation_ablation(domain='game'):
     df['source_id'] = domain_uni['source_id'].values
     
     # Task 1.1: Only rated items
-    df = df[df['target_reg'].notna()].copy()
+    df = df[df['target_reg'].notna()].reset_index(drop=True)
     print(f"   Filtered to RATED items: N={len(df)}")
-    
+    # Enriched rows behind the features, read while df is still in CSV order; `_pos`
+    # carries that order through the source_id re-indexing below.
+    raw = load_domain_raw(domain, df)
+    df['_pos'] = np.arange(len(df))
+
     df['global_id'] = domain + "_" + df['source_id'].astype(str)
     
     df_uni['global_id'] = df_uni['media_type'] + "_" + df_uni['source_id'].astype(str)
@@ -64,6 +68,7 @@ def run_distillation_ablation(domain='game'):
     df.set_index('source_id', inplace=True, drop=False)
     common_idx = df.index.intersection(avg_priors_df.index)
     df = df.loc[common_idx].copy()
+    raw = raw.iloc[df['_pos'].to_numpy()].reset_index(drop=True)
     avg_priors_df = avg_priors_df.loc[common_idx].copy()
     print(f"   Aligned to {len(df)} common items.")
         
@@ -79,7 +84,8 @@ def run_distillation_ablation(domain='game'):
     print(f"   ✅ Unified priors and global_ids matched for {len(df)} items.")
 
     # 2. Local SVR Evaluation
-    X_base = df.drop(columns=['target_reg', 'target_class', 'target_ordinal', 'source_id', 'global_id', 'unified_prior'], errors='ignore')
+    X_base = df.drop(columns=['target_reg', 'target_class', 'target_ordinal', 'source_id', 'global_id',
+                              'unified_prior', '_pos'], errors='ignore')
     y = df['target_reg']
     
     # The DEPLOYED local model (C, balanced weights, calibration), not a stand-in SVR.
@@ -91,11 +97,8 @@ def run_distillation_ablation(domain='game'):
         for fold_id, test_mask in registry_folds(df, registry):
             train_mask = ~test_mask
 
-            X_fold = X_base.copy()
-            if use_prior:
-                X_fold['unified_prior'] = df['unified_prior']
-
-            X_tr, X_te = X_fold[train_mask], X_fold[test_mask]
+            feat = list(X_base.columns) + (['unified_prior'] if use_prior else [])
+            X_tr, X_te = reencode_fold(domain, df, raw, test_mask, feat)
             parts.append(pd.DataFrame({'global_id': df.loc[test_mask, 'global_id'].values,
                                        'y': y[test_mask].values,
                                        'pred': np.asarray(fit_fn(X_tr, y[train_mask], X_te))}))

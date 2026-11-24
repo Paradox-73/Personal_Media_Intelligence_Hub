@@ -51,8 +51,8 @@ MODEL_ORDER = ["movie", "tv", "game", "book", "unified"]
 PRETTY = {"movie": "Movies", "tv": "TV Shows", "game": "Games",
           "book": "Books", "unified": "Unified"}
 DEPLOYED = {
-    "movie": "Prod Stacking (edge+Cat+SVR+Ord)",
-    "tv": "Prod Simplex-Stack (edge+Cat+SVR)",
+    "movie": "Mean-Ensemble (XGB+Cat+SVR)",
+    "tv": "Mean-Ensemble (XGB+Cat+SVR)",
     "game": "Local SVR",
     "book": "Local SVR",
     "unified": "Mean Ensemble (XGB+Cat)",

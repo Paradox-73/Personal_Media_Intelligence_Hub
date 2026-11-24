@@ -15,10 +15,8 @@ from src import config
 from src.unified_model.unified_utils import (AlignedTextPCA, compute_temporal_weights,
                                              replace_text_block, text_feature_cols)
 from src.reporting.metrics_writer import write_latest_metrics
-from src.reporting.standalone_benchmarks import generate_standalone_oof
-from src.unified_model.unified_repeated_cv import run_unified_ablation_study
-from src.unified_model.unified_feature_engineering import UNIFIED_ENCODE, TE_PRIOR
-from src.common import taste_features as tf
+from src.reporting.standalone_benchmarks import generate_standalone_oof, map_folds, model_threads, registry_folds
+from src.unified_model.unified_repeated_cv import _reencode_entities, load_entity_raw, run_unified_ablation_study
 
 LAMBDA_DECAY = 0.000429
 
@@ -35,28 +33,11 @@ def get_metrics(y_true, y_pred):
 def _fit_mean_ensemble(X_train, y_train, X_test, w_train):
     m1 = xgb.XGBRegressor(n_estimators=300, learning_rate=0.03, max_depth=6, random_state=42)
     m2 = ctb.CatBoostRegressor(iterations=500, learning_rate=0.05, depth=6,
-                               loss_function='MAE', verbose=0, random_seed=42)
+                               loss_function='MAE', verbose=0, random_seed=42,
+                               thread_count=model_threads())
     m1.fit(X_train, y_train, sample_weight=w_train)
     m2.fit(X_train, y_train, sample_weight=w_train)
     return (m1.predict(X_test) + m2.predict(X_test)) / 2
-
-
-def _reencode_entities(X_train, X_test, src_train, src_test, y_train, raw):
-    """Creator/studio encodings fit on this fold's training rows only. The CSV's
-    columns come from one KFold shared by all 50 registry folds, so a test row's
-    rating leaked into training-row features."""
-    for col, limit in UNIFIED_ENCODE:
-        cells = raw.get(col)
-        if cells is None:
-            continue
-        name = 'creator' if col == 'director' else col
-        enc, sup, art = tf.oof_entity_encode([cells[i] for i in src_train], y_train,
-                                             m=TE_PRIOR, limit=limit)
-        X_train[f'{name}_encoded'], X_train[f'{name}_n'] = enc, sup
-        te = [tf.apply_entity_map(cells[i], art['map'], art['counts'], art['mean'], limit)
-              for i in src_test]
-        X_test[f'{name}_encoded'] = [e for e, _ in te]
-        X_test[f'{name}_n'] = [n for _, n in te]
 
 
 def unified_oof_on_registry(df, registry):
@@ -65,21 +46,12 @@ def unified_oof_on_registry(df, registry):
     Returns a per-(item, repeat) frame: media_type, source_id, target_reg, pred(raw).
     Music is never in the registry, so this covers the 1,264 rated items only.
     """
-    # Raw creator/studio cells by source_id; written by build_universal_dataset.
-    raw = joblib.load(config.UNIFIED_PREPROCESSOR_STATE).get('entity_raw')
-    if not raw:
-        print("      WARNING: preprocessor_state has no 'entity_raw' (features predate it); "
-              "using the CSV's shared-KFold entity encodings, which leak test targets. "
-              "Rebuild unified features to fix.")
+    raw = load_entity_raw()
     pca_cols = text_feature_cols(df)
     X_cols = [c for c in df.columns if c not in
               ['target_reg', 'target_ordinal', 'target_class', 'source_id',
                'media_type', 'rating_date', 'global_id']]
-    results = []
-    for fold_id in range(50):
-        test_mask = df['global_id'].apply(lambda g: fold_id in registry.get(g, []))
-        if not test_mask.any():
-            continue
+    def one_fold(test_mask):
         train_mask = ~test_mask
 
         X_train = df.loc[train_mask, X_cols].copy()
@@ -102,9 +74,10 @@ def unified_oof_on_registry(df, registry):
 
         res = df.loc[test_mask, ['media_type', 'source_id', 'target_reg']].copy()
         res['pred'] = preds
-        results.append(res)
-        if (fold_id + 1) % 10 == 0:
-            print(f"      unified registry fold {fold_id + 1}/50")
+        return res
+
+    results = map_folds(one_fold, [(m,) for _, m in registry_folds(df, registry)])
+    print(f"      unified registry folds done ({len(results)})")
     return pd.concat(results, ignore_index=True)
 
 
@@ -242,7 +215,7 @@ def run_master_evaluation():
     print("✅ Assertions passed: benchmarks != slices; N == unique items (no 5x inflation).")
 
     # 5) Ablation (rated-only registry folds)
-    ablation_rows = run_unified_ablation_study()
+    ablation_rows = run_unified_ablation_study(ensemble_oof=uni_oof)
 
     # 6) Per-domain DROP verdict for distillation prior (load if present)
     distill = []

@@ -21,7 +21,12 @@ Design decisions (documented so the docs can cite them):
   * Each item lands in 5 test folds (5 CV repeats). Predictions are averaged
     across repeats per item (mean of raw predictions), THEN rounded to the
     nearest 0.5 once, THEN scored. N is the unique-item count.
+  * Target-derived columns (entity target encodings, TMDB neighbour means) are
+    refit inside every fold from the training rows (`reencode_fold`). The CSV
+    versions come from one inner KFold over the whole library, so a training
+    row's encoding carried test ratings into every registry fold.
 """
+import os
 import sys
 import json
 from pathlib import Path
@@ -36,9 +41,13 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import KFold
 from sklearn.metrics import mean_absolute_error, r2_score
+from joblib import Parallel, delayed
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.common import taste_features as tf
+from src.common.ensemble import model_threads
+from src.common.parsing import canon_genres, people_key
 
 DOMAIN_PATHS = {
     "movie": config.TRAINING_DATA_PATH,
@@ -78,6 +87,31 @@ def registry_folds(df, registry, fold_ids=range(50)):
         test_mask = df["global_id"].apply(lambda g: fold_id in registry.get(g, []))
         if test_mask.any():
             yield fold_id, test_mask
+
+
+# Each fold trains a few small models (~1k rows) that cannot keep 12 threads busy, so
+# whole folds run side by side instead. FOLD_JOBS=1 restores the old serial loop.
+FOLD_JOBS = int(os.getenv("FOLD_JOBS", max(1, (os.cpu_count() or 2) // 2)))
+
+
+def _in_worker(fn, args, calibrate):
+    # Workers outlive set_calibration() calls in the parent, so the flag travels with the task.
+    if calibrate is not None:
+        os.environ["CALIBRATE"] = calibrate
+    return fn(*args)
+
+
+def map_folds(fn, tasks, n_jobs=None):
+    """[fn(*t) for t in tasks], run across FOLD_JOBS processes; results keep task order.
+
+    joblib caps each worker's OpenMP threads (XGBoost) at cpu_count // n_jobs; CatBoost
+    ignores that cap, so callers pass thread_count=model_threads() to it.
+    """
+    n_jobs = n_jobs or FOLD_JOBS
+    if n_jobs == 1:
+        return [fn(*t) for t in tasks]
+    cal = os.environ.get("CALIBRATE")
+    return Parallel(n_jobs=n_jobs)(delayed(_in_worker)(fn, t, cal) for t in tasks)
 
 
 def set_calibration(domain):
@@ -140,7 +174,7 @@ def _fit_predict_simplex_stack(X_tr, y_tr, X_te):
     base = {
         "xgb": lambda: xgb.XGBRegressor(n_estimators=150, learning_rate=0.03,
                                         max_depth=5, random_state=42),
-        "cat": lambda: ctb.CatBoostRegressor(iterations=200, learning_rate=0.05,
+        "cat": lambda: ctb.CatBoostRegressor(iterations=200, learning_rate=0.05, thread_count=model_threads(),
                                              depth=5, loss_function="MAE",
                                              verbose=0, random_seed=42),
         "svr": lambda: Pipeline([("scaler", StandardScaler()),
@@ -248,6 +282,108 @@ def _load_domain(domain, uni_df, registry):
     return loc
 
 
+# ---- fold-safe target encodings ------------------------------------------------
+
+RAW_PATHS = {
+    "movie": (config.MOVIES_ENRICHED_DATA_PATH, "user_rating"),
+    "tv": (config.TV_SHOWS_ENRICHED_DATA_PATH, "user_rating"),
+    "game": (config.GAMES_ENRICHED_DATA_PATH, "my_rating"),
+    "book": (config.BOOKS_ENRICHED_DATA_PATH, "my_rating"),
+}
+
+
+def _encode_spec(domain):
+    """(prior m, [(feature stem, raw column, names kept)]) for every entity encoding
+    the domain's feature_engineering writes. Imported lazily: those modules load torch."""
+    if domain == "movie":
+        from src.movies.feature_engineering import CREW_ENCODE, TE_PRIOR
+        return TE_PRIOR, [(c, c, lim) for c, lim in CREW_ENCODE] + [("dir_genre", "dir_genre_key", None)]
+    if domain == "tv":
+        from src.shows.feature_engineering import TE_PRIOR
+        return TE_PRIOR, [("creator", "created_by", None), ("actors", "actors", None),
+                          ("writer", "writer", None)]
+    if domain == "game":
+        from src.games.feature_engineering import GAME_ENCODE, TE_PRIOR
+        return TE_PRIOR, [(c, c, lim) for c, lim in GAME_ENCODE]
+    from src.books.feature_engineering import BOOK_ENCODE, TE_PRIOR
+    return TE_PRIOR, [(c, c, lim) for c, lim in BOOK_ENCODE]
+
+
+def load_domain_raw(domain, loc):
+    """The enriched rows behind `loc`, in its row order. The feature builders keep the
+    enriched order and drop only unrated rows, so the same filter lines them up;
+    checked on count and target rather than assumed."""
+    path, target = RAW_PATHS[domain]
+    try:
+        raw = pd.read_csv(path, low_memory=False)
+    except UnicodeDecodeError:
+        raw = pd.read_csv(path, low_memory=False, encoding="latin1")
+    y = pd.to_numeric(raw[target], errors="coerce")
+    raw = raw[y.notna()].reset_index(drop=True)
+    if len(raw) != len(loc) or not np.allclose(y.dropna().to_numpy(),
+                                               loc["target_reg"].to_numpy(dtype=float), atol=1e-6):
+        raise ValueError(f"{domain}: enriched rows do not line up with the feature rows")
+    if domain == "movie":
+        # The composite key feature_engineering encodes, pre-wrapped as a one-element
+        # list so a two-director cell is not split on its comma.
+        raw["dir_genre_key"] = [[people_key(d) + "_" + (canon_genres(g) or ["Unknown"])[0]]
+                                for d, g in zip(raw["director"], raw["genre"])]
+    return raw
+
+
+def _tv_encode(cells_tr, y_tr, cells_te, m):
+    """TV keeps its own encoder in shows/feature_engineering (raw names, unseen entity
+    = global mean) rather than taste_features; refitting with taste_features moved
+    16-51 of 175 rows by up to 0.23 stars, so the benchmark would have scored a
+    feature the deployed model never sees."""
+    from src.shows.feature_engineering import global_te_mapping, item_mean, parse_people, target_encode_list
+    frame = pd.DataFrame({"L": [parse_people(c) for c in cells_tr], "y": y_tr})
+    enc = target_encode_list(frame, "L", target="y", m=m).to_numpy()
+    mapping, g = global_te_mapping(frame, "L", target="y", m=m)
+    return enc, [item_mean(parse_people(c), mapping, g) for c in cells_te]
+
+
+def reencode_fold(domain, loc, raw, test_mask, feat_cols):
+    """(X_train, X_test) for one fold with every target-derived column refit on the
+    training rows only: training rows get an inner-OOF encoding over the training
+    fold, test rows the training-fold map. Same shape as
+    unified_repeated_cv._reencode_entities for the unified matrix."""
+    test_mask = np.asarray(test_mask, dtype=bool)
+    tr, te = np.flatnonzero(~test_mask), np.flatnonzero(test_mask)
+    X = loc[feat_cols].reset_index(drop=True).copy()
+    y = loc["target_reg"].to_numpy(dtype=float)
+    m, spec = _encode_spec(domain)
+    done = set()
+    for stem, raw_col, limit in spec:
+        if f"{stem}_encoded" not in X.columns:
+            continue
+        cells = raw[raw_col].tolist()
+        if domain == "tv":
+            assert f"{stem}_n" not in X.columns, "TV's encoder writes no support column"
+            enc, te_enc = _tv_encode([cells[i] for i in tr], y[tr], [cells[i] for i in te], m)
+        else:
+            enc, sup, art = tf.oof_entity_encode([cells[i] for i in tr], y[tr], m=m, limit=limit)
+            pairs = [tf.apply_entity_map(cells[i], art["map"], art["counts"], art["mean"], limit) for i in te]
+            te_enc = [e for e, _ in pairs]
+            if f"{stem}_n" in X.columns:
+                X.loc[tr, f"{stem}_n"], X.loc[te, f"{stem}_n"] = sup, [n for _, n in pairs]
+        X.loc[tr, f"{stem}_encoded"], X.loc[te, f"{stem}_encoded"] = enc, te_enc
+        done.add(f"{stem}_encoded")
+    if "nb_similar_mean" in X.columns:
+        from src.movies.feature_engineering import tf_neighbors_cache
+        cache = tf_neighbors_cache()
+        ids = pd.to_numeric(raw["tmdb_id"], errors="coerce").tolist()
+        for ep in ("similar", "recommendations"):
+            lists = tf.load_neighbor_lists(cache, domain, ids, ep)
+            enc, sup, art = tf.oof_neighbor_encode([ids[i] for i in tr], [lists[i] for i in tr], y[tr])
+            pairs = [tf.apply_neighbor_map(lists[i], art["index"], art["mean"], self_id=ids[i]) for i in te]
+            X.loc[tr, f"nb_{ep}_mean"], X.loc[te, f"nb_{ep}_mean"] = enc, [e for e, _ in pairs]
+            X.loc[tr, f"nb_{ep}_n"], X.loc[te, f"nb_{ep}_n"] = sup, [n for _, n in pairs]
+    left = [c for c in X.columns if c.endswith("_encoded") and c not in done]
+    assert not left, f"{domain}: target-derived columns left as built on the whole library: {left}"
+    return X.iloc[tr], X.iloc[te]
+
+
 def benchmarks_from_oof(oof_df):
     """Recompute benchmark rows from an existing per-item standalone OOF frame."""
     bms = []
@@ -279,19 +415,22 @@ def _generate_standalone_oof(uni_df, registry, oof_out_path="reports/standalone_
         set_calibration(domain)
         print(f"   [standalone] {domain} ...", flush=True)
         loc = _load_domain(domain, uni_df, registry)
+        raw = load_domain_raw(domain, loc)
         feat_cols = [c for c in loc.columns if c not in DROP_COLS]
         fit_fn = DOMAIN_FIT[domain]
 
-        rows = []  # (source_id, target_reg, raw_pred) per (item, repeat)
-        for fold_id, test_mask in registry_folds(loc, registry):
+        def one_fold(test_mask):
             train_mask = ~test_mask
-            X_tr, X_te = loc.loc[train_mask, feat_cols], loc.loc[test_mask, feat_cols]
+            X_tr, X_te = reencode_fold(domain, loc, raw, test_mask, feat_cols)
             y_tr = loc.loc[train_mask, "target_reg"]
             preds = fit_fn(X_tr, y_tr, X_te)
             sub = loc.loc[test_mask, ["source_id", "target_reg"]].copy()
             sub["pred"] = np.asarray(preds)
             sub["media_type"] = domain
-            rows.append(sub)
+            return sub
+
+        # (source_id, target_reg, raw_pred) per (item, repeat)
+        rows = map_folds(one_fold, [(m,) for _, m in registry_folds(loc, registry)])
 
         oof = pd.concat(rows, ignore_index=True)
         # Per-item dedup: mean of raw predictions across the 5 CV repeats.

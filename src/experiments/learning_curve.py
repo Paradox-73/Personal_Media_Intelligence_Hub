@@ -38,7 +38,7 @@ import matplotlib.pyplot as plt
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.reporting.standalone_benchmarks import load_registry, registry_folds, skill
+from src.reporting.standalone_benchmarks import load_registry, registry_folds, map_folds, skill
 from src.experiments.transfer_study import (
     RATED_DOMAINS, SEED, select_features, _fit_predict,
 )
@@ -82,14 +82,16 @@ def run():
         n_total = len(tdf)
         n_rated = int(tdf["target_reg"].notna().sum())
         print(f"=== {target.upper()}  (rated items: {n_rated}) ===")
-        for fold_id, test_mask in registry_folds(tdf, registry):
+        def one_fold(fold_id, test_mask):
+            ts.N_ESTIMATORS = N_ESTIMATORS  # workers import transfer_study afresh (300 trees)
+            out = []
             tr_target = tdf[~test_mask]
             te_target = tdf[test_mask]
             # only rated rows carry a usable target
             tr_target = tr_target[tr_target["target_reg"].notna()]
             te_target = te_target[te_target["target_reg"].notna()]
             if len(tr_target) < 4 or len(te_target) == 0:
-                continue
+                return out
             y_te = te_target["target_reg"].values
             train_mean = tr_target["target_reg"].mean()
 
@@ -105,12 +107,16 @@ def run():
                         sub = tr_target.iloc[idx]
                     pred = _fit_predict(sub[feat], sub["target_reg"], sub["media_type"],
                                         te_target[feat], te_target["media_type"])
-                    rows.append(dict(
+                    out.append(dict(
                         domain=target, fraction=frac, fold=fold_id, repeat=rep,
                         n_train=len(sub), n_test=len(y_te),
                         MAE=mean_absolute_error(y_te, pred),
                         skill=skill(y_te, pred, train_mean),
                     ))
+            return out
+
+        for fold_rows in map_folds(one_fold, list(registry_folds(tdf, registry))):
+            rows.extend(fold_rows)
         print(f"    done ({sum(1 for r in rows if r['domain']==target)} rows)\n")
 
     res = pd.DataFrame(rows)

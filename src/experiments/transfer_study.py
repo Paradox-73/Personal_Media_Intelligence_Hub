@@ -21,6 +21,8 @@ CORAL/centroid alignment is fit on TRAINING folds only (no leakage).
 
 Outputs:
   reports/transfer_grid_results.csv  — one row per (cell, protocol, fraction, repeat)
+  reports/transfer_grid_items.csv    — one prediction per (cell, item), averaged over the
+                                       5 registry repeats; the analysis tests on these
   reports/transfer_grid_summary.json — aggregated, for the renderer / atlas page
 """
 import sys
@@ -36,7 +38,7 @@ from sklearn.metrics import mean_absolute_error
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.reporting.standalone_benchmarks import load_registry, registry_folds, skill
+from src.reporting.standalone_benchmarks import load_registry, registry_folds, skill, map_folds
 from src.unified_model.unified_utils import DomainAligner, text_feature_cols
 
 RATED_DOMAINS = ["movie", "tv", "game", "book"]
@@ -91,6 +93,11 @@ def select_features(df, max_genres=40):
 N_ESTIMATORS = 300  # overridable by run_grid for a tractable pilot
 
 
+def _set_trees(n):
+    global N_ESTIMATORS
+    N_ESTIMATORS = n
+
+
 def _xgb():
     return xgb.XGBRegressor(n_estimators=N_ESTIMATORS, learning_rate=0.03, max_depth=6,
                             subsample=0.8, colsample_bytree=0.8,
@@ -136,6 +143,9 @@ def run_grid(repeats_per_cell=1, fractions=(0.0, 0.25, 0.5, 1.0),
     if fold_ids is None:
         fold_ids = range(50)
     df = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
+    # Unrated rows are stored as target_reg 0.0; training on them as 0-star ratings
+    # handicapped the games-only baseline by +0.036 MAE and inflated every games lift.
+    df = df[(df["media_type"] == "music") | (df["target_reg"] > 0)].copy()
     df["global_id"] = df["media_type"] + "_" + df["source_id"].astype(str)
     feat = select_features(df, max_genres=40)
     print(f"Shared-space features: {len(feat)} (genre one-hots capped at 40)")
@@ -157,7 +167,20 @@ def run_grid(repeats_per_cell=1, fractions=(0.0, 0.25, 0.5, 1.0),
         print("   note: 0 music rows -- skipping the with-music arm (it would duplicate "
               "every cell). Grid size halved.")
         include_music = False
-    rows = []
+    rows, item_frames = [], []
+
+    def write_outputs():
+        pd.DataFrame(rows).to_csv(Path("reports/transfer_grid_results.csv"), index=False)
+        # The 50 folds reuse each item 5 times, so per-fold scores are not independent
+        # samples; the tests use one row per item. abs_err is the mean of the per-fold
+        # errors, not the error of the mean prediction, which would favour arms that
+        # average 5 different models over B's single model.
+        (pd.concat(item_frames, ignore_index=True)
+           .assign(abs_err=lambda f: (f.y - f.pred).abs())
+           .groupby(["target", "source", "music", "protocol", "fraction", "global_id"],
+                    as_index=False)
+           .agg(y=("y", "first"), pred=("pred", "mean"), abs_err=("abs_err", "mean"))
+           .to_csv(Path("reports/transfer_grid_items.csv"), index=False))
 
     for target in RATED_DOMAINS:
         others = [d for d in RATED_DOMAINS if d != target]
@@ -172,63 +195,82 @@ def run_grid(repeats_per_cell=1, fractions=(0.0, 0.25, 0.5, 1.0),
                 source_configs.append((list(s), True))
 
         tdf = df[df["media_type"] == target].copy()
-        tgt_ids = tdf["global_id"].values
+        sources = []
+        for src, with_music in source_configs:
+            sdf = df[df["media_type"].isin(src)].copy()
+            if with_music and len(music_df):
+                sdf = pd.concat([sdf, music_df], ignore_index=True)
+            sources.append((src, with_music, sdf))
 
-        # Per-fold test masks for the target (registry folds).
-        for fold_id, test_mask in registry_folds(tdf, registry, fold_ids=fold_ids):
+        # ---- Protocol B: zero-shot (train S, eval T test) ----
+        # The training set is S alone, the same for every fold, and alignment and
+        # prediction are row-wise -- so fit once per source and slice per fold.
+        def zero_shot(sdf):
+            _set_trees(n_estimators)  # workers import this module afresh (300 trees)
+            wB = np.where(sdf["media_type"] == "music", MUSIC_WEIGHT, 1.0)
+            return _fit_predict(sdf[feat], sdf["target_reg"], sdf["media_type"],
+                                tdf[feat], tdf["media_type"], w_tr=wB)
+        predsB = map_folds(zero_shot, [(sdf,) for _, _, sdf in sources])
+        for (src, with_music, _), pB in zip(sources, predsB):
+            item_frames.append(pd.DataFrame(dict(
+                target=target, source=subset_label(src), music=with_music, protocol="B",
+                fraction=0.0, global_id=tdf["global_id"].values,
+                y=tdf["target_reg"].values, pred=pB)))
+
+        def one_fold(fold_id, test_mask):
+            _set_trees(n_estimators)
+            out, items = [], []
             tr_target = tdf[~test_mask]
             te_target = tdf[test_mask]
             y_te = te_target["target_reg"].values
             train_mean = tr_target["target_reg"].mean()
 
+            def row(src_lbl, music, protocol, frac, rep, pred):
+                out.append(dict(target=target, source=src_lbl, music=music,
+                                protocol=protocol, fraction=frac, fold=fold_id, repeat=rep,
+                                N=len(y_te), MAE=mean_absolute_error(y_te, pred),
+                                skill=skill(y_te, pred, train_mean),
+                                spearman=_safe_spearman(y_te, pred)))
+                if protocol != "B" and not (protocol == "C" and frac == 0.0):  # B is per-item already
+                    items.append(pd.DataFrame(dict(
+                        target=target, source=src_lbl, music=music, protocol=protocol,
+                        fraction=frac, global_id=te_target["global_id"].values,
+                        y=y_te, pred=pred)))
+
             # ---- Protocol A: target-only ----
-            predA = _fit_predict(tr_target[feat], tr_target["target_reg"], tr_target["media_type"],
-                                 te_target[feat], te_target["media_type"])
-            rows.append(dict(target=target, source="(target-only)", music=False,
-                             protocol="A", fraction=1.0, fold=fold_id, repeat=0,
-                             N=len(y_te), MAE=mean_absolute_error(y_te, predA),
-                             skill=skill(y_te, predA, train_mean),
-                             spearman=_safe_spearman(y_te, predA)))
+            row("(target-only)", False, "A", 1.0, 0,
+                _fit_predict(tr_target[feat], tr_target["target_reg"], tr_target["media_type"],
+                             te_target[feat], te_target["media_type"]))
 
-            for src, with_music in source_configs:
-                sdf = df[df["media_type"].isin(src)].copy()
-                if with_music and len(music_df):
-                    sdf = pd.concat([sdf, music_df], ignore_index=True)
+            for (src, with_music, sdf), pB in zip(sources, predsB):
                 lbl = subset_label(src)
-
-                # ---- Protocol B: zero-shot (train S, eval T test) ----
-                wB = np.where(sdf["media_type"] == "music", MUSIC_WEIGHT, 1.0)
-                predB = _fit_predict(sdf[feat], sdf["target_reg"], sdf["media_type"],
-                                     te_target[feat], te_target["media_type"], w_tr=wB)
-                rows.append(dict(target=target, source=lbl, music=with_music,
-                                 protocol="B", fraction=0.0, fold=fold_id, repeat=0,
-                                 N=len(y_te), MAE=mean_absolute_error(y_te, predB),
-                                 skill=skill(y_te, predB, train_mean),
-                                 spearman=_safe_spearman(y_te, predB)))
+                predB = pB[np.asarray(test_mask)]
+                row(lbl, with_music, "B", 0.0, 0, predB)
 
                 # ---- Protocol C: augmented (S + frac of T train) ----
                 for frac in fractions:
                     for rep in range(repeats_per_cell):
                         if frac == 0.0:
-                            t_aug = tr_target.iloc[0:0]
-                        else:
-                            rng = np.random.RandomState(SEED + fold_id * 100 + rep)
-                            n = max(1, int(round(frac * len(tr_target))))
-                            idx = rng.choice(len(tr_target), size=n, replace=False)
-                            t_aug = tr_target.iloc[idx]
-                        comb = pd.concat([sdf, t_aug], ignore_index=True)
+                            # S + nothing is Protocol B's exact training set.
+                            row(lbl, with_music, "C", frac, rep, predB)
+                            continue
+                        rng = np.random.RandomState(SEED + fold_id * 100 + rep)
+                        n = max(1, int(round(frac * len(tr_target))))
+                        idx = rng.choice(len(tr_target), size=n, replace=False)
+                        comb = pd.concat([sdf, tr_target.iloc[idx]], ignore_index=True)
                         wC = np.where(comb["media_type"] == "music", MUSIC_WEIGHT, 1.0)
-                        predC = _fit_predict(comb[feat], comb["target_reg"], comb["media_type"],
-                                             te_target[feat], te_target["media_type"], w_tr=wC)
-                        rows.append(dict(target=target, source=lbl, music=with_music,
-                                         protocol="C", fraction=frac, fold=fold_id, repeat=rep,
-                                         N=len(y_te), MAE=mean_absolute_error(y_te, predC),
-                                         skill=skill(y_te, predC, train_mean),
-                                         spearman=_safe_spearman(y_te, predC)))
+                        row(lbl, with_music, "C", frac, rep,
+                            _fit_predict(comb[feat], comb["target_reg"], comb["media_type"],
+                                         te_target[feat], te_target["media_type"], w_tr=wC))
+            return out, items
+
+        for fold_rows, fold_items in map_folds(one_fold, list(registry_folds(tdf, registry, fold_ids=fold_ids))):
+            rows.extend(fold_rows)
+            item_frames.extend(fold_items)
         print(f"  target={target}: cumulative rows={len(rows)}")
         # Checkpoint: flush partial results after each target so a crash mid-grid
         # doesn't lose completed targets (the full grid is a long/overnight run).
-        pd.DataFrame(rows).to_csv(Path("reports/transfer_grid_results.csv"), index=False)
+        write_outputs()
         print(f"  [checkpoint] wrote {len(rows)} rows after target={target}")
 
     res = pd.DataFrame(rows)

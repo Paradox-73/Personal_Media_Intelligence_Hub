@@ -165,12 +165,15 @@ def build_plan(args):
             ("experiments", "transfer grid table", [PY, "-m", "src.experiments.transfer_grid_table"]),
             ("experiments", "rating coherence", [PY, "-m", "src.experiments.rating_coherence"]),
             ("experiments", "transfer analysis", [PY, "-m", "src.experiments.transfer_analysis"]),
+            ("experiments", "transfer placebo control", [PY, "-m", "src.experiments.transfer_placebo_control"]),
             ("experiments", "entity links (full)", [PY, "-m", "src.linking.build_entity_links", "full"]),
             ("experiments", "entity bridges", [PY, "-m", "src.linking.bridge_features"]),
             ("experiments", "learning curves (unified)", [PY, "-m", "src.experiments.learning_curve"]),
             ("experiments", "learning curves (local)", [PY, "-m", "src.experiments.learning_curve_local"]),
             ("experiments", "active-learning queue", [PY, "-m", "src.evaluation.active_learning_ranker"]),
             ("paper", "paper figures (refresh w/ experiments)", [PY, str(REPO / "paper" / "make_figures.py")]),
+            # The first render ran before the grid, so it published the previous verdict.
+            ("docs", "render README + tech report (refresh w/ experiments)", [PY, "-m", "src.reporting.render_docs"]),
         ]
     # Gates: a non-zero exit fails the pipeline.
     steps.append(("verify", "inference parity audit", [PY, "-m", "scripts.audit_inference_parity"]))

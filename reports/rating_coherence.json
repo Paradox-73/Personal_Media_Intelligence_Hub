@@ -1,11 +1,11 @@
 {
   "coherence": {
     "movie": {
-      "n": 1062,
-      "rho_nearest_neighbour": 0.2453,
+      "n": 1182,
+      "rho_nearest_neighbour": 0.2582,
       "p": 0.0,
-      "mean_abs_gap_to_neighbour": 0.8479,
-      "sd_of_ratings": 0.9692,
+      "mean_abs_gap_to_neighbour": 0.8422,
+      "sd_of_ratings": 0.9619,
       "neighbour_beats_mean": true
     },
     "tv": {
@@ -17,19 +17,19 @@
       "neighbour_beats_mean": false
     },
     "game": {
-      "n": 66,
-      "rho_nearest_neighbour": 0.3607,
-      "p": 0.0029,
-      "mean_abs_gap_to_neighbour": 0.7879,
-      "sd_of_ratings": 0.9817,
+      "n": 67,
+      "rho_nearest_neighbour": 0.3781,
+      "p": 0.0016,
+      "mean_abs_gap_to_neighbour": 0.7761,
+      "sd_of_ratings": 0.9864,
       "neighbour_beats_mean": true
     },
     "book": {
-      "n": 104,
-      "rho_nearest_neighbour": 0.7156,
+      "n": 111,
+      "rho_nearest_neighbour": 0.705,
       "p": 0.0,
-      "mean_abs_gap_to_neighbour": 0.375,
-      "sd_of_ratings": 0.8848,
+      "mean_abs_gap_to_neighbour": 0.3649,
+      "sd_of_ratings": 0.8699,
       "neighbour_beats_mean": true
     }
   },
@@ -37,21 +37,21 @@
     "tv": {
       "by_fraction": {
         "0.25": {
-          "delta_rho": -0.0913,
-          "se": 0.024,
-          "p": 0.0004,
+          "delta_rho": -0.1007,
+          "se": 0.0294,
+          "p": 0.00124,
           "n_folds": 50
         },
         "0.5": {
-          "delta_rho": -0.1002,
-          "se": 0.0221,
-          "p": 4e-05,
+          "delta_rho": -0.0851,
+          "se": 0.03,
+          "p": 0.00663,
           "n_folds": 50
         },
         "1.0": {
-          "delta_rho": -0.059,
-          "se": 0.0191,
-          "p": 0.00326,
+          "delta_rho": -0.0543,
+          "se": 0.0247,
+          "p": 0.03288,
           "n_folds": 50
         }
       },
@@ -60,48 +60,48 @@
     "game": {
       "by_fraction": {
         "0.25": {
-          "delta_rho": -0.0132,
-          "se": 0.0239,
-          "p": 0.58347,
+          "delta_rho": -0.1201,
+          "se": 0.0389,
+          "p": 0.00333,
           "n_folds": 50
         },
         "0.5": {
-          "delta_rho": 0.0128,
-          "se": 0.0228,
-          "p": 0.57763,
+          "delta_rho": -0.0949,
+          "se": 0.0439,
+          "p": 0.03532,
           "n_folds": 50
         },
         "1.0": {
-          "delta_rho": 0.0036,
-          "se": 0.0242,
-          "p": 0.88118,
+          "delta_rho": -0.0619,
+          "se": 0.0398,
+          "p": 0.12605,
           "n_folds": 50
         }
       },
-      "direction": "null"
+      "direction": "hurts"
     },
     "book": {
       "by_fraction": {
         "0.25": {
-          "delta_rho": 0.0472,
-          "se": 0.0199,
-          "p": 0.02177,
+          "delta_rho": -0.109,
+          "se": 0.034,
+          "p": 0.00238,
           "n_folds": 50
         },
         "0.5": {
-          "delta_rho": 0.0794,
-          "se": 0.0196,
-          "p": 0.00018,
+          "delta_rho": -0.1326,
+          "se": 0.0326,
+          "p": 0.00017,
           "n_folds": 50
         },
         "1.0": {
-          "delta_rho": 0.1141,
-          "se": 0.0221,
-          "p": 0.0,
+          "delta_rho": -0.105,
+          "se": 0.0305,
+          "p": 0.0012,
           "n_folds": 50
         }
       },
-      "direction": "helps"
+      "direction": "hurts"
     }
   },
   "ordered": [
@@ -114,24 +114,24 @@
     },
     {
       "domain": "movie",
-      "n": 1062,
-      "coherence_rho": 0.2453,
+      "n": 1182,
+      "coherence_rho": 0.2582,
       "coherence_p": 0.0,
       "own_data_effect": "n/a (is the source)"
     },
     {
       "domain": "game",
-      "n": 66,
-      "coherence_rho": 0.3607,
-      "coherence_p": 0.0029,
-      "own_data_effect": "null"
+      "n": 67,
+      "coherence_rho": 0.3781,
+      "coherence_p": 0.0016,
+      "own_data_effect": "hurts"
     },
     {
       "domain": "book",
-      "n": 104,
-      "coherence_rho": 0.7156,
+      "n": 111,
+      "coherence_rho": 0.705,
       "coherence_p": 0.0,
-      "own_data_effect": "helps"
+      "own_data_effect": "hurts"
     }
   ],
   "claim": "Local rating coherence orders the domains identically to the sign of the augmentation effect: the less predictable a domain's ratings are from nearby items, the less its own data is worth -- and below a threshold it is worth less than nothing."

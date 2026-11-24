@@ -1,0 +1,106 @@
+{
+  "date": "2026-10-30",
+  "model": "Mean-Ensemble (XGB+Cat+SVR)",
+  "folds": 50,
+  "fold_jobs": 6,
+  "domains": {
+    "movie": {
+      "leaked": {
+        "N": 1182,
+        "MAE": 0.4162,
+        "MAE_raw": 0.4273,
+        "MAE_mean": 0.7437,
+        "skill_vs_mean": 0.4403,
+        "spearman": 0.7944,
+        "spearman_p": 8.690281563165145e-258
+      },
+      "fold_safe": {
+        "N": 1182,
+        "MAE": 0.4188,
+        "MAE_raw": 0.4291,
+        "MAE_mean": 0.7437,
+        "skill_vs_mean": 0.4369,
+        "spearman": 0.7982,
+        "spearman_p": 5.935768667632414e-262
+      },
+      "fold_safe_vs_leaked": {
+        "n_items": 1182,
+        "mean_abs_pred_diff": 0.04008,
+        "max_abs_pred_diff": 0.3651,
+        "delta_MAE_raw": 0.00183,
+        "wilcoxon_p": 0.9518711782616052
+      },
+      "delta": {
+        "MAE": 0.0026,
+        "MAE_raw": 0.0018,
+        "skill_vs_mean": -0.0034,
+        "spearman": 0.0038
+      },
+      "published_cache_vs_leaked_rerun": {
+        "published": {
+          "N": 1182,
+          "MAE": 0.4188,
+          "MAE_raw": 0.4291,
+          "MAE_mean": 0.7437,
+          "skill_vs_mean": 0.4369,
+          "spearman": 0.7982,
+          "spearman_p": 5.935768667632414e-262
+        },
+        "n_items": 1182,
+        "mean_abs_pred_diff": 0.04008,
+        "max_abs_pred_diff": 0.3651,
+        "delta_MAE_raw": -0.00183,
+        "wilcoxon_p": 0.9518711782616052
+      }
+    },
+    "tv": {
+      "leaked": {
+        "N": 175,
+        "MAE": 0.6543,
+        "MAE_raw": 0.6877,
+        "MAE_mean": 0.8771,
+        "skill_vs_mean": 0.2541,
+        "spearman": 0.585,
+        "spearman_p": 1.888529504296319e-17
+      },
+      "fold_safe": {
+        "N": 175,
+        "MAE": 0.68,
+        "MAE_raw": 0.6838,
+        "MAE_mean": 0.8771,
+        "skill_vs_mean": 0.2248,
+        "spearman": 0.595,
+        "spearman_p": 3.85070473644265e-18
+      },
+      "fold_safe_vs_leaked": {
+        "n_items": 175,
+        "mean_abs_pred_diff": 0.04126,
+        "max_abs_pred_diff": 0.49657,
+        "delta_MAE_raw": -0.00387,
+        "wilcoxon_p": 0.33954282111070655
+      },
+      "delta": {
+        "MAE": 0.0257,
+        "MAE_raw": -0.0039,
+        "skill_vs_mean": -0.0293,
+        "spearman": 0.01
+      },
+      "published_cache_vs_leaked_rerun": {
+        "published": {
+          "N": 175,
+          "MAE": 0.6657,
+          "MAE_raw": 0.6821,
+          "MAE_mean": 0.8771,
+          "skill_vs_mean": 0.241,
+          "spearman": 0.5935,
+          "spearman_p": 4.932266216287136e-18
+        },
+        "n_items": 175,
+        "mean_abs_pred_diff": 0.03982,
+        "max_abs_pred_diff": 0.40091,
+        "delta_MAE_raw": 0.00563,
+        "wilcoxon_p": 0.30461479324507734
+      }
+    }
+  }
+}

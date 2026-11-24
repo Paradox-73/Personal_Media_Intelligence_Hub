@@ -1,13 +1,13 @@
 {
   "link_type": "adaptation",
   "n_linked": 57,
-  "mae_without_bridge": 0.5526,
-  "mae_with_bridge": 0.5351,
-  "mae_delta": 0.0175,
+  "mae_without_bridge": 0.7368,
+  "mae_with_bridge": 0.7368,
+  "mae_delta": 0.0,
   "delta_ci95": [
-    -0.0175,
-    0.0526
+    0.0,
+    0.0
   ],
-  "wilcoxon_p": 0.3173,
+  "wilcoxon_p": NaN,
   "verdict": "no significant bridge effect at this N (pilot)"
 }

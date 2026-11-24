@@ -98,7 +98,7 @@ def find_similar_shows(meta, n=3):
 
 # --- UI ---
 st.header("🔮 The TV Show Oracle")
-st.markdown("Predict your rating for any series using a Stacking Ensemble, an Ordinal Probability Engine, and Semantic Text Embeddings.")
+st.markdown("Predict your rating for any series using a Mean Ensemble (XGBoost + CatBoost + SVR), an Ordinal Probability Engine, and Semantic Text Embeddings.")
 
 artifacts = load_artifacts()
 if 'error' in artifacts:
@@ -215,8 +215,8 @@ if st.session_state['tv_raw']:
                 c1, c2, c3 = st.columns(3)
                 base_bits = [f"{lbl}: {v:.1f}" for lbl, v in
                              [("XGBoost", v_xgb), ("SVR", v_svr), ("CatBoost", v_cat)] if v is not None]
-                hover = "Base models →  " + "  ·  ".join(base_bits) if base_bits else "Stacking ensemble prediction."
-                c1.metric("Stacking Ensemble", f"⭐ {v_stack:.1f}", help=hover)
+                hover = "Base models →  " + "  ·  ".join(base_bits) if base_bits else "Mean ensemble prediction."
+                c1.metric("Mean Ensemble", f"⭐ {v_stack:.1f}", help=hover)
                 c2.metric("Ordinal (EV)", f"⭐ {v_ord:.1f}", help="Expected value of the rating-bucket distribution.")
                 c3.metric("Verdict", verdict, help="XGBoost binary classifier vs. your median rating.")
 
@@ -225,7 +225,7 @@ if st.session_state['tv_raw']:
                 if u is not None:
                     st.metric("🌐 Unified Model (cross-domain)", f"⭐ {np.round(u * 2) / 2:.1f}",
                               help="Independent prediction from the 397-feature Unified Model trained across "
-                                   "all domains — a cross-domain sanity check against the TV stacking ensemble.")
+                                   "all domains — a cross-domain sanity check against the TV mean ensemble.")
 
                 # SHAP
                 import shap

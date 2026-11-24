@@ -12,6 +12,7 @@ seaborn
 # --- Data / numerics ---
 pandas
 numpy
+openpyxl
 scipy                     # scipy.stats (Wilcoxon/Spearman) + scipy.optimize.minimize (simplex weights)
 joblib
 

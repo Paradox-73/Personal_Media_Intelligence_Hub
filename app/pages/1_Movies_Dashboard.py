@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import re
+import html
 import sys
 import numpy as np
 from pathlib import Path
@@ -632,8 +633,9 @@ if 'keywords' in df.columns and df['keywords'].notna().any():
         agg['AvgRating'] = agg['AvgRating'].round(2)
         overall = df['user_rating'].mean()
 
-        t_kw_top, t_kw_common, t_kw_search, t_kw_all = st.tabs(
-            ["Best & Worst Themes", "Most Common", "🔎 Search by Keyword", "All Keywords"])
+        t_kw_top, t_kw_common, t_kw_search, t_kw_all, t_lbth_top, t_lbth_heat = st.tabs(
+            ["Best & Worst Themes", "Most Common", "🔎 Search by Keyword", "All Keywords",
+             "Letterboxd Themes", "Letterboxd Themes × Your Stars"])
         with t_kw_top:
             c_hi, c_lo = st.columns(2)
             with c_hi:
@@ -713,10 +715,227 @@ if 'keywords' in df.columns and df['keywords'].notna().any():
             st.dataframe(agg.reset_index().rename(
                 columns={'keyword': 'Keyword', 'AvgRating': 'Avg Rating'}),
                 use_container_width=True, hide_index=True, height=420)
+
+        # Letterboxd themes are hand-curated nanogenres, coarser than TMDB keywords.
+        # Theme names contain commas ("Humanity and the world around us"), so split on ';' only.
+        th = (df.dropna(subset=['user_rating', 'lb_themes'])
+              .assign(theme=lambda d: d['lb_themes'].str.split(';'))
+              .explode('theme')) if 'lb_themes' in df.columns else pd.DataFrame()
+        if not th.empty:
+            th['theme'] = th['theme'].str.strip()
+            th = th[th['theme'] != '']
+            th_agg = (th.groupby('theme')
+                      .agg(Films=('user_rating', 'size'), AvgRating=('user_rating', 'mean'))
+                      .query('Films >= @MIN_N')
+                      .sort_values('AvgRating', ascending=False))
+            th_agg['AvgRating'] = th_agg['AvgRating'].round(2)
+        if th.empty:
+            for tab in (t_lbth_top, t_lbth_heat):
+                with tab:
+                    st.info("Letterboxd themes not merged yet — run "
+                            "`python -m src.movies.letterboxd_details --apply`.")
+        else:
+            with t_lbth_top:
+                c_hi, c_lo = st.columns(2)
+                for col, part, title, color in [
+                        (c_hi, th_agg.head(12), "Letterboxd themes you rate highest", HUB_PALETTE[1]),
+                        (c_lo, th_agg.tail(12), "Letterboxd themes you rate lowest", HUB_PALETTE[0])]:
+                    with col:
+                        fig = px.bar(part.reset_index().sort_values('AvgRating'), x='AvgRating',
+                                     y='theme', orientation='h', hover_data=['Films'],
+                                     title=f"{title} (≥{MIN_N} films)",
+                                     color_discrete_sequence=[color])
+                        fig.add_vline(x=overall, line_dash="dot", line_color="#99AABB")
+                        fig.update_layout(yaxis_title=None, height=420)
+                        st.plotly_chart(fig, use_container_width=True)
+                st.caption(f"Dotted line = your overall average ({overall:.2f}★). "
+                           f"{len(th_agg)} Letterboxd themes appear on at least {MIN_N} films.")
+            with t_lbth_heat:
+                top_th = th['theme'].value_counts().head(25).index
+                th_top = th[th['theme'].isin(top_th)]
+                heat = pd.crosstab(th_top['theme'].to_numpy(), th_top['user_rating'].to_numpy(),
+                                   normalize='index').reindex(top_th)
+                fig = px.imshow(heat * 100, aspect='auto', color_continuous_scale='Greens',
+                                labels=dict(x="Your rating", y=None, color="% of theme's films"),
+                                title="Your 25 most common Letterboxd themes: how you rate them")
+                fig.update_xaxes(type='category')
+                fig.update_layout(height=640)
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption("Each row sums to 100%: the share of that theme's films you gave "
+                           "each star value. Rows ordered by how many films carry the theme.")
     else:
         st.info("No keywords parsed yet.")
 else:
     st.info("Keywords not ingested yet — run `python -m src.movies.enrich_extended --apply`.")
+
+st.divider()
+
+# 11a. LETTERBOXD CROWD
+LB_STARS = np.arange(1, 11) / 2
+LB_SHARE_COLS = [f"lb_share_{int(s * 10):02d}" for s in LB_STARS]
+
+
+@st.cache_data
+def lb_crowd_curve(frame):
+    """Per film: share of the Letterboxd crowd below, at and above your star, and whether yours is their modal star."""
+    c = frame.dropna(subset=['user_rating'] + LB_SHARE_COLS)
+    shares = c[LB_SHARE_COLS].to_numpy(dtype=float)
+    keep = shares.sum(1) > 0
+    c, shares = c[keep].copy(), shares[keep] / shares[keep].sum(1, keepdims=True)
+    at_mine = np.isclose(LB_STARS, c['user_rating'].to_numpy()[:, None])
+    c['At'] = (shares * at_mine).sum(1)
+    c['Below'] = (shares * (LB_STARS < c['user_rating'].to_numpy()[:, None])).sum(1)
+    c['Above'] = 1 - c['Below'] - c['At']
+    c['Crowd Percentile'] = 100 * (c['Below'] + c['At'] / 2)
+    c['Majority'] = shares.argmax(1) == at_mine.argmax(1)
+    c['Minority'] = c['At'] < 0.10
+    return c
+
+
+@st.cache_data
+def lb_similar_scores(frame):
+    """Your rating of each film vs your mean rating of its Letterboxd 'similar films' that you have watched."""
+    mine = (frame.dropna(subset=['lb_film_url', 'user_rating'])
+            .drop_duplicates('lb_film_url').set_index('lb_film_url')['user_rating'])
+    rows = []
+    for _, r in frame.dropna(subset=['lb_similar_urls', 'user_rating']).iterrows():
+        got = mine.reindex([u.strip() for u in r['lb_similar_urls'].split(';')]).dropna()
+        if len(got):
+            rows.append({'Film': r['title'], 'Year': r['year'], 'Your Rating': r['user_rating'],
+                         'Similar Avg': got.mean(), 'Similar Seen': len(got)})
+    return pd.DataFrame(rows)
+
+
+st.subheader("🟢 You vs the Letterboxd Crowd")
+st.caption("Your stars against the Letterboxd crowd: their average, the full spread of "
+           "their star ratings per film, and how often your star is the one most people gave.")
+
+if 'lb_avg_rating' in df.columns and df['lb_avg_rating'].notna().any():
+    lbc = df.dropna(subset=['user_rating', 'lb_avg_rating'])
+    lb_gap = lbc['user_rating'] - lbc['lb_avg_rating']
+    has_curve = all(c in df.columns for c in LB_SHARE_COLS)
+    curve = lb_crowd_curve(df) if has_curve else None
+    m1, m2, m3 = st.columns(3)
+    with m1: lb_metric("Films matched", len(lbc))
+    with m2: lb_metric("Correlation", f"{lbc['user_rating'].corr(lbc['lb_avg_rating']):.2f}",
+                       help_text="Pearson correlation between your rating and the Letterboxd average.")
+    with m3: lb_metric("You − Letterboxd", f"{lb_gap.mean():+.2f}★",
+                       help_text="Your mean rating minus the Letterboxd mean, on the same films.")
+    if curve is not None and not curve.empty:
+        m4, m5, m6 = st.columns(3)
+        with m4: lb_metric("With the majority", f"{curve['Majority'].sum()} ({curve['Majority'].mean():.0%})",
+                           help_text="Films where your star is the one the most Letterboxd users gave.")
+        with m5: lb_metric("In the minority", f"{curve['Minority'].sum()} ({curve['Minority'].mean():.0%})",
+                           help_text="Films where under 10% of Letterboxd users gave your star.")
+        with m6: lb_metric("Median crowd percentile", f"{curve['Crowd Percentile'].median():.0f}",
+                           help_text="50 = you sit mid-crowd. Above 50 = you rate higher than most.")
+
+    t_lb_vs, t_lb_pct, t_lb_lonely, t_lb_agree, t_lb_div, t_lb_sim = st.tabs(
+        ["You vs the Crowd", "Crowd Percentile", "Lonely Ratings", "Agreement by Genre & Year",
+         "Divisive Films", "Similar Films"])
+    with t_lb_vs:
+        fig = px.scatter(lbc, x='lb_avg_rating', y='user_rating', hover_name='title',
+                         hover_data=['year'], opacity=0.6,
+                         labels={'lb_avg_rating': 'Letterboxd average', 'user_rating': 'Your rating'},
+                         color_discrete_sequence=[HUB_PALETTE[2]])
+        fig.add_shape(type='line', x0=0.5, y0=0.5, x1=5, y1=5,
+                      line=dict(dash='dot', color='#99AABB'))
+        fig.update_layout(height=460)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Dotted line = you agree with the crowd exactly. Points above it you liked more.")
+    with t_lb_div:
+        div = lbc.dropna(subset=['lb_rating_std']).nlargest(15, 'lb_rating_std')
+        st.caption("Films whose Letterboxd star ratings are most spread out: the crowd "
+                   "is split. Spread is the standard deviation of the crowd's stars.")
+        st.dataframe(pd.DataFrame({
+            'Film': div['title'], 'Year': div['year'].astype('Int64'),
+            'Letterboxd Avg': div['lb_avg_rating'].round(2),
+            'Crowd Spread': div['lb_rating_std'].round(2),
+            'Your Rating': div['user_rating'],
+            'You − Crowd': (div['user_rating'] - div['lb_avg_rating']).round(2)}),
+            use_container_width=True, hide_index=True)
+    if curve is None or curve.empty:
+        for tab in (t_lb_pct, t_lb_lonely, t_lb_agree):
+            with tab:
+                st.info("Letterboxd rating curves not merged yet — run "
+                        "`python -m src.movies.letterboxd_details --apply`.")
+    else:
+        with t_lb_pct:
+            c_l, c_r = st.columns(2)
+            with c_l:
+                fig = px.histogram(curve, x='Crowd Percentile', nbins=20,
+                                   title="Where your star sits in each film's crowd",
+                                   color_discrete_sequence=[HUB_PALETTE[1]])
+                fig.add_vline(x=50, line_dash="dot", line_color="#99AABB")
+                fig.update_layout(height=400, yaxis_title="Films")
+                st.plotly_chart(fig, use_container_width=True)
+            with c_r:
+                split = curve[['Below', 'At', 'Above']].mean().mul(100).round(1)
+                fig = px.bar(x=split.index, y=split.values, text=split.values,
+                             labels={'x': '', 'y': '% of the crowd'},
+                             title="Average share of the crowd rating below / at / above you",
+                             color=split.index, color_discrete_sequence=HUB_PALETTE)
+                fig.update_layout(height=400, showlegend=False)
+                st.plotly_chart(fig, use_container_width=True)
+            st.caption("Crowd percentile = % of Letterboxd users who rated the film lower than "
+                       "you, plus half of those who gave your exact star.")
+        with t_lb_lonely:
+            lonely = curve.nsmallest(15, 'At')
+            st.caption("Films where the fewest Letterboxd users gave the star you gave.")
+            st.dataframe(pd.DataFrame({
+                'Film': lonely['title'], 'Year': lonely['year'].astype('Int64'),
+                'Your Rating': lonely['user_rating'],
+                '% of Crowd at Your Star': (lonely['At'] * 100).round(1),
+                'Letterboxd Avg': lonely['lb_avg_rating'].round(2),
+                'Crowd Percentile': lonely['Crowd Percentile'].round(0)}),
+                use_container_width=True, hide_index=True)
+        with t_lb_agree:
+            c_g, c_y = st.columns(2)
+            with c_g:
+                by_genre = (curve.explode('genre_list').groupby('genre_list')
+                            .agg(Films=('Majority', 'size'), Pct=('Majority', lambda m: 100 * m.mean()))
+                            .query('Films >= 15').sort_values('Pct'))
+                fig = px.bar(by_genre.reset_index(), x='Pct',
+                             y='genre_list', orientation='h', hover_data=['Films'],
+                             labels={'Pct': '% of films with the majority', 'genre_list': ''},
+                             title="Agreement with the majority by genre (≥15 films)",
+                             color_discrete_sequence=[HUB_PALETTE[2]])
+                fig.update_layout(height=460)
+                st.plotly_chart(fig, use_container_width=True)
+            with c_y:
+                by_year = (curve.assign(Year=pd.to_datetime(curve['rating_date'], errors='coerce').dt.year)
+                           .groupby('Year').agg(Films=('Majority', 'size'), Pct=('Majority', lambda m: 100 * m.mean()))
+                           .query('Films >= 10').reset_index())
+                fig = px.line(by_year, x='Year', y='Pct', markers=True,
+                              hover_data=['Films'], labels={'Pct': '% of films with the majority'},
+                              title="Agreement with the majority by year rated (≥10 films)",
+                              color_discrete_sequence=[HUB_PALETTE[1]])
+                fig.update_layout(height=460)
+                st.plotly_chart(fig, use_container_width=True)
+    with t_lb_sim:
+        sim = lb_similar_scores(df) if 'lb_similar_urls' in df.columns else pd.DataFrame()
+        if sim.empty:
+            st.info("Letterboxd similar-film links not merged yet — run "
+                    "`python -m src.movies.letterboxd_details --apply`.")
+        else:
+            sim['Gap'] = sim['Your Rating'] - sim['Similar Avg']
+            st.caption(f"For {len(sim)} films, your rating vs your average rating of the "
+                       f"Letterboxd 'similar films' you've also watched. Correlation "
+                       f"{sim['Your Rating'].corr(sim['Similar Avg']):.2f}: how well a film's "
+                       f"neighbours predict your rating of it.")
+            fig = px.scatter(sim, x='Similar Avg', y='Your Rating', size='Similar Seen',
+                             hover_name='Film', opacity=0.6,
+                             color_discrete_sequence=[HUB_PALETTE[2]])
+            fig.add_shape(type='line', x0=0.5, y0=0.5, x1=5, y1=5,
+                          line=dict(dash='dot', color='#99AABB'))
+            fig.update_layout(height=440)
+            st.plotly_chart(fig, use_container_width=True)
+            st.write("**Films you rated furthest from their neighbours:**")
+            st.dataframe(sim.reindex(sim['Gap'].abs().sort_values(ascending=False).index).head(15)
+                         .assign(Year=lambda d: d['Year'].astype('Int64')).round(2),
+                         use_container_width=True, hide_index=True)
+else:
+    st.info("Letterboxd details not merged yet — run `python -m src.movies.letterboxd_details --apply`.")
 
 st.divider()
 
@@ -896,6 +1115,209 @@ st.divider()
 # Specials are ordinary rows in enriched_data.csv too, so they already count in
 # every chart above; this section looks at the Letterboxd list as a group.
 render_standup()
+
+st.divider()
+
+# 12d. YOUR LETTERBOXD NETWORK
+# Network data is dashboard-only: it never goes into enriched_data.csv or any feature file.
+LB_RATING, LB_LINK = 'Rating (out of 5)', 'Letterboxd link'
+MIN_RHO_N = 20  # agreement on fewer shared rated films is mostly noise
+
+
+@st.cache_data
+def load_lb_network():
+    paths = [config.MOVIES_PROCESSED_DIR / f"letterboxd_network_{n}.csv" for n in ("members", "films")]
+    if not all(p.exists() for p in paths):
+        return None, None
+    return pd.read_csv(paths[0]), pd.read_csv(paths[1])
+
+
+@st.cache_data
+def lb_network_analysis(mine_df, members, films):
+    """mine_df: your films (lb_film_url, user_rating, is_liked). Returns member stats, picks,
+    per-film you-vs-network, most watched, and how many members saw each of your films."""
+    mine_df = mine_df.dropna(subset=['lb_film_url']).drop_duplicates('lb_film_url').set_index('lb_film_url')
+    mine = mine_df['user_rating']
+    seen, my_rated = set(mine.index), mine.dropna()
+    my_fives = set(my_rated[my_rated == 5].index)
+    my_liked = set(mine_df.index[mine_df['is_liked'] == 1])
+    rated = films.dropna(subset=[LB_RATING])
+    rows = []
+    for user, g in films.groupby('Username'):
+        links = set(g[LB_LINK])
+        theirs = rated[rated['Username'] == user].set_index(LB_LINK)[LB_RATING]
+        both = theirs.index.intersection(my_rated.index)
+        a, b = my_rated[both], theirs[both]
+        enough = len(both) >= MIN_RHO_N
+        rows.append({'Username': user, 'Shared': len(links & seen),
+                     'Jaccard %': 100 * len(links & seen) / len(links | seen),
+                     'Shared Rated': len(both),
+                     # Spearman = Pearson on ranks; avoids a scipy dependency
+                     'Spearman': a.rank().corr(b.rank()) if enough else np.nan,
+                     'Mean |Δ★|': (a - b).abs().mean() if enough else np.nan,
+                     'Their − Your ★': (b - a).mean() if enough else np.nan,
+                     'Your 5★ Seen': len(links & my_fives),
+                     'Both Liked': len(set(g.loc[g['Liked'] == 'Yes', LB_LINK]) & my_liked)})
+    stats = members.merge(pd.DataFrame(rows), on='Username', how='left')
+
+    weight = stats.set_index('Username')['Spearman'].clip(lower=0).fillna(0)
+    unseen = rated[~rated[LB_LINK].isin(seen)].assign(w=lambda d: d['Username'].map(weight))
+    unseen = unseen[unseen['w'] > 0].assign(wr=lambda d: d['w'] * d[LB_RATING])
+    picks = (unseen.groupby(LB_LINK)
+             .agg(Film=('Film', 'first'), Year=('Year', 'first'), Raters=('Username', 'size'),
+                  wr=('wr', 'sum'), w=('w', 'sum'), NetAvg=(LB_RATING, 'mean'))
+             .query('Raters >= 3'))
+    # Pull small samples toward the overall weighted mean, so three 5★ ratings
+    # don't outrank thirty 4.8★ ones. PRIOR_W ~ two typical raters' weight.
+    PRIOR_W = 1.0
+    prior = unseen['wr'].sum() / unseen['w'].sum()
+    picks['Score'] = (picks['wr'] + PRIOR_W * prior) / (picks['w'] + PRIOR_W)
+    picks = picks.sort_values(['Score', 'Raters'], ascending=False).head(20).reset_index()
+
+    net = (rated[rated[LB_LINK].isin(my_rated.index)].groupby(LB_LINK)
+           .agg(Film=('Film', 'first'), Year=('Year', 'first'),
+                Raters=('Username', 'size'), NetAvg=(LB_RATING, 'mean'))
+           .query('Raters >= 3'))
+    net['You'] = my_rated.reindex(net.index)
+    net['You − Network'] = net['You'] - net['NetAvg']
+
+    watched = (films.groupby(LB_LINK)
+               .agg(Film=('Film', 'first'), Year=('Year', 'first'), Members=('Username', 'size'),
+                    NetAvg=(LB_RATING, 'mean'))
+               .sort_values('Members', ascending=False).head(20).reset_index())
+    watched['You'] = watched[LB_LINK].map(mine)
+    watched['Seen'] = watched[LB_LINK].isin(seen)
+    seen_by = films[LB_LINK].value_counts().reindex(list(seen), fill_value=0)
+    return stats, picks, net.reset_index(), watched, seen_by
+
+
+def lb_leaderboard(frame, col, ascending, cols=('Member', 'Relation to you', 'Shared Rated')):
+    """Top 5 members by one column, as a compact table."""
+    st.dataframe(frame.dropna(subset=[col]).sort_values(col, ascending=ascending).head(5)
+                 [list(dict.fromkeys([*cols, col]))].round(2),
+                 use_container_width=True, hide_index=True)
+
+
+st.subheader("👥 Your Letterboxd Network")
+st.caption("The people you follow and who follow you on Letterboxd: whose taste overlaps "
+           "yours, what they rate highly that you haven't seen, and where you part ways.")
+
+net_members, net_films = load_lb_network()
+if net_members is None or 'lb_film_url' not in df.columns:
+    st.info("Network data not built yet — run `python -m src.movies.letterboxd_details --apply`.")
+else:
+    nstats, npicks, ndis, nwatched, nseen_by = lb_network_analysis(
+        df[['lb_film_url', 'user_rating', 'is_liked']], net_members, net_films)
+    twins = nstats.dropna(subset=['Spearman']).nlargest(3, 'Spearman')
+    if not twins.empty:
+        st.write(f"**Taste twins** (highest rank agreement, ≥{MIN_RHO_N} shared rated films):")
+        for col, (_, r) in zip(st.columns(3), twins.iterrows()):
+            with col:
+                lb_metric(r['Member'], f"ρ {r['Spearman']:.2f}",
+                          help_text=f"{r['Shared Rated']} shared rated films, "
+                                    f"mean gap {r['Mean |Δ★|']:.2f}★, {r['Relation to you']}")
+
+    (t_n_members, t_n_agree, t_n_overlap, t_n_harsh, t_n_cover,
+     t_n_picks, t_n_dis, t_n_pop) = st.tabs(
+        ["Members", "Agree & Disagree", "Overlap", "Harshness", "Your Films in the Network",
+         "Network Picks", "You vs Your Network", "Most Watched"])
+    with t_n_members:
+        fig = px.scatter(nstats.dropna(subset=['Spearman']), x='Jaccard %', y='Spearman',
+                         size='Shared Rated', color='Relation to you', hover_name='Member',
+                         hover_data=['Shared', 'Mean |Δ★|'],
+                         title="Overlap (how much you watch the same films) vs agreement",
+                         color_discrete_sequence=HUB_PALETTE)
+        fig.add_hline(y=0, line_dash="dot", line_color="#99AABB")
+        fig.update_layout(height=460)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption(f"Jaccard % = shared films / all films either of you watched. Spearman "
+                   f"(rank agreement, −1 to 1), mean star gap and harshness need "
+                   f"≥{MIN_RHO_N} shared rated films.")
+        st.dataframe(nstats[['Member', 'Relation to you', 'Shared', 'Jaccard %', 'Shared Rated',
+                             'Spearman', 'Mean |Δ★|', 'Their − Your ★', 'Your 5★ Seen',
+                             'Both Liked', 'Films watched', 'Average rating (out of 5)']]
+                     .sort_values('Spearman', ascending=False).round(2),
+                     use_container_width=True, hide_index=True, height=420)
+    with t_n_agree:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.write("**Rank your films most alike (highest Spearman)**")
+            lb_leaderboard(nstats, 'Spearman', False)
+            st.write("**Closest stars (lowest mean gap)**")
+            lb_leaderboard(nstats, 'Mean |Δ★|', True)
+        with c2:
+            st.write("**Rank your films least alike (lowest Spearman)**")
+            lb_leaderboard(nstats, 'Spearman', True)
+            st.write("**Furthest stars (highest mean gap)**")
+            lb_leaderboard(nstats, 'Mean |Δ★|', False)
+        st.write("**Agreement by relation**")
+        st.dataframe(nstats.dropna(subset=['Spearman']).groupby('Relation to you')
+                     .agg(Members=('Member', 'size'), **{'Mean Spearman': ('Spearman', 'mean'),
+                          'Mean |Δ★|': ('Mean |Δ★|', 'mean'), 'Mean Jaccard %': ('Jaccard %', 'mean')})
+                     .round(2).reset_index(), use_container_width=True, hide_index=True)
+    with t_n_overlap:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.write("**Most shared films**")
+            lb_leaderboard(nstats, 'Shared', False, ('Member', 'Relation to you', 'Jaccard %'))
+            st.write("**Highest Jaccard (overlap relative to both libraries)**")
+            lb_leaderboard(nstats, 'Jaccard %', False, ('Member', 'Relation to you', 'Shared'))
+            st.write("**Seen the most of your 5★ films**")
+            lb_leaderboard(nstats, 'Your 5★ Seen', False, ('Member', 'Relation to you', 'Shared'))
+        with c2:
+            st.write("**Fewest shared films**")
+            lb_leaderboard(nstats, 'Shared', True, ('Member', 'Relation to you', 'Jaccard %'))
+            st.write("**Lowest Jaccard**")
+            lb_leaderboard(nstats, 'Jaccard %', True, ('Member', 'Relation to you', 'Shared'))
+            st.write("**Most films you both liked (❤️)**")
+            lb_leaderboard(nstats, 'Both Liked', False, ('Member', 'Relation to you', 'Shared'))
+    with t_n_harsh:
+        harsh = nstats.dropna(subset=['Their − Your ★']).sort_values('Their − Your ★')
+        fig = px.bar(harsh, x='Their − Your ★', y='Member', orientation='h',
+                     color='Relation to you', hover_data=['Shared Rated'],
+                     title="Each member's mean rating minus yours, on films you both rated",
+                     color_discrete_sequence=HUB_PALETTE)
+        fig.add_vline(x=0, line_dash="dot", line_color="#99AABB")
+        fig.update_layout(height=max(400, 18 * len(harsh)), yaxis_title=None)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Left of zero = harsher than you on the same films; right = more generous.")
+    with t_n_cover:
+        unique = df[df['lb_film_url'].isin(nseen_by.index[nseen_by == 0])]
+        m1, m2 = st.columns(2)
+        with m1: lb_metric("Network coverage", f"{(nseen_by > 0).mean():.0%}",
+                           help_text="Share of your films that at least one network member has watched.")
+        with m2: lb_metric("Films only you watched", len(unique))
+        st.write("**Your films nobody in your network has watched:**")
+        st.dataframe(unique[['title', 'year', 'user_rating']].sort_values('user_rating', ascending=False)
+                     .rename(columns={'title': 'Film', 'year': 'Year', 'user_rating': 'Your Rating'})
+                     .assign(Year=lambda d: d['Year'].astype('Int64')),
+                     use_container_width=True, hide_index=True, height=360)
+    with t_n_picks:
+        st.caption("Films you haven't logged, scored by the average rating of members "
+                   "weighted by how well their ranking agrees with yours (positive Spearman "
+                   "only). Needs ≥3 such members to have rated it.")
+        st.dataframe(npicks[['Film', 'Year', 'Score', 'Raters', 'NetAvg', LB_LINK]]
+                     .rename(columns={'NetAvg': 'Plain Avg', LB_LINK: 'Link'})
+                     .assign(Year=lambda d: d['Year'].astype('Int64')).round(2),
+                     use_container_width=True, hide_index=True,
+                     column_config={'Link': st.column_config.LinkColumn()})
+    with t_n_dis:
+        c_up, c_down = st.columns(2)
+        for col, part, label in [
+                (c_up, ndis.nlargest(10, 'You − Network'), "You liked more than your network"),
+                (c_down, ndis.nsmallest(10, 'You − Network'), "You liked less than your network")]:
+            with col:
+                st.write(f"**{label}:**")
+                for _, r in part.iterrows():
+                    st.markdown(f"**{html.escape(str(r['Film']))}** ({r['You − Network']:+.2f})  \n"
+                                f"<span style='font-size:0.95em; color:#99AABB;'>{render_stars(r['You'])}"
+                                f" | Network: {r['NetAvg']:.2f} from {r['Raters']} members</span>",
+                                unsafe_allow_html=True)
+    with t_n_pop:
+        st.dataframe(nwatched[['Film', 'Year', 'Members', 'NetAvg', 'Seen', 'You']]
+                     .rename(columns={'NetAvg': 'Network Avg', 'You': 'Your Rating'})
+                     .assign(Year=lambda d: d['Year'].astype('Int64')).round(2),
+                     use_container_width=True, hide_index=True)
 
 st.divider()
 

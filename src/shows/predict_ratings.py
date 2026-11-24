@@ -57,7 +57,7 @@ def run_consolidated_predictions():
             preds = model.predict(X)
         df[f'pred_{name.lower()}'] = np.round(np.clip(preds, 0.5, 5.0) * 2) / 2
 
-    # Main prediction column (Using Stacking for best accuracy)
+    # Main prediction column: the mean ensemble (saved under the old "stacking" file name)
     df['predicted_rating'] = df['pred_stacking']
 
     # 4. Evaluation and Visuals

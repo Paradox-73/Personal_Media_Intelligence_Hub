@@ -63,11 +63,8 @@ from sklearn.neighbors import NearestNeighbors
 # Project root on path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.movies.ingestion import get_movie_metadata, clean_year
+from src.movies.ingestion import get_movie_metadata, clean_year, letterboxd_crowd
 from src.movies.feature_engineering import transform_single_movie
-# Needed so joblib can unpickle the ordinal / stacking estimators.
-from src.movies.advanced_movie_model_trainer import (
-    OrdinalExpectedValueRegressor, MeanMetaRegressor, AnchoredRegressor)  # noqa: F401
 
 WATCHLIST_PATH = config.MOVIES_RAW_DIR / "watchlist.csv"
 ENRICH_CACHE_PATH = config.CACHE_DIR / "watchlist_enriched.json"
@@ -176,6 +173,11 @@ def enrich_watchlist(limit=None, no_fetch=False):
 
         if not meta:
             continue
+        if "lb_avg_rating" not in meta and meta.get("tmdb_id") and not no_fetch:
+            lb = letterboxd_crowd(meta["tmdb_id"])  # entry cached before the lb features
+            if lb is not None:
+                meta = {**meta, "lb_avg_rating": None, "lb_rating_count": None, **lb}
+                cache[key] = meta
         meta = dict(meta)
         meta.setdefault("letterboxd_name", name)
         meta["letterboxd_uri"] = uri
@@ -236,7 +238,7 @@ def expected_feature_names(model):
     expect a different column set than the current preprocessor_state. We align
     to each model's own expectation rather than assuming one shared schema.
     """
-    m = getattr(model, "clf", model)  # unwrap OrdinalExpectedValueRegressor
+    m = model
     if hasattr(m, "feature_names_in_"):
         return list(m.feature_names_in_)
     if hasattr(m, "named_steps"):  # sklearn Pipeline

@@ -41,6 +41,7 @@ from sklearn.metrics import mean_absolute_error
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
+from src.reporting.standalone_benchmarks import load_domain_raw, map_folds, reencode_fold
 
 DROP = ["target_reg", "target_class", "target_ordinal", "source_id", "global_id",
         "media_type", "rating_date"]
@@ -151,39 +152,65 @@ BUILDER = {"movie": _xgb_anchored, "unified": _xgb, "tv": _svr,
 
 
 def _load(domain):
+    """(df, feats, split): the rated rows, the feature columns, and a function that
+    turns a boolean test mask into (X_train, X_test) with the target encodings refit
+    on the training rows only (the CSV's columns were encoded over the whole library)."""
     if domain == "unified":
         df = pd.read_csv(config.UNIFIED_TRAINING_DATA_PATH)
         # `notna()` is not enough: unrated items are stored as target_reg == 0.0
         # (a fillna in the builder, not NaN), so six unrated games survived this
         # filter and were scored as genuine 0-star items -- 1,413 rows instead of
         # the 1,407 the fold registry and every other report use.
-        df = df[df["target_reg"].notna() & (df["target_reg"] > 0)]
+        df = df[df["target_reg"].notna() & (df["target_reg"] > 0)].reset_index(drop=True)
+        feats = [c for c in df.columns if c not in DROP]
+        from src.unified_model.unified_repeated_cv import _reencode_entities, load_entity_raw
+        raw = load_entity_raw()
+
+        def split(test_mask):
+            Xtr, Xte = df.loc[~test_mask, feats].copy(), df.loc[test_mask, feats].copy()
+            if raw:
+                _reencode_entities(Xtr, Xte, df.loc[~test_mask, "source_id"].tolist(),
+                                   df.loc[test_mask, "source_id"].tolist(),
+                                   df.loc[~test_mask, "target_reg"].to_numpy(dtype=float), raw)
+            return Xtr.fillna(0), Xte.fillna(0)
     else:
         df = pd.read_csv(LOCAL_PATHS[domain])
-        df = df[df["target_reg"].notna() & (df["target_reg"] > 0)]
-    feats = [c for c in df.columns if c not in DROP]
-    return df[feats].fillna(0), df["target_reg"].astype(float).values
+        df = df[df["target_reg"].notna() & (df["target_reg"] > 0)].reset_index(drop=True)
+        feats = [c for c in df.columns if c not in DROP]
+        raw = load_domain_raw(domain, df)
+
+        def split(test_mask):
+            Xtr, Xte = reencode_fold(domain, df, raw, test_mask, feats)
+            return Xtr.fillna(0), Xte.fillna(0)
+    return df, feats, split
 
 
 def decompose(domain, n_outer=5, n_boot=30, test_frac=0.30, seed=0):
-    X, y = _load(domain)
+    df, feats, split = _load(domain)
+    y = df["target_reg"].to_numpy(dtype=float)
     build = BUILDER[domain]
     rng = np.random.RandomState(seed)
     biases, varis, mses, train_maes, test_maes = [], [], [], [], []
 
     for o in range(n_outer):
-        Xtr, Xte, ytr, yte = train_test_split(
-            X, y, test_size=test_frac, random_state=seed + o)
-        Xtr = Xtr.reset_index(drop=True); ytr = np.asarray(ytr)
-        preds = np.zeros((n_boot, len(Xte)))
+        # Same rows as splitting X directly: train_test_split permutes positions.
+        _, te_idx = train_test_split(np.arange(len(y)), test_size=test_frac, random_state=seed + o)
+        test_mask = np.zeros(len(y), dtype=bool)
+        test_mask[te_idx] = True
+        Xtr, Xte = split(test_mask)
+        ytr, yte = y[~test_mask], y[test_mask]
+        Xtr = Xtr.reset_index(drop=True)
         # one full-train fit for the train/test gap read
         m0 = build(); m0.fit(Xtr, ytr)
         train_maes.append(mean_absolute_error(ytr, m0.predict(Xtr)))
         test_maes.append(mean_absolute_error(yte, m0.predict(Xte)))
-        for b in range(n_boot):
-            idx = rng.randint(0, len(Xtr), len(Xtr))   # bootstrap resample
+        # Draw every resample here, in the old order, so parallel fits reproduce the serial run.
+        idxs = [rng.randint(0, len(Xtr), len(Xtr)) for _ in range(n_boot)]   # bootstrap resamples
+
+        def fit_boot(idx):
             mb = build(); mb.fit(Xtr.iloc[idx], ytr[idx])
-            preds[b] = mb.predict(Xte)
+            return mb.predict(Xte)
+        preds = np.array(map_folds(fit_boot, [(i,) for i in idxs]))
         main = preds.mean(axis=0)                       # average prediction
         bias2 = np.mean((main - yte) ** 2)
         var = np.mean(preds.var(axis=0))
@@ -193,7 +220,7 @@ def decompose(domain, n_outer=5, n_boot=30, test_frac=0.30, seed=0):
     bias2 = float(np.mean(biases)); var = float(np.mean(varis)); mse = float(np.mean(mses))
     tot = bias2 + var
     rec = {
-        "N": int(len(X)), "n_features": int(X.shape[1]),
+        "N": int(len(y)), "n_features": int(len(feats)),
         "bias2": round(bias2, 4), "variance": round(var, 4),
         "mse_est": round(mse, 4),
         "bias_share": round(bias2 / tot, 3) if tot else None,

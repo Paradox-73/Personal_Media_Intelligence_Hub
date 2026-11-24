@@ -1,13 +1,13 @@
 {
   "link_type": "all",
-  "n_linked": 664,
-  "mae_without_bridge": 0.5301,
-  "mae_with_bridge": 0.494,
-  "mae_delta": 0.0361,
+  "n_linked": 700,
+  "mae_without_bridge": 0.5343,
+  "mae_with_bridge": 0.5186,
+  "mae_delta": 0.0157,
   "delta_ci95": [
-    0.0143,
-    0.0572
+    -0.0029,
+    0.035
   ],
-  "wilcoxon_p": 0.0014,
-  "verdict": "bridges help (significant)"
+  "wilcoxon_p": 0.1198,
+  "verdict": "no significant bridge effect at this N (pilot)"
 }

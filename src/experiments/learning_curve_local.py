@@ -35,8 +35,9 @@ from sklearn.metrics import mean_absolute_error
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.reporting.standalone_benchmarks import (_load_domain, DOMAIN_FIT, DROP_COLS, _round_half,
-                                               load_registry, registry_folds, set_calibration, skill)
+from src.reporting.standalone_benchmarks import (_load_domain, DOMAIN_FIT, DROP_COLS, _round_half, load_domain_raw,
+                                               load_registry, reencode_fold, registry_folds, map_folds,
+                                               set_calibration, skill)
 
 DOMAINS = ["movie", "tv", "game", "book"]
 FRACTIONS = (0.25, 0.50, 0.75, 1.00)
@@ -67,34 +68,46 @@ def run():
     for dom in DOMAINS:
         set_calibration(dom)  # same per-domain calibration as the benchmark table
         loc = _load_domain(dom, uni, registry)
+        raw = load_domain_raw(dom, loc)
         feat = [c for c in loc.columns if c not in DROP_COLS]
         fit_fn = DOMAIN_FIT[dom]
+        y_all = loc["target_reg"].to_numpy(dtype=float)
         print(f"=== {dom.upper()}  (rated N={len(loc)}, local features={len(feat)}) ===")
-        for fold_id, test_mask in registry_folds(loc, registry):
-            tr = loc[~test_mask]
-            te = loc[test_mask]
-            if len(tr) < 4 or len(te) == 0:
-                continue
-            y_te = te["target_reg"].values
-            tmean = tr["target_reg"].mean()
+        def one_fold(fold_id, test_mask):
+            out = []
+            test_mask = np.asarray(test_mask, dtype=bool)
+            tr_pos, te_pos = np.flatnonzero(~test_mask), np.flatnonzero(test_mask)
+            if len(tr_pos) < 4 or len(te_pos) == 0:
+                return out
+            y_te = y_all[te_pos]
+            tmean = y_all[tr_pos].mean()
             for frac in FRACTIONS:
                 reps = 1 if frac >= 1.0 else REPEATS
                 for rep in range(reps):
                     if frac >= 1.0:
-                        sub = tr
+                        sub_pos = tr_pos
                     else:
                         rng = np.random.RandomState(SEED + fold_id * 100 + rep)
-                        n = max(3, int(round(frac * len(tr))))
-                        sub = tr.iloc[rng.choice(len(tr), size=n, replace=False)]
+                        n = max(3, int(round(frac * len(tr_pos))))
+                        sub_pos = tr_pos[rng.choice(len(tr_pos), size=n, replace=False)]
+                    # Encodings refit on the subsample only: with fewer rows the entity
+                    # maps are thinner too, which is part of what the curve measures.
+                    in_sub = np.zeros(len(loc), dtype=bool)
+                    in_sub[sub_pos] = True
+                    X_sub, X_rest = reencode_fold(dom, loc, raw, ~in_sub, feat)
                     try:
-                        pred = fit_fn(sub[feat], sub["target_reg"], te[feat])
+                        pred = fit_fn(X_sub, y_all[sub_pos], X_rest.loc[te_pos])
                     except Exception as e:
                         print(f"    fold {fold_id} frac {frac} failed: {e}")
                         continue
-                    rows.append(dict(domain=dom, fraction=frac, fold=fold_id, repeat=rep,
-                                     n_train=len(sub), n_test=len(y_te),
-                                     MAE=mean_absolute_error(y_te, _round_half(pred)),
-                                     skill=skill(y_te, _round_half(np.asarray(pred)), tmean)))
+                    out.append(dict(domain=dom, fraction=frac, fold=fold_id, repeat=rep,
+                                    n_train=len(sub_pos), n_test=len(y_te),
+                                    MAE=mean_absolute_error(y_te, _round_half(pred)),
+                                    skill=skill(y_te, _round_half(np.asarray(pred)), tmean)))
+            return out
+
+        for fold_rows in map_folds(one_fold, list(registry_folds(loc, registry))):
+            rows.extend(fold_rows)
         print(f"    done ({sum(1 for r in rows if r['domain']==dom)} rows)\n")
 
     res = pd.DataFrame(rows)

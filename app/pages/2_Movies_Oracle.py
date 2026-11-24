@@ -15,16 +15,7 @@ from src.movies.ingestion import search_movies_by_query, get_movie_metadata
 from src.movies.feature_engineering import (find_similar_movies, explain_similarity,
                                             transform_single_movie)
 from src.unified_model.unified_oracle import predict_unified
-
-# Register the custom estimator under __main__ so joblib can unpickle the stacking /
-# ordinal models — they reference OrdinalExpectedValueRegressor under __main__ (the
-# trainer's entrypoint), which is app/main.py inside Streamlit.
-from src.movies.advanced_movie_model_trainer import OrdinalExpectedValueRegressor as _OEVR
-setattr(sys.modules['__main__'], 'OrdinalExpectedValueRegressor', _OEVR)
-from src.movies.advanced_movie_model_trainer import MeanMetaRegressor as _MMR
-setattr(sys.modules['__main__'], 'MeanMetaRegressor', _MMR)
-from src.movies.advanced_movie_model_trainer import AnchoredRegressor as _AR
-setattr(sys.modules['__main__'], 'AnchoredRegressor', _AR)
+from src.utils.deployment_calibration import calibrate_to_ratings
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))  # app/ dir for shared helpers
 from mobile import apply_mobile_css
@@ -96,7 +87,7 @@ def align_to_model(X, model):
 
 
 st.header("🔮 The Oracle")
-st.markdown("Predict your rating for any movie using a Stacking Ensemble, Ordinal Probability Engine, and Semantic Text Embeddings.")
+st.markdown("Predict your rating for any movie using a Mean Ensemble (XGBoost + CatBoost + SVR), Ordinal Probability Engine, and Semantic Text Embeddings.")
 
 # --- HELPERS ---
 def get_ultimate_movie_metadata(tmdb_id):
@@ -122,7 +113,10 @@ def load_artifacts():
         artifacts['ordinal'] = joblib.load(ensemble_dir / "ordinal_classifier.joblib")
         artifacts['ordinal_classes'] = joblib.load(ensemble_dir / "ordinal_classes.joblib")
         artifacts['state'] = joblib.load(config.PREPROCESSOR_STATE)
-        
+        # Written by src/movies/predict_ratings.py; the dashboard list uses the same map.
+        if (ensemble_dir / "calibration_ref.joblib").exists():
+            artifacts['calib_ref'] = joblib.load(ensemble_dir / "calibration_ref.joblib")
+
         if config.MODEL_CLASSIFIER.exists():
             artifacts['clf'] = joblib.load(config.MODEL_CLASSIFIER)
             
@@ -155,7 +149,7 @@ if artifacts.get('_mtimes') and _now != artifacts['_mtimes']:
 state = artifacts['state']
 
 if not artifacts['stacking']:
-    st.error("❌ Stacking model not found! Run `python src/movies/advanced_movie_model_trainer.py` first.")
+    st.error("❌ Movie model not found! Run `python src/movies/advanced_movie_model_trainer.py` first.")
     st.stop()
 
 
@@ -225,6 +219,9 @@ if st.session_state['selected_movie_raw_data']:
         st.write(f"**Director:** {', '.join(dirs)}")
         st.write(f"**Rotten Tomatoes:** {raw_data.get('rotten_tomatoes_rating', 'N/A')}")
         st.write(f"**Metascore:** {raw_data.get('metascore', 'N/A')}")
+        if raw_data.get('lb_avg_rating') is not None:
+            st.write(f"**Letterboxd:** {raw_data['lb_avg_rating']} "
+                     f"({raw_data.get('lb_rating_count') or '?'} ratings)")
         if raw_data.get('collection_name'):
             st.write(f"**Franchise:** {raw_data['collection_name']}")
         st.caption(raw_data.get('overview'))
@@ -247,7 +244,10 @@ if st.session_state['selected_movie_raw_data']:
                 input_df = transform_for_parity(raw_data, state)
                 
                 # 1. Base Models & Stacking Predictions
-                v_stack = round_half(artifacts['stacking'].predict(align_to_model(input_df, artifacts['stacking']))[0])
+                raw_stack = artifacts['stacking'].predict(align_to_model(input_df, artifacts['stacking']))
+                if artifacts.get('calib_ref'):
+                    raw_stack = calibrate_to_ratings(raw_stack, *artifacts['calib_ref'])
+                v_stack = round_half(raw_stack[0])
                 v_svr = round_half(artifacts['svr'].predict(align_to_model(input_df, artifacts['svr']))[0])
                 v_cat = round_half(artifacts['cat'].predict(align_to_model(input_df, artifacts['cat']))[0])
                 v_xgb = round_half(artifacts['xgb'].predict(align_to_model(input_df, artifacts['xgb']))[0])
@@ -276,7 +276,7 @@ if st.session_state['selected_movie_raw_data']:
                 
                 c_stack, c_ord, c_tier = st.columns(3)
                 hover_text = f"SVR: {v_svr:.1f}\nCatBoost: {v_cat:.1f}\nXGBoost: {v_xgb:.1f}"
-                c_stack.metric(label="Stacking Ensemble", value=f"⭐ {v_stack:.1f}", help=hover_text)
+                c_stack.metric(label="Mean Ensemble", value=f"⭐ {v_stack:.1f}", help=hover_text)
                 if v_ordinal_ev is not None:
                     c_ord.metric(label="Ordinal (EV)", value=f"⭐ {v_ordinal_ev:.1f}", help="Expected Value from the probability distribution.")
                 c_tier.metric(label="Classifier Tier", value=verdict, help="0: Skip | 1: Watchable | 2: Masterpiece")
@@ -287,7 +287,7 @@ if st.session_state['selected_movie_raw_data']:
                     st.metric("🌐 Unified Model (cross-domain)", f"⭐ {np.round(u * 2) / 2:.1f}",
                               help="Independent prediction from the 397-feature Unified Model trained across "
                                    "movies, TV, games, books & music — useful as a cross-domain sanity check "
-                                   "against the domain-specific stacking ensemble above.")
+                                   "against the domain-specific mean ensemble above.")
 
                 # SHAP Explainability
                 import shap

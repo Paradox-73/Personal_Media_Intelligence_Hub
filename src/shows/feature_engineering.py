@@ -163,6 +163,40 @@ def parse_people(val):
     return [x.strip() for x in s.split(',') if x.strip()]
 
 
+def item_mean(items, mapping, g):
+    """TV's encoding of one cell: an entity the map has not seen counts as the global
+    mean (taste_features.apply_entity_map drops it instead). Module-level so the
+    fold-safe benchmark (standalone_benchmarks.reencode_fold) refits the SAME encoding."""
+    if not items:
+        return g
+    return float(np.mean([mapping.get(i, g) for i in items]))
+
+
+def target_encode_list(frame, list_col, target='user_rating', m=10):
+    """Leakage-safe OOF Bayesian-smoothed target encoding over a list-valued column."""
+    from sklearn.model_selection import KFold
+    global_mean = frame[target].mean()
+    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    encoded = pd.Series(index=frame.index, dtype=float)
+    tmp = frame[[list_col, target]].copy()
+
+    for tr_idx, va_idx in kf.split(tmp):
+        ft = tmp.iloc[tr_idx].explode(list_col)
+        stats = ft.groupby(list_col)[target].agg(['count', 'mean'])
+        mapping = ((stats['count'] * stats['mean'] + m * global_mean)
+                   / (stats['count'] + m)).to_dict()
+        encoded.iloc[va_idx] = tmp.iloc[va_idx][list_col].apply(
+            lambda x: item_mean(x, mapping, global_mean))
+    return encoded.fillna(global_mean)
+
+
+def global_te_mapping(frame, list_col, target='user_rating', m=10):
+    g = frame[target].mean()
+    ex = frame[[list_col, target]].explode(list_col)
+    stats = ex.groupby(list_col)[target].agg(['count', 'mean'])
+    return ((stats['count'] * stats['mean'] + m * g) / (stats['count'] + m)).to_dict(), g
+
+
 @functools.lru_cache(maxsize=1)
 def _sentence_model(name):
     return SentenceTransformer(name)
@@ -316,35 +350,6 @@ def run_feature_engineering():
     # Previously creator/cast/writer only lived in the text embedding (weak). Movies gets
     # large signal from leakage-safe, Bayesian-smoothed, out-of-fold target encodings of
     # director/actors; TV's high bias is partly the absence of this. Add the same here.
-    from sklearn.model_selection import KFold
-
-    def target_encode_list(frame, list_col, target='user_rating', m=10):
-        """Leakage-safe OOF Bayesian-smoothed target encoding over a list-valued column."""
-        global_mean = frame[target].mean()
-        kf = KFold(n_splits=5, shuffle=True, random_state=42)
-        encoded = pd.Series(index=frame.index, dtype=float)
-        tmp = frame[[list_col, target]].copy()
-
-        def item_mean(items, mapping, g):
-            if not items:
-                return g
-            return float(np.mean([mapping.get(i, g) for i in items]))
-
-        for tr_idx, va_idx in kf.split(tmp):
-            ft = tmp.iloc[tr_idx].explode(list_col)
-            stats = ft.groupby(list_col)[target].agg(['count', 'mean'])
-            mapping = ((stats['count'] * stats['mean'] + m * global_mean)
-                       / (stats['count'] + m)).to_dict()
-            encoded.iloc[va_idx] = tmp.iloc[va_idx][list_col].apply(
-                lambda x: item_mean(x, mapping, global_mean))
-        return encoded.fillna(global_mean)
-
-    def global_te_mapping(frame, list_col, target='user_rating', m=10):
-        g = frame[target].mean()
-        ex = frame[[list_col, target]].explode(list_col)
-        stats = ex.groupby(list_col)[target].agg(['count', 'mean'])
-        return ((stats['count'] * stats['mean'] + m * g) / (stats['count'] + m)).to_dict(), g
-
     df['creator_list'] = df['created_by'].apply(parse_people)
     df['actors_list'] = df['actors'].apply(parse_people)
     df['writer_list'] = df['writer'].apply(parse_people)

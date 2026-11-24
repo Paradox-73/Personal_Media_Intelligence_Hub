@@ -37,7 +37,8 @@ from sklearn.metrics import mean_absolute_error
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.reporting.standalone_benchmarks import _load_domain, DROP_COLS, _round_half, load_registry, registry_folds
+from src.reporting.standalone_benchmarks import (_load_domain, DROP_COLS, _round_half, load_domain_raw, load_registry,
+                                               reencode_fold, registry_folds, map_folds, model_threads)
 
 DOMAINS = ["movie", "tv", "game", "book"]
 LOCAL_PATHS = {
@@ -157,7 +158,7 @@ def _xgb():
 
 
 def _cat():
-    return ctb.CatBoostRegressor(iterations=200, learning_rate=0.05, depth=5,
+    return ctb.CatBoostRegressor(iterations=200, learning_rate=0.05, depth=5, thread_count=model_threads(),
                                  loss_function="MAE", verbose=0, random_seed=42)
 
 
@@ -176,12 +177,13 @@ def base_learner_ablation(out):
     out["base_ablation"] = {}
     for dom in ["movie", "tv"]:
         loc = _load_domain(dom, uni, registry)
+        raw = load_domain_raw(dom, loc)
         feat = [c for c in loc.columns if c not in DROP_COLS]
         # collect per (item, repeat) raw preds for each member + blends
-        recs = []
-        for fold_id, tmask in registry_folds(loc, registry):
-            tr, te = loc[~tmask], loc[tmask]
-            Xtr, ytr, Xte = tr[feat], tr["target_reg"], te[feat]
+        def one_fold(tmask):
+            te = loc[tmask]
+            Xtr, Xte = reencode_fold(dom, loc, raw, tmask, feat)
+            ytr = loc.loc[~tmask, "target_reg"]
             member_pred = {}
             for k, mk in builders.items():
                 mdl = mk(); mdl.fit(Xtr, ytr)
@@ -206,7 +208,9 @@ def base_learner_ablation(out):
             base["mean"] = mean_pred
             base["simplex"] = simplex_pred
             base["w"] = [tuple(np.round(w, 2))] * len(base)
-            recs.append(base)
+            return base
+
+        recs = map_folds(one_fold, [(m,) for _, m in registry_folds(loc, registry)])
         oofd = pd.concat(recs, ignore_index=True)
         agg = oofd.groupby("source_id").agg(
             target_reg=("target_reg", "first"),

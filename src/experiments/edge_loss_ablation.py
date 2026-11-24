@@ -54,7 +54,8 @@ from sklearn.metrics import mean_absolute_error, r2_score
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.movies.custom_objectives import AsymmetricEdgePenaltyObjective
-from src.reporting.standalone_benchmarks import _load_domain, DROP_COLS, _round_half, load_registry, registry_folds
+from src.reporting.standalone_benchmarks import (_load_domain, DROP_COLS, _round_half, load_domain_raw, load_registry,
+                                                 reencode_fold, registry_folds)
 
 # Tuned alphas as recorded in reports/PIPELINE_RUN_LOG.md (Optuna, movie domain).
 ALPHA_HI = 0.0597
@@ -80,12 +81,19 @@ def _fit_predict(X_tr, y_tr, X_te, objective):
     return m.predict(X_te)
 
 
-def _oof_for_arm(loc, feat_cols, registry, objective, label):
+def _fold_matrices(loc, feat_cols, registry):
+    """[(test_mask, X_tr, X_te)] for the 50 frozen folds, target encodings refit on each
+    fold's training rows; built once because every arm trains on the same folds."""
+    raw = load_domain_raw("movie", loc)
+    return [(test_mask, *reencode_fold("movie", loc, raw, test_mask, feat_cols))
+            for _, test_mask in registry_folds(loc, registry)]
+
+
+def _oof_for_arm(loc, folds, objective, label):
     """Run one arm across all 50 frozen folds; return per-item OOF DataFrame."""
     rows = []
-    for fold_id, test_mask in registry_folds(loc, registry):
+    for test_mask, X_tr, X_te in folds:
         train_mask = ~test_mask
-        X_tr, X_te = loc.loc[train_mask, feat_cols], loc.loc[test_mask, feat_cols]
         y_tr = loc.loc[train_mask, "target_reg"]
         preds = _fit_predict(X_tr, y_tr, X_te, objective)
         sub = loc.loc[test_mask, ["source_id", "target_reg"]].copy()
@@ -303,11 +311,11 @@ def main():
           f"edge items (<= {EDGE_LO} or >= {EDGE_HI}) = "
           f"{int(((loc['target_reg'] <= EDGE_LO) | (loc['target_reg'] >= EDGE_HI)).sum())}")
 
+    folds = _fold_matrices(loc, feat_cols, registry)
     print(f"   Arm A: reg:squarederror")
-    a_item = _oof_for_arm(loc, feat_cols, registry, "reg:squarederror", "A std-sq")
+    a_item = _oof_for_arm(loc, folds, "reg:squarederror", "A std-sq")
     print(f"   Arm B: AsymmetricEdgePenalty(alpha_hi={ALPHA_HI}, alpha_lo={ALPHA_LO})")
-    b_item = _oof_for_arm(loc, feat_cols, registry,
-                          AsymmetricEdgePenaltyObjective(ALPHA_HI, ALPHA_LO), "B edge")
+    b_item = _oof_for_arm(loc, folds, AsymmetricEdgePenaltyObjective(ALPHA_HI, ALPHA_LO), "B edge")
 
     metrics_a = _arm_metrics(a_item)
     metrics_b = _arm_metrics(b_item)
@@ -318,14 +326,12 @@ def main():
     sweep = [{"alpha": 0.0, **{k: metrics_a[k] for k in ("overall_mae", "edge_mae", "pred_std")}}]
     strong_item = None
     for a in SWEEP_ALPHAS:
-        s_item = _oof_for_arm(loc, feat_cols, registry,
-                              AsymmetricEdgePenaltyObjective(a, a), f"sweep a={a}")
+        s_item = _oof_for_arm(loc, folds, AsymmetricEdgePenaltyObjective(a, a), f"sweep a={a}")
         sm = _arm_metrics(s_item)
         sweep.append({"alpha": a, "overall_mae": sm["overall_mae"],
                       "edge_mae": sm["edge_mae"], "pred_std": sm["pred_std"]})
     # strong arm for the un-squash scatter panel
-    strong_item = _oof_for_arm(loc, feat_cols, registry,
-                               AsymmetricEdgePenaltyObjective(STRONG_ALPHA, STRONG_ALPHA), "strong")
+    strong_item = _oof_for_arm(loc, folds, AsymmetricEdgePenaltyObjective(STRONG_ALPHA, STRONG_ALPHA), "strong")
     merged3 = merged.merge(
         strong_item[["source_id", "pred_clip"]].rename(columns={"pred_clip": "pred_clip_strong"}),
         on="source_id")

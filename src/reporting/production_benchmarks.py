@@ -1,89 +1,31 @@
 """
-Production-grade per-domain benchmarks on the FROZEN registry folds (Task 1).
+Deployed-model benchmarks for Movies and TV on the FROZEN registry folds.
 
-Why this exists
----------------
-`standalone_benchmarks.py` scores each domain with a *simplified* estimator. For
-Games and Books that simplified model IS the deployed model (SVR, frozen HPs), so
-those rows are already honest. For **Movies** and **TV** it is a weakened proxy
-(plain XGB / a manual simplex) — far below the production architecture (Optuna-tuned
-asymmetric edge-penalty XGB + CatBoost + SVR, fused, with an ordinal expected-value
-member). Benchmarking the unified model against those weak proxies flattered it.
+`standalone_benchmarks.py` scores each domain with a simpler proxy (movie: XGB alone,
+TV: a simplex blend). This module scores the model that actually ships --
+`src.common.ensemble.mean_ensemble`, the same constructor the trainers call -- on the
+same 50 registry folds, deduplicated to one row per item.
 
-This module evaluates a **working, production-grade** ensemble for Movies and TV on
-the same 50 registry folds, deduplicated to one row per item, so the benchmark table
-finally compares the unified model against *strong* locals.
-
-Faithfulness & determinism
---------------------------
-* The deployed `advanced_movie_model_trainer.py` fuses the ordinal classifier inside
-  an sklearn `StackingRegressor`; that path is fragile (it crashes under `clone()`)
-  and was never runnable end-to-end. We reproduce the same *ideas* with a hand-rolled,
-  fully-deterministic stack (inner-CV out-of-fold meta-features → meta learner →
-  bases refit on full train), which is robust and leakage-safe.
-* Edge-penalty alphas are tuned **once** on the full domain (seeded Optuna), persisted
-  to `models/<domain>/best_params.json`, and **reused across folds** — i.e. we measure
-  the *deployed* tuned model, we do not re-tune per fold (which would be intractable
-  and would leak).
-* Everything is seeded (`random_state=42`, `TPESampler(seed=42)`), so the registry-fold
-  numbers are reproducible.
+It used to benchmark an Optuna-tuned edge-penalty XGB + CatBoost(1000) + SVR + ordinal
+stack with a crowd-anchor residual and a 3-fold inner CV per fold. That stack scored
+BELOW the plain mean of its own members (movie skill 0.429 vs 0.458, TV 0.229 vs
+0.255) and took ~4 h of the ~6 h pipeline; it was replaced on that evidence.
 """
-import os
 import sys
 import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import xgboost as xgb
-import catboost as ctb
-from sklearn.svm import SVR
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
-from sklearn.model_selection import KFold, RepeatedKFold
-from sklearn.linear_model import RidgeCV, Ridge
 from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.utils.class_weight import compute_sample_weight
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.movies.custom_objectives import AsymmetricEdgePenaltyObjective
-from src.reporting.standalone_benchmarks import _load_domain, DROP_COLS, _maybe_calibrate, load_registry, registry_folds, set_calibration
+from src.common.ensemble import mean_ensemble
+from src.reporting.standalone_benchmarks import (_load_domain, DROP_COLS, load_domain_raw, load_registry,
+                                                 reencode_fold, registry_folds, map_folds)
 
-BUCKET_MAP = {0: 0.5, 1: 1.0, 2: 1.5, 3: 2.0, 4: 2.5, 5: 3.0, 6: 3.5, 7: 4.0, 8: 4.5, 9: 5.0}
-
-# Crowd columns used as the residual anchor (see `residual` in CFG below).
-ANCHOR_COLS = ["imdb_rating", "metascore", "rotten_tomatoes_rating", "vote_average",
-               "critic_avg_5"]
-
-# Per-domain production ensemble configuration.
-#
-# `residual`: train the REGRESSION members on (rating - crowd anchor) instead of the
-# rating, then add the anchor back to each member's own prediction so everything
-# reaches the meta on the star scale. The anchor is an OLS of rating on ANCHOR_COLS
-# fit on the training fold only.
-#
-# Rationale: an ablation found 12 crowd/metadata columns alone score as well as the
-# full matrix, i.e. the trees were spending most of their capacity re-deriving "is
-# this film good" from columns that already say so. Handing them that answer frees
-# every split for taste, and predictions shrink toward the anchor where the taste
-# signal is weak -- bias down AND variance down. Measured on 10 registry folds with
-# this exact ensemble: MAE 0.5151 -> 0.4929, R2 0.4767 -> 0.5141.
-#
-# NOTE the first attempt at this scored 0.5904 because the residual target was passed
-# straight through `_stack_fold`, which leaves the ordinal member on bucket labels --
-# three members then predicted residuals near 0 while the fourth predicted 0.5-5.0 and
-# the mean meta averaged incompatible scales. The ordinal member must stay untouched
-# and every regression member must re-add the anchor itself.
-#
-# OFF for tv: never measured there, TV has only 2 of the 5 anchor columns, and TV is
-# 173 rows where every change so far has landed inside the noise.
-CFG = {
-    "movie": {"cat_iters": 1000, "xgb_estimators": 300, "meta": "mean", "residual": True,
-              "label": "Prod Mean-Ensemble (edge+Cat+SVR+Ord, residual)"},
-    "tv":    {"cat_iters": 500,  "xgb_estimators": 200, "meta": "ridge_pos", "residual": False,
-              "label": "Prod Simplex-Stack (edge+Cat+SVR)"},
-}
+LABEL = "Mean-Ensemble (XGB+Cat+SVR)"
 
 
 def _round_half(x):
@@ -98,197 +40,19 @@ def _metrics(y_true, y_pred_raw):
             "Acc": float((np.abs(yt - yp) <= 0.5).mean() * 100)}
 
 
-def _balanced_weights(y):
-    # Balanced inverse-frequency weights, then an extra EDGE boost on extreme ratings
-    # (<=1.5 / >=4.5) so the production benchmark reflects the same edge-calibrated
-    # training as the deployed model: it predicts the full range instead of regressing
-    # to the 3.0-3.5 mode. Deliberately trades a little overall MAE for edge calibration.
-    import os
-    classes = (np.asarray(y) * 2).round() / 2
-    w = compute_sample_weight(class_weight="balanced", y=classes)
-    eb = float(os.getenv("EDGE_BOOST", "1.0"))  # OFF by default (superseded by calibration)
-    edge = (classes <= 1.5) | (classes >= 4.5)
-    return w * np.where(edge, eb, 1.0)
-
-
-# ---- edge-penalty alpha tuning (once per domain, seeded) ------------------------
-
-def tune_alphas(X, y, domain, n_trials=25):
-    """Tune asymmetric edge-penalty alphas once on the full domain (seeded TPE).
-    Persisted to models/<domain>/best_params.json and reused across all folds."""
-    import optuna
-    from optuna.samplers import TPESampler
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
-
-    def objective(trial):
-        a_hi = trial.suggest_float("alpha_hi", 0.01, 0.5, log=True)
-        a_lo = trial.suggest_float("alpha_lo", 0.01, 0.5, log=True)
-        rkf = RepeatedKFold(n_splits=5, n_repeats=2, random_state=42)
-        maes = []
-        for t_idx, v_idx in rkf.split(X):
-            m = xgb.XGBRegressor(objective=AsymmetricEdgePenaltyObjective(a_hi, a_lo),
-                                 n_estimators=150, learning_rate=0.05, max_depth=5,
-                                 random_state=42, n_jobs=-1)
-            m.fit(X.iloc[t_idx], y.iloc[t_idx])
-            p = _round_half(m.predict(X.iloc[v_idx]))
-            maes.append(mean_absolute_error(y.iloc[v_idx], p))
-        return float(np.mean(maes))
-
-    study = optuna.create_study(direction="minimize", sampler=TPESampler(seed=42))
-    study.optimize(objective, n_trials=n_trials)
-    best = study.best_params
-    out = config.MODEL_DIR / domain / "best_params.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({**best, "tuned_on": "full_domain", "n_trials": n_trials}, indent=2))
-    print(f"   [{domain}] tuned edge alphas: alpha_hi={best['alpha_hi']:.4f} "
-          f"alpha_lo={best['alpha_lo']:.4f} -> {out}")
-    return best["alpha_hi"], best["alpha_lo"]
-
-
-# ---- base learners --------------------------------------------------------------
-
-def _ordinal_ev(X_tr, y_ord_tr, w_tr, X_te, n_estimators=200):
-    """XGBoost ordinal classifier -> expected value over present buckets."""
-    classes = np.sort(np.unique(y_ord_tr))
-    cmap = {c: i for i, c in enumerate(classes)}
-    y_mapped = pd.Series(y_ord_tr).map(cmap).values
-    bucket_vals = np.array([BUCKET_MAP[c] for c in classes])
-    if len(classes) < 2:
-        # Degenerate fold: only one rating bucket present -> constant EV.
-        return np.full(len(X_te), bucket_vals[0], dtype=float)
-    clf = xgb.XGBClassifier(n_estimators=n_estimators, learning_rate=0.03, max_depth=5,
-                            objective="multi:softprob", num_class=len(classes),
-                            subsample=0.8, random_state=42, n_jobs=-1)
-    clf.fit(X_tr, y_mapped, sample_weight=w_tr)
-    probs = clf.predict_proba(X_te)
-    return probs @ bucket_vals
-
-
-def fit_anchor(X_tr, y_tr, cols):
-    """OLS of rating on the crowd columns, fit on the TRAINING fold only.
-
-    Returns (model, cols_used) or (None, []) when none of the anchor columns exist
-    in this domain's matrix.
-    """
-    from sklearn.linear_model import LinearRegression
-    use = [c for c in cols if c in X_tr.columns]
-    if not use:
-        return None, []
-    return LinearRegression().fit(X_tr[use], y_tr), use
-
-
-def _base_predictions(X_tr, y_reg_tr, y_ord_tr, X_te, cfg, alphas):
-    """Fit all base learners on (X_tr) and return a dict of test predictions.
-
-    Every returned prediction is on the STAR scale, including when the regression
-    members are trained on the residual -- each adds its anchor back itself.
-    """
-    w = _balanced_weights(y_reg_tr)
-    a_hi, a_lo = alphas
-
-    # Residual reframing: members learn (rating - anchor), predict, then add back.
-    lin, anchor_use, off_te = None, [], 0.0
-    y_fit = y_reg_tr
-    if cfg.get("residual"):
-        lin, anchor_use = fit_anchor(X_tr, y_reg_tr, ANCHOR_COLS)
-        if lin is not None:
-            off_te = lin.predict(X_te[anchor_use])
-            y_fit = pd.Series(np.asarray(y_reg_tr) - lin.predict(X_tr[anchor_use]),
-                              index=y_reg_tr.index)
-
-    xgb_edge = xgb.XGBRegressor(objective=AsymmetricEdgePenaltyObjective(a_hi, a_lo),
-                                n_estimators=cfg["xgb_estimators"], learning_rate=0.03,
-                                max_depth=6, subsample=0.8, colsample_bytree=0.8,
-                                random_state=42, n_jobs=-1)
-    xgb_edge.fit(X_tr, y_fit, sample_weight=w)
-
-    cat = ctb.CatBoostRegressor(iterations=cfg["cat_iters"], learning_rate=0.05, depth=6,
-                                l2_leaf_reg=3, loss_function="MAE", random_seed=42, verbose=0)
-    cat.fit(X_tr, y_fit)
-
-    svr = Pipeline([("scaler", StandardScaler()), ("svr", SVR(kernel="rbf", C=1.0, epsilon=0.1))])
-    svr.fit(X_tr, y_fit, svr__sample_weight=w)
-
-    # The ordinal member predicts a BUCKET -- it has no meaningful residual form and
-    # is always trained on the untouched labels.
-    ev = _ordinal_ev(X_tr, y_ord_tr, w, X_te)
-
-    return {"xgb": xgb_edge.predict(X_te) + off_te,
-            "cat": cat.predict(X_te) + off_te,
-            "svr": svr.predict(X_te) + off_te,
-            "ord": ev}
-
-
-class _MeanMeta:
-    """Equal-weight mean of the base predictions.
-
-    The project's own ablation found that Ridge stacking was *destroying* signal
-    and that the plain mean beats every member ("Complementary -- mean beats every
-    member; no dead weight"). That conclusion never reached the movie path, which
-    kept `ridgecv` and ended up scoring BELOW its own best member on the frozen
-    folds (R2 0.470 stacked vs 0.512 standalone). A fixed mean has no meta
-    parameters to overfit on 3-fold inner OOF, which is where the loss came from.
-    """
-
-    def fit(self, Z, y):  # noqa: D102, N803
-        return self
-
-    def predict(self, Z):  # noqa: D102, N803
-        return np.asarray(Z, dtype=float).mean(axis=1)
-
-
-def _make_meta(kind):
-    if kind == "mean":
-        return _MeanMeta()
-    return RidgeCV() if kind == "ridgecv" else Ridge(positive=True)
-
-
-def _stack_fold(X_tr, y_reg_tr, y_ord_tr, X_te, cfg, alphas):
-    """Hand-rolled, leakage-safe stack: inner-CV OOF meta-features -> meta learner ->
-    bases refit on full train -> meta on test base-preds."""
-    names = ["xgb", "cat", "svr", "ord"]
-    inner = KFold(n_splits=3, shuffle=True, random_state=42)
-    X_tr = X_tr.reset_index(drop=True)
-    y_reg = y_reg_tr.reset_index(drop=True)
-    y_ord = pd.Series(np.asarray(y_ord_tr)).reset_index(drop=True)
-    oof = {n: np.zeros(len(X_tr)) for n in names}
-    for tr_idx, va_idx in inner.split(X_tr):
-        preds = _base_predictions(X_tr.iloc[tr_idx], y_reg.iloc[tr_idx], y_ord.iloc[tr_idx],
-                                  X_tr.iloc[va_idx], cfg, alphas)
-        for n in names:
-            oof[n][va_idx] = preds[n]
-    Z_tr = np.column_stack([oof[n] for n in names])
-    meta = _make_meta(cfg["meta"])
-    meta.fit(Z_tr, y_reg)
-    # Refit bases on the full training fold and predict the held-out test fold.
-    full = _base_predictions(X_tr, y_reg, y_ord, X_te, cfg, alphas)
-    Z_te = np.column_stack([full[n] for n in names])
-    # Quantile-calibrate the stacked output (map test ranks -> train-rating distribution)
-    # so the ensemble predicts the full range instead of regressing to the mode.
-    return _maybe_calibrate(meta.predict(Z_tr), y_reg, meta.predict(Z_te))
-
-
-# ---- driver ---------------------------------------------------------------------
-
-def production_oof_for_domain(domain, uni_df, registry, alphas):
-    # Per-domain calibration: ON for all except domains in CALIBRATE_SKIP (default "tv",
-    # whose ranking is too weak — Spearman ~0.45 — for quantile calibration to place 5*s
-    # on the right items; calibrating it hurts MAE/accuracy). See edge_boost/calibration ablation.
-    set_calibration(domain)
+def production_oof_for_domain(domain, uni_df, registry):
     loc = _load_domain(domain, uni_df, registry)
+    raw = load_domain_raw(domain, loc)
     feat_cols = [c for c in loc.columns if c not in DROP_COLS + ["target_ordinal"]]
-    cfg = CFG[domain]
-    rows = []
-    for fold_id, test_mask in registry_folds(loc, registry):
-        tr, te = ~test_mask, test_mask
-        preds = _stack_fold(loc.loc[tr, feat_cols], loc.loc[tr, "target_reg"],
-                            loc.loc[tr, "target_ordinal"], loc.loc[te, feat_cols], cfg, alphas)
-        sub = loc.loc[te, ["source_id", "target_reg"]].copy()
-        sub["pred"] = np.asarray(preds)
+
+    def one_fold(test_mask):
+        X_tr, X_te = reencode_fold(domain, loc, raw, test_mask, feat_cols)
+        sub = loc.loc[test_mask, ["source_id", "target_reg"]].copy()
+        sub["pred"] = mean_ensemble().fit(X_tr, loc.loc[~test_mask, "target_reg"]).predict(X_te)
         sub["media_type"] = domain
-        rows.append(sub)
-        if (fold_id + 1) % 10 == 0:
-            print(f"      [{domain}] production fold {fold_id + 1}/50", flush=True)
+        return sub
+
+    rows = map_folds(one_fold, [(m,) for _, m in registry_folds(loc, registry)])
     oof = pd.concat(rows, ignore_index=True)
     per_item = (oof.groupby("source_id")
                    .agg(target_reg=("target_reg", "first"), pred=("pred", "mean"))
@@ -296,9 +60,9 @@ def production_oof_for_domain(domain, uni_df, registry, alphas):
     per_item["media_type"] = domain
     met = _metrics(per_item["target_reg"], per_item["pred"])
     print(f"   [{domain}] PRODUCTION  N={per_item['source_id'].nunique()}  "
-          f"MAE={met['MAE']:.4f}  R2={met['R2']:.4f}  Acc={met['Acc']:.1f}%")
+          f"MAE={met['MAE']:.4f}  R2={met['R2']:.4f}  Acc={met['Acc']:.1f}%", flush=True)
     return per_item, {"Domain": domain, "N": int(per_item["source_id"].nunique()),
-                      "Model": cfg["label"], **met}
+                      "Model": LABEL, **met}
 
 
 def generate_production_oof(uni_df, registry, domains=("movie", "tv"),
@@ -312,20 +76,14 @@ def generate_production_oof(uni_df, registry, domains=("movie", "tv"),
             if sl.empty:
                 continue
             met = _metrics(sl["target_reg"], sl["pred"])
-            bms.append({"Domain": d, "N": int(sl["source_id"].nunique()),
-                        "Model": CFG[d]["label"], **met})
+            bms.append({"Domain": d, "N": int(sl["source_id"].nunique()), "Model": LABEL, **met})
         print(f"   [production] reusing cached per-item OOF <- {out_path}")
         return bms, df
 
     all_items, bms = [], []
     for d in domains:
-        print(f"   [production] tuning + evaluating {d} ...", flush=True)
-        X = uni_df[uni_df["media_type"] == d]
-        # Tune on the standalone domain matrix (same features the fold loop uses).
-        loc = _load_domain(d, uni_df, registry)
-        feat_cols = [c for c in loc.columns if c not in DROP_COLS + ["target_ordinal"]]
-        alphas = tune_alphas(loc[feat_cols], loc["target_reg"], d)
-        per_item, bm = production_oof_for_domain(d, uni_df, registry, alphas)
+        print(f"   [production] evaluating {d} ...", flush=True)
+        per_item, bm = production_oof_for_domain(d, uni_df, registry)
         all_items.append(per_item)
         bms.append(bm)
     out = pd.concat(all_items, ignore_index=True)

@@ -37,7 +37,7 @@ I have exactly one user. Me. 1,514 ratings, spread across four media types. So c
 
 **HOST:** And what did you find?
 
-**YOU:** The honest headline is: **taste transfers into games, and only into games.** A model trained on nothing but my film ratings, that has never seen a single game rating, ranks games better than a model trained on my actual game ratings does. In the other direction — using games to predict films — it is actively harmful. I will spend most of Segment 5 on that, including the parts of it I do not fully trust.
+**YOU:** The honest headline has two halves. Under the rule I fixed before looking, **taste does not transfer at the feature level**: on the current grid (2026-10-13) no combination of other domains lifts any target at two or more data fractions, and with no target data at all, pooling hurts every target. What does hold is **zero-shot ranking**: a model trained on my film and book ratings, that has never seen a single game rating, orders my games at a Spearman of +0.553 against +0.401 for a model trained on the games alone with the same shared features. In the other direction, using games to predict films, it is harmful. An earlier grid said taste transfers into games; that finding did not survive the corpus refresh. I will spend most of Segment 5 on that, including the parts of it I do not fully trust.
 
 > **Interview note — set the size honestly in the first minute.** "1,514 ratings, one user, 66 games in the smallest domain" is a *stronger* opening than any vague claim, because everything you say afterwards is calibrated to it. An interviewer who hears "66 games" and then hears you defend a significance test on 66 games is impressed. An interviewer who discovers the 66 in minute forty is not.
 
@@ -333,7 +333,7 @@ They are fifty *folds*, not fifty independent experiments. There are still only 
 
 **The consequence, stated exactly:** my *p*-values are **optimistic**. A reported *p* of 0.0002 is not a true one-in-five-thousand. I do not know the true value, and I would not pretend to.
 
-**What I trust instead, and why it is a better answer than a *p*-value:** the *consistency* of the effect across conditions. My headline transfer cell is positive at 0%, 25%, 50% and 100% target data, and positive in every one of six different source combinations, and it survives a label-shuffled placebo. Four consistent estimates of the same effect is stronger evidence than one small *p*, precisely because the small *p* is the thing I know is inflated.
+**What I trust instead, and why it is a better answer than a *p*-value:** the *consistency* of an effect across conditions. On the 2026-08-30 grid the games cell was positive at all four target fractions and in six source combinations and survived a label-shuffled placebo; on the 2026-10-13 grid it is gone. That is what inflated *p*-values plus a changing corpus look like from the outside, and it is why I no longer claim it. The result that is consistent is the zero-shot ranking: every one of the seven source combinations ranks every target with a positive Spearman (the smallest is `game -> movie` at +0.09, the largest `movie+tv+game -> book` at +0.60), with fold-to-fold standard deviations of 0.06 to 0.17. Twenty-eight estimates with one sign is stronger evidence than one small *p*, precisely because the small *p* is the thing I know is inflated.
 
 > **Interview note — this is the moment that decides the interview.** A candidate who says "p equals 0.0003 so it is significant" is a candidate who has read about statistics. A candidate who says "the p-value is optimistic because my fifty folds share 66 items, so I lean on consistency across four data fractions and six source sets instead" is a candidate who has *done* statistics. Practise saying it until it is automatic.
 
@@ -360,7 +360,7 @@ They are fifty *folds*, not fifty independent experiments. There are still only 
 
 **HOST:** So who wins now, unified or local?
 
-**YOU:** **On the current `reports/latest_metrics.json` (2026-10-01 run), the local model wins in all four domains.** By skill, local against the unified slice: 0.355 against 0.315 for movies, 0.208 against 0.186 for TV, 0.376 against 0.202 for games, 0.566 against 0.241 for books. By MAE: 0.483 against 0.513, 0.694 against 0.714, 0.515 against 0.659, 0.286 against 0.500.
+**YOU:** **On the current `reports/latest_metrics.json` (2026-10-30 run, every encoding refit inside the fold), the local model wins in all four domains.** By skill, local against the unified slice: 0.437 against 0.332 for movies, 0.225 against 0.179 for TV, 0.367 against 0.239 for games, 0.487 against 0.324 for books. By MAE: 0.419 against 0.497, 0.680 against 0.720, 0.523 against 0.629, 0.342 against 0.450.
 
 And I have to flag something here rather than let you find it. **`reports/RESUME_BULLETS.md` used to say "unified is competitive-or-better in 3 of 4 domains."** That was true of an earlier run of the pipeline, and the file now says so. It is not true of the numbers currently in the metrics file. The correct current statement is the one I just gave you: **local wins everywhere, and the two margins that matter — games 0.14 and books 0.21 stars — are large.** The TV margin, 0.02, is inside TV's fold-reshuffle noise, so I would not lean on it.
 
@@ -374,22 +374,22 @@ A zero-shot transfer model **excludes** the thin domain entirely and applies a f
 
 So the two results are not in tension even though they sound like it: **pooling a noisy domain in hurts it; borrowing a clean domain's structure instead helps it.** That is why the deployed system keeps local models for scoring and uses the unified model only as a research harness.
 
-### The leak I have not fixed
+### The leak I measured and fixed
 
 **HOST:** Is there anything wrong with those unified numbers?
 
-**YOU:** Yes, and I would volunteer it, because volunteering a known flaw is worth more than being caught by it.
+**YOU:** There was, and I would volunteer it, because volunteering a known flaw is worth more than being caught by it.
 
-**Every unified metric in this project is optimistic by an unmeasured amount**, because of a leak across the fold boundary.
+Until October 2026 every benchmark in this project carried a leak across the fold boundary, and its size was unmeasured.
 
-Here is the mechanism, precisely. `oof_entity_encode` protects against leakage using its **own internal five-fold split**, computed once at feature-build time. But the evaluation uses the **frozen 50-fold registry**, which is a completely different partition. The two do not know about each other. The result, which I measured: **48% of training rows carry a `creator_encoded` value computed using a test row's rating** — and the value is computed once and reused across all fifty folds.
+Here is the mechanism, precisely. `oof_entity_encode` protects against leakage using its **own internal five-fold split**, computed once at feature-build time. But the evaluation uses the **frozen 50-fold registry**, which is a completely different partition. The two do not know about each other. The result, which I measured: **48% of training rows carried a `creator_encoded` value computed using a test row's rating**, and the value was computed once and reused across all fifty folds.
 
-So the unified model is being told, faintly, about the answers on its own test set. It is a soft leak, not a catastrophic one — it is one column out of 406, heavily smoothed. But it is real and it is not fixed. It is documented in a comment in the feature builder, in the README, and in the paper's open-gaps appendix.
+So the models were being told, faintly, about the answers on their own test sets. The fix was to rebuild every target encoding inside each registry fold from the training rows only. The unified evaluator does that since 2026-10-14 and the local Movies, TV, Games and Books benchmarks since 2026-10-30. Then I measured what the leak had been worth, on the same 50 folds and items, with the deployed ensemble: Movies MAE 0.4162 to 0.4188 with a paired Wilcoxon p of 0.95, TV 0.654 to 0.680 with p of 0.34. Inside fold noise both times, so no verdict moved.
 
 **Three things I would add immediately after saying that:**
 
-- **The fix is known and is not hard:** re-compute the entity encodings *inside* each registry fold. It costs compute, not cleverness. It is item one on my future-work list.
-- **No claim I make rests on a margin smaller than the leak.** The two domains where the local model wins by a lot — 0.14 and 0.21 stars — it wins against an opponent that is being flattered. That direction of the argument is safe.
+- **Why it was small:** the crowd columns carry most of the movie signal, and TV's encodings are smoothed with m=10 on a 175-row library, so they sit within 0.05 stars of the global mean. There was little label information in them to leak.
+- **Why it went unmeasured for two months:** an August probe found +0.0009 MAE at m=10 and the note said "do not fix". Movies then moved to m=2 and added twelve encoded columns, which tripled the spread of those columns, and nobody re-ran the probe. A verdict about a feature set does not survive a change to the feature set.
 - **Critically, the transfer study is not affected.** The transfer grid's `shared_space_columns()` keeps only `emb_*`, `gen_*` and `critic_avg_5`. It does **not** keep `creator_encoded` or `studio_encoded`. So the headline transfer finding runs on a feature set that contains no target encodings at all, and this leak cannot touch it. I checked that specifically, because if it did touch it, the finding would be dead.
 
 ---
@@ -398,7 +398,7 @@ So the unified model is being told, faintly, about the answers on its own test s
 
 **HOST:** Third bullet: *"Proved taste transfers into games, lifting prediction skill +0.121 (p=0.0003) against four controls including a label-shuffled placebo, and shipped a 16-page dashboard."* This is the claim I would push hardest on. Start with the design.
 
-**YOU:** Good, and I am going to end this segment by taking apart the numbers in that sentence myself, because two of them do not survive contact with the files.
+**YOU:** Good, and I am going to end this segment by taking apart that sentence myself, because the claim in it does not survive contact with the current files, and two of its numbers never matched the files they came from.
 
 ### The design
 
@@ -426,21 +426,22 @@ The reason to fix that in advance is that with about 120 cells and no correction
 
 ### What it found
 
-Reproduced by re-running the analysis myself against `reports/transfer_grid_results.csv`:
+Recomputed by me from the current `reports/transfer_grid_results.csv` (the 2026-10-13 grid), paired against the games-only baseline on the same 50 folds. The lift is baseline MAE minus cell MAE, so positive means the extra domain helped:
 
 | Source → game | 0% target data | 25% | 50% | 100% |
 |---|---|---|---|---|
-| `movie` | **+0.1024** (p=0.0002) | **+0.1010** (p=0.0005) | **+0.1243** (p<0.0001) | **+0.1452** (p<0.0001) |
-| `movie+book` | +0.0883 (p=0.0019) | +0.0967 (p=0.0006) | +0.1090 (p<0.0001) | +0.1362 (p<0.0001) |
-| `movie+tv` | +0.0860 (p=0.0041) | +0.0762 (p=0.0098) | +0.0988 (p<0.0001) | +0.1060 (p<0.0001) |
-| `movie+tv+book` | +0.0562 (p=0.046) | +0.0798 (p=0.0098) | +0.0757 (p=0.0009) | +0.1090 (p=0.0001) |
-| `tv` | −0.0183 (n.s.) | +0.0031 (n.s.) | +0.0481 (p=0.031) | +0.0952 (p=0.0001) |
+| `movie` | +0.035 (p=0.24) | -0.021 (p=0.65) | -0.016 (p=0.58) | -0.026 (p=0.33) |
+| `movie+book` | +0.035 (p=0.23) | +0.021 (p=0.49) | +0.009 (p=0.75) | -0.011 (p=0.53) |
+| `movie+tv+book` | +0.011 (p=0.54) | -0.053 (p=0.047) | -0.059 (p=0.049) | -0.044 (p=0.16) |
+| `tv` | -0.068 (p=0.014) | -0.034 (p=0.21) | -0.004 (p=0.96) | +0.020 (p=0.33) |
 
-Six source configurations clear the pre-registered bar, and **every one of them targets Games**. Movies, TV and Books show nothing — into those targets, adding other domains is neutral at best and significantly *harmful* with no target data at all.
+Nothing clears the pre-registered bar, for games or for any other target. The verdict in `reports/transfer_grid_summary.json` is **NULL**. The only cell anywhere that is positive and significant is `game -> book` at 100% target data, +0.044 (p=0.009), at one fraction out of four, and the same cell is -0.267 with no target data. Into every target, adding other domains with no target data at all is significantly harmful.
 
-**HOST:** What does "+0.1452" mean physically? Be exact.
+The grid before this one (2026-08-30) told the opposite story: six source configurations cleared the bar, all targeting games, `movie -> game` at +0.145 with p below 0.0001 at every fraction. Between the two runs the corpus gained 101 films and Wikipedia plot text for every item, and the CORAL alignment, which had been silently switched off by a column-name bug, was switched on. None of those three has been reverted on its own, so the reversal has a description and not a cause.
 
-**YOU:** It is a **reduction in mean absolute error of 0.145 stars**. The games-only baseline predicts my rating with an average error of 0.751 stars. Add my film ratings to its training data and the average error drops to about 0.606. Roughly a fifth of the error, gone, on a domain the extra data is not even about.
+**HOST:** What would "+0.145" have meant physically? Be exact.
+
+**YOU:** A **reduction in mean absolute error of 0.145 stars** on a games-only baseline of about 0.75 stars, so roughly a fifth of the error. On the current grid the games-only baseline is 0.704 stars and the best any source does at full target data is +0.020, inside noise.
 
 **And this is where I have to correct my own resume line.** The word "skill" in *"lifting prediction skill +0.121"* is wrong. In `transfer_analysis.py` the quantity is computed as `lift = a_mae − cell_mae` — it is a **difference in mean absolute error, measured in stars**. "Skill" in this project means something else: `1 − MAE ÷ baseline MAE`, and it is a different number. I would say "reduced mean absolute error by 0.12 stars," not "lifted skill by 0.121."
 
@@ -450,15 +451,15 @@ Six source configurations clear the pre-registered bar, and **every one of them 
 
 **YOU:** Not the lift. This one, from `reports/transfer_grid_summary.json`:
 
-> A model trained on **nothing but my film ratings**, which has never seen a single game rating, ranks my games at a **Spearman rank correlation of +0.599**. The model trained on my actual game ratings achieves **+0.307**. The film-only model is at **195% of the games model's own performance.**
+> A model trained on **my film and book ratings only**, which has never seen a single game rating, ranks my games at a **Spearman rank correlation of +0.553** (mean over 50 folds). A model trained on my actual game ratings, on the same shared features, achieves **+0.401**. The zero-shot model is at **138% of the games-only model.** The same holds for TV (`movie -> tv` +0.448 against +0.417, 108%) and books (`movie+tv+game -> book` +0.599 against +0.593, 101%); only movies are ranked worse by outsiders (+0.496 against +0.669).
 
 **Spearman rank correlation** measures whether two orderings agree — 1.0 means identical ranking, 0 means unrelated. It ignores calibration entirely; it only asks whether the model puts my games in the right order.
 
-That number is stark and it is defensible. It says my film taste is a *better* description of my game taste than 66 game ratings are.
+That number is stark and it is defensible with one qualifier. It says my film and book taste is a *better* description of my game taste than 66 game ratings are, **when both models see only the shared features**. The deployed games model also sees Metacritic, platforms and developer encodings, ranks at +0.697, and still wins.
 
 **HOST:** Why measure ranking rather than error?
 
-**YOU:** Because of the shape of my ratings. **62% of my films sit in three adjacent half-star bins.** A model that just predicts a constant 3.5 for everything already scores MAE 0.759. The whole achievable range is about a quarter of a star. So error-based metrics barely separate a good model from a constant, and worse, they conflate *ordering* with *calibration* — a model can rank perfectly and still score badly because it is offset by half a star. Games as a source into movies scored −0.069 on error-skill, reading as harmful, while its rank correlation was +0.09, meaning mildly right but badly scaled. Rank is what a recommender needs. Calibration is a one-parameter fix you apply afterwards.
+**YOU:** Because of the shape of my ratings. **62% of my films sit in three adjacent half-star bins.** A model that just predicts a constant 3.5 for everything already scores MAE 0.759. The whole achievable range is about a quarter of a star. So error-based metrics barely separate a good model from a constant, and worse, they conflate *ordering* with *calibration* — a model can rank perfectly and still score badly because it is offset by half a star. Games as a source into movies scores −0.086 on error-skill, reading as harmful, while its rank correlation is +0.088, meaning mildly right but badly scaled. Rank is what a recommender needs. Calibration is a one-parameter fix you apply afterwards.
 
 I would also volunteer that reporting Spearman *after* seeing that MAE was unflattering is exactly the kind of metric-shopping a reviewer should be suspicious of. My defence is that the reason is a property of the data — the concentrated rating distribution — that is measurable and was measured, not a property of the result.
 
@@ -466,7 +467,7 @@ I would also volunteer that reporting Spearman *after* seeing that MAE was unfla
 
 **HOST:** "Against four controls including a label-shuffled placebo." Walk them.
 
-**YOU:** The obvious sceptical read is: *Games has 66 items and high variance, so it benefits from **any** added structure, regardless of whether film taste has anything to do with game taste.* Four controls attack that.
+**YOU:** First the dating: all four controls were run against the 2026-08-30 grid, whose positive games cells no longer reproduce, and none has been re-run on the 2026-10-13 grid. They show how the positive result was stress-tested at the time, not that it holds now. The obvious sceptical read was: *Games has 66 items and high variance, so it benefits from **any** added structure, regardless of whether film taste has anything to do with game taste.* Four controls attacked that.
 
 **Control 1 — the domain-identity leak, found and fixed.** This is the most important one, because it caught a real false positive. The shared feature set once contained `has_movie_feats`, `has_game_feats` and similar mask columns. A model can split on those and know instantly which medium a row came from — which means it can learn "films are rated like this, games like that" and *look* like transfer while transferring nothing. A diagnostic check flagged it as FAIL. Removing them made the features domain-blind. **The Games finding survived. A different result — an entity-bridge finding that had been reported as significant at ΔMAE +0.032, p=0.004 — collapsed to non-significant.** So the control demonstrably works: it killed one result and left another standing.
 
@@ -499,13 +500,11 @@ That is the cleanest evidence in the project, and it is the one I would put in f
 
 I traced both. **+0.121** is `movie+tv+book → game`, lift at 100% target data, from the copy of `reports/transfer_grid_summary.json` in the last git commit: `"lift@100": 0.1211`. Its *p* at that fraction is **0.0014**, not 0.0003. The **0.0003** comes from `docs/ML_SYSTEM_OVERVIEW.md` line 806, which lists that cell's four fractions as `+0.085 p=0.031 · +0.081 p=0.030 · +0.130 p=0.0003 · +0.121 p=0.0014`. So **p=0.0003 belongs to the 50% fraction, where the lift is +0.130.** The bullet takes the lift from one column and the *p* from another.
 
-The correct statement, from re-running the analysis on the current data: **`movie → game` reduces mean absolute error by 0.124 stars at 50% target data with p below 0.0001, and by 0.102 to 0.145 stars across all four fractions, all four significant, over 50 folds.**
+**Say this:** *"That figure splices two numbers. The +0.121 is the 100%-fraction lift for one source combination; the p=0.0003 is that combination's 50%-fraction p-value. And both are from a grid that has since been superseded."*
 
-**Say this:** *"That figure splices two numbers. The +0.121 is the 100%-fraction lift for one source combination; the p=0.0003 is that combination's 50%-fraction p-value. The honest single-cell version is stronger anyway: movie-to-game, a 0.12-star reduction in mean absolute error at half the target data, p under 0.001, significant at every one of four fractions."*
+#### 2. The number is from an older run and does not reproduce.
 
-#### 2. The number is from an older run and no longer reproduces exactly.
-
-The pipeline has been re-run since. On the current `reports/transfer_grid_results.csv`, that same `movie+tv+book → game` cell gives **+0.109** at 100%, not +0.121. **The direction, the significance and the conclusion are unchanged. The exact digits are not.** If asked for a number, quote the strongest current cell — `movie → game`, +0.145 at 100% — and say it is from the current run.
+The pipeline has been re-run since. On the current `reports/transfer_grid_results.csv` (2026-10-13), that same `movie+tv+book → game` cell gives **-0.044** at 100% (p=0.16), not +0.121; `movie → game` gives -0.026 (p=0.33), not +0.145. **The direction reversed, the significance is gone, and the pre-registered verdict is NULL.** If asked for a number, do not quote an augmented lift. Quote the zero-shot ranking, which is the current positive result: `movie+book → game` Spearman +0.553 against +0.401 for the games-only model on the same features.
 
 #### 3. This result has flipped its sign three times, and the repository's own documents disagree about it right now.
 
@@ -524,7 +523,7 @@ Because of that churn, the documents in this repo are not consistent with each o
 
 **Say this:** *"The finding is real on the current data and I can reproduce it in front of you. It has also flipped sign across corpus revisions, which is what you should expect from a domain with 66 items — significance is fragile in both directions at that N. Four things changed between runs and I have not ablated them individually, so I can describe the reversal but I cannot yet explain it. That is item seven on my future-work list, and it is one run of the grid away from being answered."*
 
-#### 4. The alignment step in the published grid was silently doing nothing.
+#### 4. The alignment step in the 2026-08-30 grid was silently doing nothing. The current grid is aligned.
 
 The grid was designed to apply **CORAL** — Correlation Alignment, a domain-adaptation method that whitens the source domain's feature covariance and recolours it to match the target's, so the two domains' feature distributions overlap before you train across them.
 
@@ -534,9 +533,9 @@ Two things save it, and one does not:
 
 - **Every arm of the grid was affected identically**, so the comparisons between cells — which is what the finding rests on — remain valid.
 - The numbers are therefore **unaligned transfer**, not aligned transfer, and the repository says so in the function's own docstring.
-- What it does *not* save: I do not know whether the effect is bigger or smaller with alignment restored. The fix is in the code — one shared `text_feature_cols()` helper that accepts both names, so four separate files can no longer drift — but the grid has not been re-run with it.
+- The fix is one shared `text_feature_cols()` helper that accepts both names, so four separate files can no longer drift. It was committed on 2026-10-11 and the grid in the repository today was run on 2026-10-13 with it, so the current numbers are aligned transfer. The verdict did not change: still NULL on the pre-registered rule, with zero-shot ranking real.
 
-**Say this:** *"The CORAL alignment was a silent no-op in the published grid because the column selector still looked for the old PCA column names. Every cell was affected identically, so the comparisons hold, but the absolute numbers are unaligned transfer and I label them that way. The class of bug — a string-prefix selector silently matching nothing — is why there is now exactly one function that decides what the text block is called."*
+**Say this:** *"The CORAL alignment was a silent no-op in the 2026-08-30 grid because the column selector still looked for the old PCA column names. Every cell was affected identically, so the comparisons held. The current grid was re-run with the fixed selector and the verdict is the same. The class of bug, a string-prefix selector silently matching nothing, is why there is now exactly one function that decides what the text block is called."*
 
 #### 5. Three of the four controls were run on older corpora.
 
@@ -576,11 +575,11 @@ Two things save it, and one does not:
 
 The question is item-level rather than feature-level: *if I rated the book, does that predict my rating for the film?* The evaluation adds fold-safe bridge features — the linked partner's rating, a franchise mean, a has-link flag, all counted only when the partner sits in the training fold — and measures the effect.
 
-Result, from `reports/entity_bridge_results.json`: over **664 linked rated items**, MAE improves from 0.5301 to 0.4940, a **ΔMAE of +0.0361**, 95% confidence interval [+0.0143, +0.0572], Wilcoxon *p* = 0.0014. The adaptation-only slice — 57 items — is directionally positive at +0.0175 but not significant, *p* = 0.317.
+Result, from `reports/entity_bridge_results.json` (2026-10-13 run): over **700 linked rated items**, MAE moves from 0.5343 to 0.5186, a ΔMAE of +0.0157, 95% confidence interval [-0.0029, +0.0350], Wilcoxon *p* = 0.12. Not significant. The adaptation-only slice, 57 items, did not move at all. The run before it (2026-08-28, 664 items) had read +0.0361 at *p* = 0.0014.
 
-Taken with the pooling result, the direction of the project is one sentence: **link items, do not pool features.**
+So I cannot say "link items, do not pool features" as a result. I can say it as the hypothesis the data has not yet rejected, and the one I would test next.
 
-**And the same honesty applies.** This result has also reversed twice, and the entity graph and the corpus changed in the same pipeline run — the no-bridge baseline itself moved from 0.5180 to 0.5301 — so the effect cannot be attributed to the improved graph alone. Scoring the corrected graph against the old corpus would settle it in one run and has not been done.
+**And the same honesty applies.** This result has now reversed three times, and the entity graph and the corpus changed in the same pipeline runs, so no reversal has a cause. Scoring the corrected graph against the old corpus would settle it in one run and has not been done.
 
 **HOST:** What improved in the graph?
 
@@ -666,15 +665,15 @@ The nearest genuine compute limit is the transfer grid: 120 cells × 50 folds ×
 
 **3. Where is your biggest technical debt?**
 
-Three, in order. **The entity-encoding leak** — `oof_entity_encode` runs its own inner five-fold that is unrelated to the frozen registry, so 48% of training rows carry an encoding computed from a test row's target, and every unified metric is optimistic by an unmeasured amount. **The doc-artifact drift** — the paper's conclusion contradicts the paper's own table because prose is not regenerated. **The movie scoring path** — `movies/predict_ratings.py` zero-fills 23 of its 107 features, so a single-title score from the batch path is worse than the benchmark table implies; the measured cost is stacking MAE 0.375 to 0.529 on that path. Training is unaffected, and it is documented rather than hidden.
+Three, in order. **The transfer reversal has no cause.** The grid has flipped between "taste transfers into games" and NULL across corpus revisions, and the corpus, the Wikipedia plot text and the CORAL alignment fix all changed between runs without being ablated one at a time. **The doc-artifact drift** — numbers live in prose that no script regenerates, so a table and a conclusion three pages apart can disagree. **The entity-encoding leak is closed but its SHAP shadow is not** — every fold scorer now refits the target encodings inside the fold (2026-10-14 for the unified evaluator, 2026-10-30 for every local benchmark and ablation), but the SHAP importances are still computed on the whole-library columns, so the encodings' weights there are upper bounds. (The movie scoring path that used to zero-fill 23 of its features was fixed on 2026-10-11; the matrix is 111 features today.)
 
 **4. What would you do differently?**
 
-Fix the encoding leak first, because it is the only thing that makes a published number wrong rather than incomplete — re-encode inside each registry fold and re-measure everything unified. Then separate the transfer reversal: re-run the grid with each of the four corpus changes reverted in turn, so the reversal has a cause and not just a description. Then re-run the placebo and text-normalisation controls on the current corpus. Then make every number in the prose a template slot fed from the same JSON the tables read.
+The encoding leak is fixed and measured; the thing I would do next is separate the transfer reversal: re-run the grid with each of the four corpus changes reverted in turn, so the reversal has a cause and not just a description. Then re-run the placebo and text-normalisation controls on the current corpus. Then make every number in the prose a template slot fed from the same JSON the tables read.
 
 **5. Convince me this is not just overfitting to 66 games.**
 
-Four independent arguments, and none of them is a *p*-value. The effect is consistent across four target fractions, not one. It is consistent across six different source combinations, not one. A label-permutation placebo — same features, source ratings shuffled — collapses the lift to essentially zero at exactly the fractions where transfer matters. And the zero-shot model, which never touches a single game rating, ranks games at Spearman +0.599 against the games-own model's +0.307, so the effect cannot be memorisation of game data that the model has not seen.
+I no longer claim the augmented lift, so there is nothing there to overfit: on the current grid adding film data to the 66 games does not help at any fraction. The result I do claim is the zero-shot ranking, and it cannot be overfitting to 66 games because the model never touches a single game rating: a film-and-book model ranks games at Spearman +0.553 against +0.401 for the games-only model on the same features, and every one of the seven source combinations ranks games with a positive Spearman (+0.26 to +0.55). The four controls (domain-blind features, prior baselines, text-length normalisation, a label-shuffled placebo) were run against the earlier positive grid and not against this one; I would say so before being asked.
 
 **6. Your p-values assume independence. Do you have it?**
 
@@ -714,18 +713,18 @@ That in a small-data project, the measurement layer *is* the project. Two bugs i
 | Embedding | 384 dims, `all-MiniLM-L6-v2`, chunk-pooled | `src/common/text_embedding.py` |
 | Genres in shared space | 17 (must appear in ≥2 media) | `genres_in_multiple_domains()` |
 | Folds | **50** = 10 splits × 5 repeats, seed 42 | `create_frozen_folds.py` |
-| Local model skill (primary) | movie 0.355 / TV 0.208 / game 0.376 / book 0.566; Spearman 0.751 / 0.565 / 0.719 / 0.859 | `baseline_sanity.json` |
-| Local model MAE | movie 0.483 / TV 0.694 / game 0.515 / book 0.286 | `latest_metrics.json` |
-| Unified slice MAE | movie 0.513 / TV 0.714 / game 0.659 / book 0.500 | same — **local wins all four** |
+| Local model skill (primary) | movie 0.437 / TV 0.225 / game 0.367 / book 0.487; Spearman 0.798 / 0.595 / 0.697 / 0.849 (2026-10-30, fold-safe) | `baseline_sanity.json` |
+| Local model MAE | movie 0.419 / TV 0.680 / game 0.523 / book 0.342 | `latest_metrics.json` |
+| Unified slice MAE | movie 0.497 / TV 0.720 / game 0.629 / book 0.450 | same — **local wins all four** |
 | Why skill first | a constant 3.5 already scores MAE 0.749 on films; skill is 0 for guessing the mean | `production_oof.csv` |
-| Best transfer cell, current run | `movie → game`, ΔMAE **+0.145** at 100%, +0.124 at 50%, all four fractions p < 0.001 | recomputed from `transfer_grid_results.csv` |
+| Transfer verdict, current run (2026-10-13) | **NULL**; best per target at 100%: movie `game` +0.003 (p=0.39), tv `movie+book` -0.018 (p=0.20), game `tv` +0.020 (p=0.33), book `game` +0.044 (p=0.009, 1 of 4 fractions) | `transfer_grid_summary.json`, recomputed from `transfer_grid_results.csv` |
 | Resume's +0.121 | `movie+tv+book → game` at 100%, **last commit's** summary; its p there is 0.0014 | `git show HEAD:reports/transfer_grid_summary.json` |
 | Resume's p=0.0003 | the **50%** fraction of that same cell, where the lift is +0.130 | `docs/ML_SYSTEM_OVERVIEW.md:806` |
-| Zero-shot headline | film-only model ranks games at Spearman **+0.599**; games-own model **+0.307** (195%) | `transfer_grid_summary.json` |
-| Placebo control | real +0.132/+0.101/+0.122/+0.134 vs shuffled −0.004/−0.025/−0.015/+0.053 | `transfer_placebo_control.json` (dated 2026-06-27) |
-| Entity bridges | 2,739 links; 664 linked rated items; ΔMAE +0.0361, CI [+0.0143, +0.0572], p = 0.0014 | `entity_bridge_results.json` |
-| Adaptation-only bridges | 57 items, +0.0175, p = 0.317 — null pilot | `entity_bridge_results_adaptation.json` |
-| Entity-encoding leak | **48%** of unified train rows use a test row's target | documented in `unified_feature_engineering.py` |
+| Zero-shot headline | `movie+book → game` Spearman **+0.553**; games-only XGB on the same features **+0.401** (138%); deployed games model +0.697 | `transfer_grid_summary.json`, `baseline_sanity.json` |
+| Placebo control | real +0.132/+0.101/+0.122/+0.134 vs shuffled −0.004/−0.025/−0.015/+0.053, against the 2026-08-30 grid; not re-run | `transfer_placebo_control.json` (dated 2026-06-27) |
+| Entity bridges | 700 linked rated items; ΔMAE +0.0157, CI [-0.0029, +0.0350], p = 0.12 (2026-10-13); the 2026-08-28 run read +0.0361, p = 0.0014 on 664 items | `entity_bridge_results.json` |
+| Adaptation-only bridges | 57 items, ΔMAE 0.0 (no item moved) | `entity_bridge_results_adaptation.json` |
+| Entity-encoding leak | **48%** of unified train rows used a test row's target; fixed by per-fold re-encoding; measured cost Movies +0.0026 MAE (p = 0.95), TV +0.0257 (p = 0.34) | `fold_safe_te_lift.json` |
 | Conformal intervals | vanilla split-conformal, **80%** target, coverage within a few points | `active_learning_ranker.py` |
 | Dashboard | **16** pages in `app/pages/` + home page | verified by listing |
 | CatBoost's contribution | ΔMAE +0.0076, d = 0.068 — "significant-but-trivial" | `latest_metrics.json` ablation |
@@ -741,14 +740,14 @@ That in a small-data project, the measurement layer *is* the project. Two bugs i
 | `src/config.py` | Every path and a couple of global constants |
 | `src/common/text_embedding.py` | Chunk-pooled sentence embeddings — the cross-domain bridge |
 | `src/common/taste_features.py` | Leakage-guarded target encodings; the `m = 2` sweep |
-| `src/unified_model/unified_feature_engineering.py` | Builds the 406-column shared matrix; carries the leak caveat |
+| `src/unified_model/unified_feature_engineering.py` | Builds the 406-column shared matrix; saves `entity_raw` so the evaluator can re-encode per fold |
 | `src/unified_model/create_frozen_folds.py` | The 10 × 5 stratified frozen fold registry |
 | `src/unified_model/comprehensive_evaluator.py` | Master evaluation, dedup, the two acceptance assertions |
 | `src/unified_model/unified_utils.py` | `DomainAligner` (CORAL), temporal weights, `text_feature_cols` |
 | `src/unified_model/advanced_unified_model_trainer.py` | Optuna tuning + XGB/CatBoost simplex ensemble; the fixed tuning-split bug |
 | `src/reporting/standalone_benchmarks.py` | Genuine local models on the same folds — the fix for the benchmark-inversion bug |
 | `src/reporting/metrics_writer.py` | The single source of truth: atomic write, git hash, round-trip check |
-| `src/experiments/transfer_study.py` | The 120-cell grid; protocols A/B/C; the CORAL no-op docstring |
+| `src/experiments/transfer_study.py` | The 120-cell grid; protocols A/B/C; the docstring recording the 2026-08-30 CORAL no-op |
 | `src/experiments/transfer_analysis.py` | The pre-registered decision rule and the paired Wilcoxon |
 | `src/experiments/transfer_placebo_control.py` | The label-shuffled placebo |
 | `src/linking/build_entity_links.py` | Wikidata resolution; the Batman-Province-Turkey bug |
@@ -757,16 +756,16 @@ That in a small-data project, the measurement layer *is* the project. Two bugs i
 ### The five sentences that carry the whole interview
 
 1. *"One user, 1,514 ratings, and only 66 games — so the entire design is about not fooling yourself at small N: frozen folds shared by every experiment, a decision rule fixed before any result, and controls rather than p-values."*
-2. *"The finding is that taste transfers **into games and only into games**: a model trained on nothing but my film ratings ranks my games at Spearman +0.599 against the games-own model's +0.307, and adding film data cuts games' mean absolute error by about 0.12 stars at every level of target data."*
+2. *"Under the rule I fixed in advance, taste does **not** transfer at the feature level: on the current grid no source domain lifts any target at two or more data fractions. What survives is ranking: a model trained on my film and book ratings, that never saw a game rating, orders my games at Spearman +0.553 against +0.401 for a games-only model on the same shared features. An earlier grid said the opposite, and I can tell you which three things changed between the runs and that none of them has been isolated."*
 3. *"The sentence embedding is the only feature that means the same thing in a novel and a video game, and chunk-pooling it instead of truncating to 40 words is what made the domains comparable — book text signal went from 0.045 to 0.098 across five seeds."*
 4. *"Two measurement bugs each reversed a scientific conclusion — a 5× N inflation and a benchmark table publishing the unified model's slice as the standalone models — so I rebuilt the metrics path as one script writing one JSON with assertions that crash the run rather than publish a wrong table."*
-5. *"Every unified metric is optimistic by an unmeasured amount because the entity target encodings use their own inner split rather than the frozen registry — 48% of train rows see a test row's target. I know the size of the exposure, I know the fix, and no claim I make rests on a margin smaller than it."*
+5. *"Every benchmark used to let test ratings into training features, because the entity target encodings used their own inner split rather than the frozen registry; 48% of train rows saw a test row's target. I moved the encoding inside each fold, measured the old leak on the same folds and items, and it was worth 0.003 stars for movies and 0.026 for TV, neither distinguishable from zero on a paired test."*
 
 ### Three things to volunteer before you are caught
 
 - **The "+0.121 (p=0.0003)" in the bullet splices two cells.** +0.121 is the 100%-fraction lift for `movie+tv+book → game` from the last commit's summary; its *p* there is 0.0014. The 0.0003 is that cell's 50%-fraction *p*, where the lift is +0.130. And "skill" is the wrong word — the quantity is a **reduction in mean absolute error, in stars**. Say the current, stronger, single-cell version instead: *movie → game, +0.124 stars at 50% target data, p < 0.0001, significant at all four fractions over 50 folds.*
-- **The transfer result has flipped sign three times across corpus revisions, and the repo's own paper contradicts itself about it right now** — a table showing 4-of-4 significance and a conclusion three pages later calling the same result withdrawn. The cause is mechanical: `run_pipeline.py` regenerates the tables and prints a warning that it does *not* regenerate the prose. Four corpus changes fall between runs and none has been ablated, so the reversal has a description and not a cause.
-- **The CORAL alignment in the published grid was a silent no-op**, because the column selector still looked for `pca_*` names after the shared space moved to `emb_*`. Every cell was affected identically so the comparisons hold, but the numbers are *unaligned* transfer and the code says so in its own docstring.
+- **The transfer result has flipped sign three times across corpus revisions, and the current verdict is NULL.** The 2026-08-30 grid said taste transfers into games; the 2026-10-13 grid, run after the corpus refresh and the CORAL alignment fix, clears the pre-registered bar nowhere. The repo's docs were corrected to the NULL verdict on 2026-10-30. Three changes fall between the two runs and none has been ablated, so the reversal has a description and not a cause.
+- **The CORAL alignment in the 2026-08-30 grid was a silent no-op**, because the column selector still looked for `pca_*` names after the shared space moved to `emb_*`. Every cell was affected identically so the comparisons held. The selector was fixed on 2026-10-11 and the grid in the repository was re-run on 2026-10-13 with it, so the current numbers are aligned transfer.
 
 Two smaller ones to have ready if pressed: **"231 features" is stale** — the matrix is 406 today, and the reason is the PCA-to-full-embedding change that made the finding work. **"Explains every prediction in plain language"** is really a SHAP attribution chart plus a written similar-titles caption, and the Music Oracle has no explanation at all because music has no ratings.
 

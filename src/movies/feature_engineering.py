@@ -94,7 +94,26 @@ TE_PRIOR = 2
 CREW_ENCODE = [
     ("director", 2), ("actors", 3), ("writer", 3), ("composer", 1),
     ("cinematographer", 1), ("editor", 2), ("producer", 3), ("production", 2),
+    # my mean rating over the film's TMDB collection (+0.003 skill on top of the
+    # Letterboxd block in src/experiments/model_ideas_lift.py; themes measured 0)
+    ("collection_name", None),
 ]
+
+
+def _num(df, col):
+    return pd.to_numeric(df[col], errors='coerce') if col in df else pd.Series(np.nan, index=df.index)
+
+
+def movie_crowd_extras(df):
+    """Letterboxd crowd numerics, NaN where unknown (+0.066 skill in
+    src/experiments/model_ideas_lift.py). process_features median-imputes these and
+    stores the medians, so a film whose Letterboxd page could not be fetched is served
+    as an average film, not as a 0-rated one."""
+    out = pd.DataFrame(index=df.index)
+    out['lb_avg_rating'] = _num(df, 'lb_avg_rating')
+    out['lb_count_log'] = np.log1p(_num(df, 'lb_rating_count'))
+    out['lb_gap'] = out['lb_avg_rating'] - _num(df, 'imdb_rating') / 2  # crowd gap, both on /5
+    return out
 
 
 def tf_neighbors_cache():
@@ -168,6 +187,10 @@ def process_features():
         'vote_average', 'imdb_votes', 'box_office_log', 'popularity',
         'total_wins', 'total_nominations', 'critic_avg_5'
     ]
+
+    # Letterboxd crowd block from the RAW imdb_rating: the loop below median-fills it,
+    # and serving sees the raw value (NaN -> stored median gap), so compute it first.
+    X_crowd = movie_crowd_extras(df).reset_index(drop=True)
 
     for col in num_cols:
         if col not in df.columns:
@@ -301,13 +324,18 @@ def process_features():
     # 5.5 Numerics that were fetched into enriched_data.csv and never read.
     X_extra = tf.movie_numeric_extras(df).reset_index(drop=True)
 
+    # 5.6 Letterboxd crowd. Median-imputed (SVR cannot take NaN) with the medians
+    # saved for serving, where a failed fetch leaves them NaN.
+    crowd_medians = X_crowd.median().to_dict()
+    X_crowd = X_crowd.fillna(crowd_medians)
+
     # 6. MPAA Rating
     df['mpaa_cat'] = df['rated'].apply(categorize_rating)
     X_mpaa = pd.get_dummies(df['mpaa_cat'], prefix='rated')
 
     # 7. Combine Final Features
     print("   Combining all features...")
-    X_final = pd.concat([X_num, X_lang, X_genre, X_te, X_nb, X_extra, X_mpaa, X_text],
+    X_final = pd.concat([X_num, X_lang, X_genre, X_te, X_nb, X_extra, X_crowd, X_mpaa, X_text],
                         axis=1)
     X_final.columns = [sanitize_col(col) for col in X_final.columns]
     X_final = X_final.loc[:, ~X_final.columns.duplicated()]
@@ -359,7 +387,7 @@ def process_features():
         'mlb_genre': mlb,
         'sentence_transformer': 'all-MiniLM-L6-v2',
         'pca': pca,
-        'median_values': df[num_cols].median().to_dict(),
+        'median_values': {**df[num_cols].median().to_dict(), **crowd_medians},
         'training_columns': [c for c in X_final.columns if 'target' not in c],
         'target_encodings': {
             'director': {'map': dir_map, 'mean': dir_mean},
@@ -533,6 +561,15 @@ def transform_single_movie(movie_data, state):
     for c in extras.columns:
         if c in final_df.columns:
             final_df[c] = float(extras[c].iloc[0])
+
+    crowd = movie_crowd_extras(pd.DataFrame([{
+        'lb_avg_rating': movie_data.get('lb_avg_rating'),
+        'lb_rating_count': movie_data.get('lb_rating_count'),
+        'imdb_rating': movie_data.get('imdb_rating')}]))
+    for c in crowd.columns:
+        if c in final_df.columns:
+            v = crowd[c].iloc[0]
+            final_df[c] = float(v) if pd.notna(v) else state['median_values'].get(c, 0.0)
 
     # Richer text — MUST match the training recipe in process_features() above,
     # which is now guaranteed by sharing _movie_header/_movie_body rather than by

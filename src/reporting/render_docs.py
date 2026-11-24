@@ -55,8 +55,8 @@ def format_benchmarks_table(data):
         "is 0 for any constant predictor and 1 for a perfect one, so it is the number the clustering "
         "cannot inflate. **Spearman ρ** asks whether the model orders items correctly. "
         "The four domain rows are the **production local models** on the frozen registry "
-        "folds (one row per item, N = unique items): **Movies and TV are the deployed tuned "
-        "ensembles** (Optuna edge-penalty XGB + CatBoost + SVR + ordinal-EV, fused) and "
+        "folds (one row per item, N = unique items): **Movies and TV are the deployed mean "
+        "ensembles** (equal-weight average of XGBoost, CatBoost and SVR) and "
         "**Games and Books are the deployed SVR**. "
         f"The **Unified (rated)** row (N={rated_n:,}) is the cross-domain Mean Ensemble over all four "
         "rated domains. Music is not scored here: it has no star ratings and is handled as an "
@@ -160,8 +160,8 @@ def format_distillation_table(data):
 
 
 SHAP_MODEL_LABEL = {
-    "movie": "Movies (stacking ensemble)",
-    "tv": "TV Shows (simplex-stack)",
+    "movie": "Movies (XGB surrogate of the mean ensemble)",
+    "tv": "TV Shows (XGB surrogate of the mean ensemble)",
     "game": "Games (local SVR)",
     "book": "Books (local SVR)",
     "unified": "Unified (Mean Ensemble)",

@@ -7,7 +7,9 @@ are fixed before looking at any result):
 
   * A cell is a POSITIVE TRANSFER FINDING iff augmented lift > 0 AND paired
     Wilcoxon p < 0.05 versus Protocol A on identical test items, at >= 2 target
-    fractions.
+    fractions. The test pairs one averaged prediction per item (the 50 folds reuse
+    every item 5 times, so per-fold scores are not independent). Holm-adjusted p
+    values across every test in the family are reported next to the raw ones.
   * Project verdict is "taste transfers" iff >= 1 target has a positive finding;
     otherwise the verdict is the null: "in the shared feature space, no domain
     combination beats local models -- transfer must be item-level."
@@ -25,24 +27,56 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.stats import wilcoxon, spearmanr
+from scipy.stats import wilcoxon, spearmanr, rankdata
+from statsmodels.stats.multitest import multipletests
 
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
 from src.experiments.transfer_study import select_features, RATED_DOMAINS
 
 ALPHA = 0.05
+N_PERM = 10_000
+N_BOOT = 2_000
 
 
-def _paired_p(df_cell, df_A):
-    """Paired Wilcoxon of per-fold MAE: cell vs Protocol A on identical folds."""
-    m = df_cell.merge(df_A, on="fold", suffixes=("_c", "_A"))
+def _paired_lift(cell_items, A_items):
+    """(lift, p): mean per-item |error| of A minus the cell's, and the paired Wilcoxon
+    p on the same per-item differences, so the sign and the test agree."""
+    m = cell_items.merge(A_items, on="global_id", suffixes=("_c", "_A"))
     if len(m) < 3:
-        return 1.0
+        return float("nan"), 1.0
+    d = m.abs_err_A - m.abs_err_c
     try:
-        return float(wilcoxon(m["MAE_c"], m["MAE_A"]).pvalue)
-    except ValueError:
-        return 1.0
+        return float(d.mean()), float(wilcoxon(d).pvalue)
+    except ValueError:  # every difference is zero
+        return 0.0, 1.0
+
+
+def _holm(pvals):
+    return multipletests(pvals, method="holm")[1] if len(pvals) else []
+
+
+def _pooled_rank_test(y, pred, ref_pred, seed=42):
+    """One Spearman over all items, one-sided permutation p (shuffled ratings), a
+    bootstrap 95% CI over items, and a bootstrap CI of (rho - rho of ref_pred)."""
+    rng = np.random.default_rng(seed)
+    ry, rp = rankdata(y), rankdata(pred)
+
+    def rho(a, b):
+        a = a - a.mean(axis=-1, keepdims=True); b = b - b.mean(axis=-1, keepdims=True)
+        den = np.sqrt((a * a).sum(-1) * (b * b).sum(-1))
+        return np.where(den > 0, (a * b).sum(-1) / np.where(den > 0, den, 1), 0.0)
+
+    obs = float(rho(ry, rp))
+    perm = rho(np.array([rng.permutation(ry) for _ in range(N_PERM)]), rp)
+    p = float((1 + (perm >= obs).sum()) / (N_PERM + 1))
+    idx = rng.integers(0, len(y), size=(N_BOOT, len(y)))
+    by = np.array([rankdata(y[i]) for i in idx])
+    b_rho = rho(by, np.array([rankdata(pred[i]) for i in idx]))
+    b_ref = rho(by, np.array([rankdata(ref_pred[i]) for i in idx]))
+    ci = lambda v: [round(float(q), 4) for q in np.percentile(v, [2.5, 97.5])]
+    return {"rho_pooled": round(obs, 4), "perm_p": round(p, 5),
+            "rho_pooled_ci95": ci(b_rho), "delta_vs_A_ci95": ci(b_rho - b_ref)}
 
 
 def aligned_space_distances():
@@ -62,8 +96,10 @@ def aligned_space_distances():
     return dist
 
 
-def analyze(results_path="reports/transfer_grid_results.csv"):
+def analyze(results_path="reports/transfer_grid_results.csv",
+            items_path="reports/transfer_grid_items.csv"):
     res = pd.read_csv(results_path)
+    items = pd.read_csv(items_path)
     summary = {"affinity": {}, "best_subset": {}, "learning_curves": {},
                "positive_findings": [], "similarity_corr": {}, "zero_shot": {}}
 
@@ -75,20 +111,25 @@ def analyze(results_path="reports/transfer_grid_results.csv"):
     for _, r in aff.iterrows():
         summary["affinity"].setdefault(r["target"], {})[r["source"]] = round(float(r["skill"]), 4)
 
+    aug_tests = []  # every augmented lift test run, for the Holm family
+
     # ---- Per-target analysis ----
     for target in RATED_DOMAINS:
-        A = res[(res.target == target) & (res.protocol == "A")][["fold", "MAE"]]
-        a_mae = A["MAE"].mean()
         C = res[(res.target == target) & (res.protocol == "C")]
+        it = items[items.target == target]
+        A_items = it[it.protocol == "A"][["global_id", "y", "pred", "abs_err"]]
 
         best = None
         for (source, music), g in C.groupby(["source", "music"]):
             frac_hits = 0
             lifts = {}
-            for frac, gf in g.groupby("fraction"):
-                lift = a_mae - gf["MAE"].mean()  # positive => lower MAE than A
-                p = _paired_p(gf[["fold", "MAE"]], A)
+            for frac in sorted(g["fraction"].unique()):
+                proto, f = ("B", 0.0) if frac == 0.0 else ("C", frac)  # C@0% is B's training set
+                cell = it[(it.protocol == proto) & (it.source == source)
+                          & (it.music == music) & (it.fraction == f)]
+                lift, p = _paired_lift(cell[["global_id", "abs_err"]], A_items)  # lift > 0: lower error than A
                 lifts[float(frac)] = {"lift": round(float(lift), 4), "p": round(p, 4)}
+                aug_tests.append(lifts[float(frac)])
                 if lift > 0 and p < ALPHA:
                     frac_hits += 1
             lift100 = lifts.get(1.0, {}).get("lift", -1)
@@ -96,7 +137,7 @@ def analyze(results_path="reports/transfer_grid_results.csv"):
             if positive:
                 summary["positive_findings"].append(
                     {"target": target, "source": source, "music": bool(music),
-                     "frac_significant": frac_hits, "lift@100": lift100})
+                     "frac_significant": frac_hits, "lift@100": lift100, "_lifts": lifts})
             cand = {"source": source, "music": bool(music), "lift@100": lift100,
                     "frac_significant": frac_hits, "lifts": lifts, "positive": positive}
             if best is None or lift100 > best["lift@100"]:
@@ -138,6 +179,11 @@ def analyze(results_path="reports/transfer_grid_results.csv"):
                 "pct_of_full_model": round(rho / rho_full, 4) if rho_full else None,
                 "n_folds": int(len(g)),
             })
+            bi = it[(it.protocol == "B") & (it.source == source) & (~it.music)].merge(
+                A_items, on="global_id", suffixes=("", "_A"))
+            cells[-1].update(_pooled_rank_test(bi.y.to_numpy(), bi.pred.to_numpy(),
+                                               bi.pred_A.to_numpy()))
+            cells[-1]["n_items"] = int(len(bi))
         cells.sort(key=lambda c: -c["rho"])
         summary["zero_shot"][target] = {
             "rho_full_model": round(rho_full, 4),
@@ -154,6 +200,20 @@ def analyze(results_path="reports/transfer_grid_results.csv"):
                 "best_source": best["source"], "music": best["music"],
                 "skill_by_fraction": {str(k): round(float(v), 4) for k, v in curve.items()},
                 "target_alone_skill": round(float(a_skill), 4)}
+
+    # ---- Multiple comparisons: Holm over each family of tests ----
+    zs_cells = [c for blk in summary["zero_shot"].values() for c in blk["by_source"]]
+    for l, q in zip(aug_tests, _holm([l["p"] for l in aug_tests])):
+        l["p_holm"] = round(float(q), 4)
+    for f in summary["positive_findings"]:
+        f["frac_significant_holm"] = sum(
+            l["lift"] > 0 and l["p_holm"] < ALPHA for l in f.pop("_lifts").values())
+    for c, q in zip(zs_cells, _holm([c["perm_p"] for c in zs_cells])):
+        c["perm_p_holm"] = round(float(q), 5)
+    summary["multiple_comparisons"] = {
+        "method": "holm", "n_augmented_tests": len(aug_tests),
+        "n_zero_shot_tests": len(zs_cells),
+        "note": "the pre-registered verdict uses raw p; Holm p is reported beside it"}
 
     # ---- Similarity <-> transfer correlation ----
     dist = aligned_space_distances()

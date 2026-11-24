@@ -142,27 +142,29 @@ Every domain applies the same five steps:
 ### 3.3 Per-domain matrices (live column counts)
 | Domain | Features | PCA vibe components | Entity target encodings |
 | :--- | ---: | ---: | :--- |
-| Movies | 107 | 40 | 8 crew columns + `dir_genre_encoded` + 2 TMDB-neighbour columns |
+| Movies | 111 | 40 | 8 crew columns + `collection_name_encoded` + `dir_genre_encoded` + 2 TMDB-neighbour columns |
 | TV shows | 56 | 15 | `creator_encoded`, `actors_encoded`, `writer_encoded` |
 | Games | 51 | 15 | `developers_`, `publishers_`, `tags_`, `genres_encoded` |
 | Books | 29 | 15 | `authors_`, `categories_`, `publisher_`, `moods_`, `hc_tags_encoded` |
-| Unified | 239 | 10 | `creator_encoded`, `studio_encoded` |
+| Unified | 406 | 384 (`emb_*`, no PCA) | `creator_encoded`, `studio_encoded` |
 | Music | 173 | 32 | none (unsupervised) |
 
-> These are the live on-disk widths, counted from `data/processed/*/training_features.csv` on 2026-08-28
+> These are the live on-disk widths, counted from `data/processed/*/training_features.csv` on 2026-10-30
 > (total columns minus the `target_*` / `source_id` / `media_type` / `rating_date` bookkeeping columns).
+> Music was not recounted.
 >
 > Books and games got **narrower**, not wider. Both replaced a wide, sparse multi-hot block (one column per
 > author, one per developer) with a smoothed target encoding plus a support count. A 180-column author
 > multi-hot over 104 books is one column per two rows; the encoding carries the same information in two.
 >
-> Movies grew from 85 to 107. `enrich_extended.py` had already fetched composer, cinematographer, editor,
+> Movies grew from 85 to 111 (107 after the crew block; the `collection_name` encoding and the three
+> Letterboxd crowd columns `lb_avg_rating`, `lb_count_log`, `lb_gap` came later). `enrich_extended.py` had already fetched composer, cinematographer, editor,
 > producer and production company, and nothing read them; `writer` was never encoded at all, despite being
 > the strongest entity signal in the domain (leave-one-out ρ 0.563 against 0.460 for director).
 
 ### 3.4 Field-to-feature mapping by domain
 
-**Movies (107 features)**
+**Movies (111 features)**
 - Numeric: `year`, `runtime`, `imdb_rating`, `imdb_votes`, `metascore`, `rotten_tomatoes_rating`,
   `vote_average`, `popularity`, `box_office_log`, `total_wins`, `total_nominations`, `critic_avg_5`,
   plus `budget_log`, `revenue_log`, `vote_count_log`, `rel_month` and `age_at_rating`.
@@ -240,7 +242,8 @@ the metric was computed on the same corrupted frame:
 - **Shared creator/studio axis:** `creator_encoded` and `studio_encoded`, out-of-fold target encodings over
   the union of everyone credited (director **and** writer, so Bryan Lee O'Malley connects the Scott Pilgrim
   books, show and film even though he directed none of them). This block is new. It is the third-strongest
-  feature in the unified SHAP table (§6.8) and it is also the source of the leakage in §8.
+  feature in the unified SHAP table (§6.8) and it was the source of the leakage in §8, closed on 2026-10-14 by
+  re-encoding it inside each registry fold.
 - **Shared geography axis:** `ctry_*` one-hot over the top six origin countries, plus `ctry_Other`. Every
   training row has exactly one `ctry_*` column set.
 - **Domain alignment:** a `DomainAligner` (centroid, `movie` as reference) centres each domain's PCA block.
@@ -262,67 +265,69 @@ The transfer experiments use a **domain-blind** subset of the unified space:
   `popularity`. The space was a 10-component PCA (`pca_*`) until 2026-08-29; it is now the whole embedding.
 - **Drop** every `is_*` and `has_*_feats` column. Without this, a "transfer" model can split on domain identity
   and report a false transfer effect.
-- **Known gap:** `_fit_predict` applies CORAL domain alignment only to columns named `pca_*`. Those no longer
-  exist, so the alignment step selects an empty column set and silently does nothing. It is off identically for
-  every cell, so comparisons between cells hold, but the grid below measures **unaligned** transfer.
+- **Alignment selector, fixed 2026-10-11:** `_fit_predict` used to pick the columns to CORAL-align by the
+  `pca_*` prefix. After the shared space moved to `emb_*` that matched nothing, so the grid published on
+  2026-08-30 measured **unaligned** transfer (identically in every cell, so its comparisons held). The
+  selector is now `text_feature_cols`, which accepts both names, and the grid below (run 2026-10-13) is
+  aligned transfer.
 
 ### 3.5.1 Transfer-grid results — the whole grid
 <!-- TRANSFER_GRID_FULL:BEGIN -->
-## Target: Movies (107 held-out items per fold)
+## Target: Movies (119 held-out items per fold)
 
-A target-only XGB on the same shared features (not the deployed model) scores **0.677** (SE 0.008). Bold = above that point estimate (no significance test).
+A target-only XGB on the same shared features (not the deployed model) scores **0.669** (SE 0.007). Bold = above that point estimate (no significance test).
 
 | Source domains | 0% (zero-shot) | 25% | 50% | 100% |
 | :--- | ---: | ---: | ---: | ---: |
-| `tv+game+book` | +0.490 | +0.631 | +0.653 | **+0.683** |
-| `tv` | +0.430 | +0.624 | +0.650 | **+0.680** |
-| `tv+book` | +0.420 | +0.637 | +0.656 | +0.677 |
-| `tv+game` | +0.373 | +0.621 | +0.649 | +0.674 |
-| `game+book` | +0.320 | +0.626 | +0.650 | +0.676 |
-| `book` | +0.137 | +0.628 | +0.658 | **+0.685** |
-| `game` | +0.091 | +0.617 | +0.648 | **+0.677** |
+| `tv+game+book` | +0.496 | +0.633 | +0.643 | +0.661 |
+| `tv+book` | +0.492 | +0.626 | +0.652 | **+0.672** |
+| `tv` | +0.445 | +0.621 | +0.645 | +0.665 |
+| `game+book` | +0.323 | +0.622 | +0.651 | +0.664 |
+| `tv+game` | +0.311 | +0.616 | +0.647 | +0.666 |
+| `book` | +0.189 | +0.631 | +0.652 | +0.668 |
+| `game` | +0.088 | +0.622 | +0.642 | +0.669 |
 
 ## Target: TV (18 held-out items per fold)
 
-A target-only XGB on the same shared features (not the deployed model) scores **0.426** (SE 0.029). Bold = above that point estimate (no significance test).
+A target-only XGB on the same shared features (not the deployed model) scores **0.417** (SE 0.024). Bold = above that point estimate (no significance test).
 
 | Source domains | 0% (zero-shot) | 25% | 50% | 100% |
 | :--- | ---: | ---: | ---: | ---: |
-| `movie` | **+0.524** | **+0.433** | +0.424 | **+0.465** |
-| `movie+game+book` | **+0.471** | **+0.433** | **+0.464** | **+0.493** |
-| `movie+book` | **+0.453** | **+0.433** | **+0.470** | **+0.518** |
-| `movie+game` | **+0.435** | **+0.468** | **+0.437** | **+0.493** |
-| `game+book` | +0.331 | +0.322 | +0.367 | **+0.468** |
-| `book` | +0.150 | +0.331 | +0.379 | **+0.483** |
-| `game` | +0.149 | +0.246 | +0.316 | +0.419 |
+| `movie` | **+0.448** | +0.347 | +0.363 | +0.394 |
+| `movie+book` | **+0.430** | +0.353 | +0.397 | +0.410 |
+| `movie+game+book` | +0.380 | +0.334 | +0.374 | +0.369 |
+| `movie+game` | +0.338 | +0.343 | +0.370 | +0.399 |
+| `game+book` | +0.337 | +0.127 | +0.191 | +0.242 |
+| `book` | +0.122 | +0.165 | +0.212 | +0.249 |
+| `game` | +0.114 | +0.079 | +0.117 | +0.114 |
 
 ## Target: Games (7 held-out items per fold)
 
-A target-only XGB on the same shared features (not the deployed model) scores **0.307** (SE 0.059). Bold = above that point estimate (no significance test).
+A target-only XGB on the same shared features (not the deployed model) scores **0.401** (SE 0.042). Bold = above that point estimate (no significance test).
 
 | Source domains | 0% (zero-shot) | 25% | 50% | 100% |
 | :--- | ---: | ---: | ---: | ---: |
-| `movie` | **+0.599** | **+0.586** | **+0.612** | **+0.602** |
-| `movie+book` | **+0.584** | **+0.591** | **+0.601** | **+0.619** |
-| `movie+tv` | **+0.541** | **+0.543** | **+0.569** | **+0.538** |
-| `movie+tv+book` | **+0.508** | **+0.551** | **+0.535** | **+0.554** |
-| `tv+book` | **+0.468** | **+0.474** | **+0.481** | **+0.507** |
-| `tv` | **+0.404** | **+0.431** | **+0.487** | **+0.551** |
-| `book` | **+0.333** | **+0.426** | **+0.442** | **+0.490** |
+| `movie+book` | **+0.553** | **+0.493** | **+0.481** | **+0.452** |
+| `movie` | **+0.516** | +0.396 | **+0.421** | **+0.454** |
+| `movie+tv+book` | **+0.512** | **+0.481** | **+0.501** | **+0.498** |
+| `movie+tv` | **+0.473** | +0.378 | +0.395 | **+0.462** |
+| `tv` | **+0.412** | **+0.519** | **+0.528** | **+0.522** |
+| `tv+book` | **+0.408** | +0.173 | +0.253 | +0.250 |
+| `book` | +0.255 | +0.261 | +0.298 | +0.310 |
 
-## Target: Books (11 held-out items per fold)
+## Target: Books (12 held-out items per fold)
 
-A target-only XGB on the same shared features (not the deployed model) scores **0.635** (SE 0.029). Bold = above that point estimate (no significance test).
+A target-only XGB on the same shared features (not the deployed model) scores **0.593** (SE 0.031). Bold = above that point estimate (no significance test).
 
 | Source domains | 0% (zero-shot) | 25% | 50% | 100% |
 | :--- | ---: | ---: | ---: | ---: |
-| `movie+tv` | +0.600 | +0.626 | **+0.642** | **+0.676** |
-| `movie+tv+game` | +0.575 | +0.621 | **+0.658** | **+0.689** |
-| `movie` | +0.570 | +0.617 | **+0.649** | **+0.684** |
-| `movie+game` | +0.562 | **+0.636** | **+0.653** | **+0.683** |
-| `tv` | +0.514 | +0.550 | +0.629 | +0.628 |
-| `tv+game` | +0.510 | +0.576 | +0.612 | **+0.655** |
-| `game` | +0.223 | +0.481 | +0.578 | **+0.636** |
+| `movie+tv+game` | **+0.599** | +0.474 | +0.479 | +0.523 |
+| `movie` | +0.592 | +0.483 | +0.460 | +0.487 |
+| `movie+game` | +0.539 | +0.455 | +0.470 | +0.501 |
+| `movie+tv` | +0.532 | +0.477 | +0.471 | +0.482 |
+| `tv` | +0.452 | +0.483 | +0.530 | +0.585 |
+| `tv+game` | +0.387 | +0.502 | +0.555 | +0.583 |
+| `game` | +0.226 | +0.393 | +0.552 | **+0.652** |
 <!-- TRANSFER_GRID_FULL:END -->
 
 ### 3.6 Text representation — chunk-pooled sentence windows
@@ -455,19 +460,19 @@ re-derived one is the aligner, not skew. Only row-varying differences are real t
 ### 4.2 Deployed models
 | Domain | Deployed model | Reason |
 | :--- | :--- | :--- |
-| Movies | Stacking ensemble: Optuna-tuned edge-penalty XGBoost + CatBoost (MAE loss) + RBF-SVR + ordinal expected value, fused by `RidgeCV` over 5-fold internal CV. | N is large enough to fit a meta-learner. In the 2026-10-01 run the blends no longer beat XGBoost alone (skill 0.410–0.411 against 0.414, see §6.6); the stack is kept because the gap is inside noise. |
-| TV shows | Simplex-weighted stack: edge-penalty XGBoost + CatBoost + SVR. Weights are non-negative and sum to 1. | At N=175 a learned `RidgeCV` meta-learner overfits. A simplex average is more robust. |
+| Movies | Mean ensemble (`src/common/ensemble.py`): equal-weight average of XGBoost (150 trees, depth 5), CatBoost (200 iterations, depth 5, MAE loss) and RBF-SVR, refit on every rated film. | Replaced the Optuna-tuned edge-penalty stack (ordinal member, crowd anchor, 5-fold inner CV) on 2026-10-14: on the 50 frozen folds the stack scored skill 0.429 / Spearman 0.784 and the plain mean 0.458 / 0.794, at about 1/50th of the training cost. |
+| TV shows | The same mean ensemble, refit on every rated show. | Replaced the edge-penalty XGBoost + positive-Ridge stack on 2026-10-14 (skill 0.229 → 0.255 on the 50 frozen folds). The old trainer also fitted the saved models on only 80% of the 175 shows. |
 | Games | `StandardScaler` + RBF-SVR (C=3.0), plus split-conformal intervals. | N=66. SVR is stable at small N and needs few hyperparameters. |
 | Books | Same SVR pipeline (C=3.0) for the benchmark; the **Oracle predictor** is a text kNN (`KNeighborsRegressor`, k=8, cosine metric, distance weights) over the vibe PCA. | Book taste lives in the description text. The text kNN scores skill 0.43 against 0.24 for the crowd-mixing SVR. Blending the two hurts (≈0.39). The kNN artifact is **not** rebuilt by the pipeline — see §8. |
 | Unified | Simplex-weighted average of edge-penalty XGBoost and CatBoost, with per-fold CORAL alignment and temporal sample weights. | Simple, stable and leakage-safe across four heterogeneous domains. |
 | Music | KMeans personas (k chosen by silhouette) + cosine similarity index + a PU XGBoost classifier (library=1, mined pool=0, hard negatives weighted ×2). | Music has no label. Clustering and PU learning are the honest formulation. |
 
 ### 4.3 Custom components
-- **Asymmetric edge-penalty objective** (`src/movies/custom_objectives.py`):
+- **Asymmetric edge-penalty objective** (`src/movies/custom_objectives.py`; unified model only since 2026-10-14):
   `L(e, r) = ½·e²·exp(α_hi·max(0, r−4.0) + α_lo·max(0, 1.5−r))`.
   The loss penalizes errors on favourites and hard passes more heavily. Optuna tunes `α_hi` and `α_lo`.
-- **Ordinal expected-value regressor:** a 10-class XGBoost classifier returns class probabilities.
-  The wrapper returns `Σ p(bucket)·bucket_value`. It refits a clone inside each CV fold, so stacking stays safe.
+- **Ordinal classifier:** a 10-class XGBoost classifier returns rating-bucket probabilities. Since
+  2026-10-14 it is shown on the Oracle pages as a probability breakdown only; it is no longer part of the predicted rating.
 - **Simplex weighted averager:** SLSQP minimizes MAE (or MSE for the unified model) under the constraints
   `w ≥ 0` and `Σw = 1`.
 - **Temporal decay weights:** `w_i = max(exp(−λ·Δt_i), w_min)`. Optuna tunes λ. The tuned value is
@@ -479,11 +484,11 @@ re-derived one is the aligner, not skew. Only row-varying differences are real t
 ### 4.4 Rejected components (with the evidence)
 | Component | Test | Verdict |
 | :--- | :--- | :--- |
-| Distillation prior (unified prediction as a local feature) | Paired Wilcoxon on frozen folds, 2026-10-01. Games p=0.317 (MAE 0.5894→0.5818), books p=0.465 (0.3491→0.3527). | **DROP.** Both cells are null. The prior moves games MAE very slightly the *right* way and books MAE the *wrong* way; in the 2026-08-28 refresh both moved the right way. That is the point: the books cell has read p=0.71, 0.034, 0.446, 0.336, 0.248 and now 0.465 across six refreshes. That is an unstable, underpowered cell, not an effect. **The feature is also switched off in code** — see §8. |
+| Distillation prior (unified prediction as a local feature) | Paired Wilcoxon on frozen folds, 2026-10-30, deployed local SVRs, fold-safe encodings, one row per item. Games p=0.317 (MAE 0.5227→0.5455), books p=1.0 (0.3423→0.3423 after calibration and rounding). | **DROP.** Both cells are null. The prior now moves games MAE the *wrong* way and leaves books unchanged; in the 2026-10-01 refresh games moved the right way and books the wrong way, and in 2026-08-28 both moved the right way. That is the point: the books cell has read p=0.71, 0.034, 0.446, 0.336, 0.248, 0.465 and now 1.0 across seven refreshes. That is an unstable, underpowered cell, not an effect. **The feature is also switched off in code** — see §8. |
 | Ridge stack for the unified model | Legacy 5-fold protocol. MAE 0.561, R² 0.384 against the mean ensemble 0.544 / 0.438 (frozen folds, 2026-10-01). | **REMOVED.** |
 | Residual domain-correction heads | Legacy 5-fold protocol. MAE 0.609, R² 0.269. | **REMOVED.** |
-| Custom edge-penalty XGBoost loss | Head-to-head on 50 folds, all else fixed. Overall MAE +0.0039 (p=0.083), edge MAE +0.0002 (p=0.61). | **RETIRE.** A small net harm. The weight keys on the label's extremity, not the error, so it is ordinary importance weighting. |
-| Entity-bridge features (Wikidata links) | Paired Wilcoxon + bootstrap CI on 664 linked items. ΔMAE **+0.0361**, CI [+0.014, +0.057], **p=0.0014**. Adaptation slice: N=57, +0.0175, p=0.317. | **SIGNIFICANT** (2026-08-28, after the entity-link rebuild this row previously asked for). The QIDs were indeed wrong often enough to matter: movie↔book adaptations went 2 → 18 after the `resolve_qid` rewrite while `n_linked` held at ~664. Adaptation-only slice still underpowered. Graph and corpus changed in the same run and have not been separated. |
+| Custom edge-penalty XGBoost loss | Head-to-head on 50 folds, all else fixed, re-run 2026-10-30 on 1,182 movies with fold-safe encodings. Overall MAE 0.4268 → 0.4274 (+0.0006, p=0.997), edge MAE 0.6538 → 0.6440 (-0.0098, p=0.096). The 2026-06-26 run (1,000 movies) read +0.0039 (p=0.083) overall. | **RETIRE.** No measurable gain. The weight keys on the label's extremity, not the error, so it is ordinary importance weighting. |
+| Entity-bridge features (Wikidata links) | Paired Wilcoxon + bootstrap CI on 700 linked items (2026-10-13 run, `reports/entity_bridge_results.json`). ΔMAE +0.0157, CI [-0.003, +0.035], p = 0.12. Adaptation slice: N=57, ΔMAE 0.0. | **NOT SIGNIFICANT** on the current corpus. The 2026-08-28 run read +0.0361 (p = 0.0014, N=664) after the `resolve_qid` rewrite took movie↔book adaptations from 2 to 18; the result has now reversed three times. Graph and corpus changed in the same runs and have not been separated. Pilot, not a finding. |
 | Rank calibration for TV | Spearman ρ=0.565 (2026-10-01) is still too weak; calibration costs ~10 accuracy points. | **SKIPPED for TV.** Applied to movies, games and books only. |
 
 ---
@@ -519,10 +524,9 @@ The project separates **model fitting** from **model measurement**. Do not confu
 ### 5.4 Hyperparameter tuning
 | Model | Method | Search space |
 | :--- | :--- | :--- |
-| Movies XGBoost | Optuna, 30 trials, inner 5×2 `RepeatedKFold`, objective = mean MAE | `alpha_hi`, `alpha_lo` (0.01–0.5, log), `max_depth` 3–8, `min_child_weight` 1–10, `reg_lambda` 1e-3–10 (log) |
-| TV XGBoost | Optuna, 20 trials, inner 5-fold, objective = negative MAE | `alpha_hi`, `alpha_lo` (0.01–0.4) |
+| Movies / TV mean ensemble | Fixed (no tuning since 2026-10-14) | XGBoost 150 trees, lr 0.03, depth 5; CatBoost 200 iterations, lr 0.05, depth 5, MAE loss; SVR C=1.0 |
 | Unified | Optuna, 10 trials, objective = MAE on a held-out split | `lambda_decay` 1e-5–0.01 (log), `alpha_hi`, `alpha_lo` (0.05–0.3) |
-| CatBoost | Fixed | 1,000 iterations, lr 0.05, depth 6, `l2_leaf_reg` 3, MAE loss, early stopping 50 |
+| CatBoost (unified) | Fixed | 1,000 iterations, lr 0.05, depth 6, MAE loss |
 | SVR | Fixed | RBF kernel, ε=0.1, inside a `StandardScaler` pipeline. C=1.0 as a stack member in movies and TV; C=3.0 as the standalone learner in games and books (nested-CV tuned) |
 | Music KMeans | Silhouette sweep | k selected by the best silhouette score |
 
@@ -593,26 +597,30 @@ shifts with the flags, so pass the same flags.
 - Reported metrics: R², MAE, ±0.5★ accuracy, skill score, Spearman ρ, and the classification scores.
 
 ### 6.2 Headline benchmark (production models, frozen folds)
-`reports/latest_metrics.json` and `reports/baseline_sanity.json`, 2026-10-01. Skill = 1 − MAE / MAE of
-predict-the-mean; it is the primary metric (see the header of this document).
+`reports/latest_metrics.json` and `reports/baseline_sanity.json`, 2026-10-30 (lean mean ensemble, duplicate-game fix, and every local
+target encoding refit inside the fold, §8). Skill = 1 − MAE / MAE of predict-the-mean; it is the primary metric (see the header of this document).
 
 | Domain | N | Model | Skill | Spearman ρ | MAE | R² | ±0.5★ accuracy |
 | :--- | ---: | :--- | ---: | ---: | ---: | ---: | ---: |
-| Movies | 1,163 | Prod Mean-Ensemble (edge+Cat+SVR+Ord, residual) | 0.355 | 0.751 | 0.483 | 0.530 | 77.1% |
-| **Unified (rated)** | **1,514** | **Mean Ensemble** | **0.287** | **0.674** | **0.542** | **0.445** | **73.1%** |
-| TV shows | 175 | Prod Simplex-Stack (edge+Cat+SVR) | 0.208 | 0.565 | 0.694 | 0.271 | 60.6% |
-| Games | 66 | Local SVR | 0.376 | 0.719 | 0.515 | 0.497 | 74.2% |
-| Books | 110 | Local SVR | 0.566 | 0.859 | 0.286 | 0.715 | 88.2% |
+| Movies | 1,182 | Mean-Ensemble (XGB+Cat+SVR) | 0.437 | 0.798 | 0.419 | 0.643 | 84.3% |
+| **Unified (rated)** | **1,534** | **Mean Ensemble** | **0.307** | **0.673** | **0.524** | **0.459** | **74.0%** |
+| TV shows | 175 | Mean-Ensemble (XGB+Cat+SVR) | 0.225 | 0.595 | 0.680 | 0.278 | 63.4% |
+| Games | 66 | Local SVR | 0.367 | 0.697 | 0.523 | 0.469 | 72.7% |
+| Books | 111 | Local SVR | 0.487 | 0.849 | 0.342 | 0.643 | 85.6% |
+
+The 2026-10-14 version of this table (TV 0.654, games 0.530, books 0.302) was scored on encodings fit over the
+whole library; the books row moved most (skill 0.547 → 0.487) because five m=2 encodings on 111 rows carried the
+most label information per row.
 
 **Unified per-domain slices** — the same unified ensemble, cut by domain. These are *not* the rows above.
 Skill uses the same per-domain mean baseline as the local rows, so the two tables compare directly:
 
 | Domain | N | Skill | MAE | R² | ±0.5★ acc |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| Movie | 1,163 | 0.315 | 0.513 | 0.498 | 75.6% |
-| TV | 175 | 0.186 | 0.714 | 0.161 | 59.4% |
-| Game | 66 | 0.202 | 0.659 | 0.359 | 62.1% |
-| Book | 110 | 0.241 | 0.500 | 0.388 | 75.5% |
+| Movie | 1,182 | 0.332 | 0.497 | 0.513 | 76.2% |
+| TV | 175 | 0.179 | 0.720 | 0.141 | 60.0% |
+| Game | 66 | 0.239 | 0.629 | 0.399 | 63.6% |
+| Book | 111 | 0.324 | 0.450 | 0.452 | 78.4% |
 
 **How to read this table.**
 - **Skill** is the primary yardstick. It is 0 for predict-the-mean, so the clustered rating curve cannot
@@ -824,40 +832,50 @@ Two changes are worth naming. `creator_encoded` entered the unified table at ran
 (2026-08-28) and is rank 2 in the 2026-10-01 run. And `playtime` entered the games table having previously
 been fetched and never read.
 
-**Caveat that applies to the unified row specifically.** `creator_encoded` is the column with the fold-boundary
-leak described in §8. Its SHAP weight is therefore an upper bound on what it would be worth under a clean
+**Caveat on the encoding rows.** `feature_diagnostics` computes SHAP on the stored whole-library encoding
+columns, not on the per-fold re-encoded ones the benchmarks use (§8). The SHAP weight of `creator_encoded`
+and of every other `*_encoded` column is therefore an upper bound on what it is worth under the benchmark
 protocol.
 
 ### 6.9 Cross-domain transfer result
-`reports/transfer_grid_summary.json`. **Vintage 2026-08-30.** This predates the 2026-10-01 corpus (101 more
-films, Wikipedia plot text). Re-run it with `--full` before quoting it as current. The pre-registered rule below was fixed before any result was
+`reports/transfer_grid_summary.json`. **Vintage 2026-10-13** (full 50-fold grid, domain-blind, CORAL alignment
+active after the 2026-10-11 column-selector fix). The pre-registered rule below was fixed before any result was
 seen and must not be re-tuned when it is re-run.
 
 - **Design.** Pre-registered decision rule, fixed before any result was seen: a finding is positive only if the
   augmented lift is > 0 with paired p < 0.05 at **at least 2** of the 4 target fractions.
-- **Result (2026-08-30 grid, the latest).** **TASTE TRANSFERS**, into games only. Six source subsets clear the
-  pre-registered bar for the games target; no subset clears it for movies, TV or books (TV `book` reaches
-  significance at 1 of 4 fractions only).
+- **Result (2026-10-13 grid, the latest).** **NULL.** No source subset clears the pre-registered bar for any
+  target. Best subset per target, lift at 100% target data (`best_subset` in the summary):
 
-  | Source → Games | lift @100% | significant fractions |
-  | :--- | ---: | :--- |
-  | `movie` | **+0.145** | **4/4** (+0.102 p=0.0002 · +0.101 p=0.0005 · +0.124 p<0.0001 · +0.145 p<0.0001) |
-  | `movie+book` | +0.136 | 4/4 |
-  | `movie+tv+book` | +0.109 | 4/4 |
-  | `movie+tv` | +0.106 | 4/4 |
-  | `tv` | +0.095 | 2/4 |
-  | `tv+book` | +0.088 | 2/4 |
+  | Target | Best source | lift @100% | p | Fractions clearing the bar |
+  | :--- | :--- | ---: | ---: | :--- |
+  | movie | `game` | +0.003 | 0.394 | 0/4 |
+  | tv | `movie+book` | -0.018 | 0.200 | 0/4 |
+  | game | `tv` | +0.020 | 0.328 | 0/4 |
+  | book | `game` | +0.044 | 0.009 | 1/4 |
+
+  At 0% target data every best cell is negative (movie -0.313, tv -0.007, game -0.068, book -0.267): pooling
+  hurts a target with no data of its own.
+- **Zero-shot ranking is the positive result** (`zero_shot_verdict`). A model that never saw the target domain
+  ranks it at a substantial fraction of a target-only XGB on the same shared features: `tv+game+book -> movie`
+  rho +0.496 (74% of target-only 0.669), `movie -> tv` +0.448 (108% of 0.417), `movie+book -> game` +0.553
+  (138% of 0.401), `movie+tv+game -> book` +0.599 (101% of 0.593). Against the deployed local models (Spearman
+  0.798 / 0.595 / 0.697 / 0.849, `baseline_sanity.json`, 2026-10-30) it wins nowhere.
+- **Result before that (2026-08-30 grid).** **TASTE TRANSFERS**, into games only: six source subsets cleared the
+  bar for the games target (`movie` +0.145 at 100%, 4/4 fractions; `movie+book` +0.136; `movie+tv+book`
+  +0.109; `movie+tv` +0.106; `tv` +0.095 and `tv+book` +0.088 at 2/4). That grid ran with the CORAL alignment
+  silently off and on the pre-2026-10-01 corpus (101 fewer films, no Wikipedia plot text). None of its
+  positive cells reproduces on the 2026-10-13 grid; the corpus and alignment changes have not been separated.
 
 - **Previous result (2026-08-28 corpus).** **NULL** - no source subset clears the pre-registered bar for any target. Best cells: movie `tv+game+book` +0.0040 (p=0.117), tv `book` +0.0068 (p=0.309), game `book` +0.0395 (p=0.250), book `tv+game` +0.0197 (p=0.183). Zero-shot lifts are significantly NEGATIVE (movie -0.108, book -0.103, both p<0.001): pooling hurts a target with no data of its own. This REVERSES the previous run, which reported taste transferring into games via five subsets. The corpus changed in three ways that could each bear on it - six unrated games with `target_reg = 0.0` left the registry (Games was the target of every old positive cell), the split language column was merged, and the movie header was capped - and these have **not** been separated experimentally.
 
-  The positive table from the run before that (2026-07-25) is superseded by the 2026-08-30 table above.
+  The positive table from the run before that (2026-07-25) is superseded by the grids above.
 
-- **Negative targets.** Movies, TV and books show no significant positive transfer (0 of 4 fractions each).
-- **Zero-shot affinity is asymmetric** (2026-08-30 grid). Every source is positive *into* games (+0.239 movie,
-  +0.103 TV, +0.177 book). Games as a *source* is mildly negative into movies (−0.069) and books (−0.110) and
-  about zero into TV (+0.014). Games is a good target and a poor source. (The 2026-07-25 grid had games as a
-  strongly negative source: −0.297 movies, −0.458 TV, −0.362 books.)
-- **Four stress controls passed.** (1) Domain-identity columns dropped. (2) The transfer model beats every
+- **Zero-shot affinity** (2026-10-13 grid, `affinity`): into games, movie +0.220, book +0.122, TV +0.112;
+  games as a source is negative into movies (-0.086) and books (-0.155) and about zero into TV (-0.014).
+  Games remains a better target than source, but no augmented cell clears the bar.
+- **Four stress controls passed on the 2026-08-30 grid** (not re-run on the 2026-10-13 grid, whose positive
+  cells they defended no longer exist). (1) Domain-identity columns dropped. (2) The transfer model beats every
   featureless constant baseline (MAE 0.99 vs 1.05–1.17) and rank-tracks true ratings at Spearman +0.47, so it
   carries content, not a better prior. (3) Text-length normalization was necessary; on raw-length embeddings
   the effect measured only +0.05 and was **not** significant. (4) A label-permutation placebo is decisive:
@@ -873,13 +891,12 @@ seen and must not be re-tuned when it is re-run.
 
 ### 6.10 Known open items
 - **The Books distillation dissent is resolved, in the direction of DROP.** The artifact and the project
-  verdict now agree: p=0.465 (2026-10-01), verdict DROP (§4.4). The cell remains underpowered; do not read the agreement
+  verdict now agree: p=1.0 (2026-10-30), verdict DROP (§4.4). The cell remains underpowered; do not read the agreement
   as evidence.
-- **The Games baseline still differs between harnesses.** The benchmark harness reports MAE 0.515 for the
-  local SVR; the distillation harness reports 0.589 for the same nominal model without the prior (2026-10-01). The two
-  differ in preprocessing and in the calibration step, not in the fold registry. This changes the measured
-  size of the calibration win, not the decision.
-- **The edge-loss ablation predates the current corpus** (2026-06-26, 1,000 movies). Re-run it.
+- **The Games baseline no longer differs between harnesses.** Since 2026-10-30 the distillation harness runs the
+  deployed local SVR through the same fold-safe `reencode_fold` path as the benchmark, and both report MAE 0.5227
+  for the no-prior games model (the 2026-10-01 harnesses had read 0.515 and 0.589).
+- **The edge-loss ablation was re-run on 2026-10-30 with fold-safe encodings** (1,182 movies); see §4.4.
 - **The transfer grid, the entity bridges and the text-vs-crowd study all predate this corpus.** See §6.11.
 - Games and books remain pilots at N=66–110. Report skill and conformal intervals, not R².
 
@@ -1026,15 +1043,14 @@ The equivalent defence does **not** yet exist in `movies/predict_ratings.py`. Se
 ## 8. Limitations and open defects
 
 ### 8.1 Defects that make a reported number wrong
-Items 1–3 are known and **unfixed**, and each one changes how a number in this document must be read.
-Items 4–6 were fixed in the 2026-08-28 run; they stay here with what the fix measured, because in two of the
-three cases the measurement is the interesting part.
+Item 1 was fixed on 2026-10-14 (unified) and 2026-10-30 (local models) and its cost is measured below; item 2
+was fixed on 2026-10-11; item 3 is still open. Items 4–6 were fixed in the 2026-08-28 run; they stay here with
+what the fix measured, because in two of the three cases the measurement is the interesting part.
 
-**1. Entity encodings leak across the fold boundary. Every reported unified MAE and R² is optimistic by an
-unmeasured amount.**
+**1. FIXED 2026-10-14 / 2026-10-30 — entity encodings leaked across the fold boundary.**
 `src/common/taste_features.py::oof_entity_encode` builds `creator_encoded` (and every other `*_encoded`
 column) with its **own internal 5-fold `KFold`, seed 42**, which has no relationship whatsoever to the frozen
-fold registry the models are then evaluated on. Two consequences compound:
+fold registry the models are then evaluated on. Two consequences compounded:
 - **48% of train rows** have a `creator_encoded` value computed from the target of a row that the evaluation
   fold holds out as test. The inner OOF prevents a row from seeing *its own* rating. It does nothing about
   the rows that are its evaluation-fold neighbours.
@@ -1045,11 +1061,41 @@ This is not confined to the unified model. Movies (8 crew encodings + `dir_genre
 columns), TV (creator, actors, writer), games (4) and books (5) are all built the same way, and the neighbour
 features (`nb_similar_*`, `nb_recommendations_*`) share the defect through `oof_neighbor_encode`.
 
-The size of the optimism has **not been measured**, and it should not be guessed at. The fix is to move the
-encoding inside the evaluation fold, which means the feature build can no longer be a one-shot CSV write.
-Until then: treat every MAE and R² in §6 as an upper bound on true out-of-sample performance, and treat the
-`creator_encoded` SHAP weight in §6.8 the same way. The *relative* comparisons between models are less
-affected than the absolute numbers, because every model shares the defect.
+The fix moves the encoding inside the evaluation fold. The CSV keeps its whole-library columns for training
+and serving; the benchmarks rebuild them per fold from the raw cells. For the unified matrix,
+`build_universal_dataset` saves the raw creator/studio cells as `entity_raw` in `preprocessor_state.pkl` and
+`unified_repeated_cv._reencode_entities` refits both columns on each fold's training rows (active since
+the 2026-10-14 build; the function moved out of `comprehensive_evaluator` on 2026-10-30 so the ablation and
+`bias_variance` can share it). For the local models, `standalone_benchmarks.reencode_fold` reads the enriched
+CSV behind each feature matrix (alignment asserted on row count and target), then refits every crew, entity
+and TMDB-neighbour column on the training rows and applies the training-fold map to the test rows. Movies,
+games and books refit with `oof_entity_encode` / `oof_neighbor_encode` and reproduce the stored CSV columns to
+1e-15 when fit on all rows; TV refits with its own `shows.feature_engineering.target_encode_list` (raw names,
+an unseen entity counts as the global mean), because refitting TV with `taste_features` moved 16 to 51 of 175
+rows by up to 0.23 stars, a feature the deployed TV model never sees. Every fold scorer goes through one of
+the two: `production_benchmarks`, `standalone_benchmarks`, `feature_diagnostics` (base-learner ablation),
+`learning_curve_local`, `edge_loss_ablation`, `bias_variance`, `distillation_ablation` and the unified
+ablation in `unified_repeated_cv`. `tests/test_fold_safe_encoding.py` fails if a module under `src/` splits
+rows with `registry_folds` or `train_test_split` without calling one of them or scoring the shared space only.
+The SHAP surrogate in `feature_diagnostics` fits the whole library with no held-out rows, so it stays on the
+stored columns (its encoding weights are upper bounds, §6.8).
+
+**Measured cost of the old protocol** (`reports/fold_safe_te_lift.json`, same 50 folds and items, deployed
+Movies/TV mean ensemble, both arms in one process so thread count cannot explain the gap; the leaked arm
+reproduced the published per-item predictions to 0.0):
+
+| Domain | MAE leaked → fold-safe | Skill vs mean | Spearman | Paired Wilcoxon p |
+|---|---|---|---|---|
+| Movies (N=1,182) | 0.4162 → 0.4188 | 0.440 → 0.437 | 0.794 → 0.798 | 0.95 |
+| TV (N=175) | 0.6543 → 0.6800 | 0.254 → 0.225 | 0.585 → 0.595 | 0.34 |
+
+(A first fold-safe TV run on 2026-10-30 read 0.6657; it refit TV with `taste_features`, not TV's own encoder,
+and was replaced the same day.) Per-item predictions did move (mean |Δ| 0.04 stars, max 0.37 to 0.50), so the re-encoding changed the
+inputs; the ensemble output barely changed because the crowd columns carry most of the signal and, for TV,
+m=10 keeps the encodings within 0.05 of the global mean. The August 2026 probe (`reports/te_leak_probe.json`,
++0.0009 MAE at m=10 on the 1,062-film corpus) reached the same verdict; it was never re-run after movies
+moved to m=2 and added seven crew, one collection and four neighbour columns, which is why the gap stayed
+unmeasured until now. SHAP weights in §6.8 still come from the stored columns and remain upper bounds.
 
 **2. FIXED 2026-10-11 — `movies/predict_ratings.py` zero-filled 23 of the 107 movie features.** It now builds every row with `transform_single_movie`; the history below is kept for the record.
 This is the **scoring path only** — training and the §6 benchmarks are unaffected. The scorer builds

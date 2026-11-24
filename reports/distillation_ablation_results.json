@@ -1,20 +1,20 @@
 [
     {
         "Domain": "game",
-        "MAE_NoPrior": 0.5893939393939394,
-        "Skill_NoPrior": 0.25409645554909943,
-        "MAE_WithPrior": 0.5878787878787879,
-        "Skill_WithPrior": 0.25601394538059263,
-        "p_value": 0.8272593465627113,
+        "MAE_NoPrior": 0.5454545454545454,
+        "Skill_NoPrior": 0.30970366066240573,
+        "MAE_WithPrior": 0.553030303030303,
+        "Skill_WithPrior": 0.30011621150493917,
+        "p_value": 0.7054569861112734,
         "Verdict": "DROP"
     },
     {
         "Domain": "book",
-        "MAE_NoPrior": 0.3490909090909091,
-        "Skill_NoPrior": 0.4739726027397261,
-        "MAE_WithPrior": 0.34454545454545454,
-        "Skill_WithPrior": 0.48082191780821926,
-        "p_value": 0.384088249473852,
+        "MAE_NoPrior": 0.33035714285714285,
+        "Skill_NoPrior": 0.5112054729889125,
+        "MAE_WithPrior": 0.32142857142857145,
+        "Skill_WithPrior": 0.5244161358811039,
+        "p_value": 0.47950012218695337,
         "Verdict": "DROP"
     }
 ]

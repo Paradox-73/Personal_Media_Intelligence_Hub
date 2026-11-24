@@ -1,6 +1,9 @@
 import pandas as pd
 import json
+import html
+import re
 import os
+import time
 import argparse
 import sys
 import requests
@@ -74,6 +77,66 @@ def fetch_omdb_direct(imdb_id=None, title=None, year=None):
             if res.get('Response') == 'True': return res
     except: pass
     return None
+
+# --- Letterboxd crowd snapshot + TMDB release types (serve-time features) ---
+LB_CACHE = config.CACHE_DIR / "letterboxd_films.json"
+_BROWSER = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"}
+
+
+def _cached(path, tmdb_id, fetch):
+    """JSON file cache keyed by tmdb id. A failed fetch (None) is not stored, so it
+    is retried next time; a prediction never fails because a fetch did."""
+    try:
+        key = str(int(float(tmdb_id)))
+    except (TypeError, ValueError):
+        return None
+    cache, readable = {}, True
+    try:
+        cache = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError):
+        readable = False  # never overwrite a cache we could not read
+    if key in cache:
+        return cache[key]
+    val = fetch(key)
+    if val is not None and readable:
+        cache[key] = val
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cache), encoding="utf-8")
+        os.replace(tmp, path)  # atomic: a crash mid-write cannot truncate the cache
+    return val
+
+
+def letterboxd_crowd(tmdb_id):
+    """{'lb_avg_rating', 'lb_rating_count', 'lb_themes'} from the film's Letterboxd
+    page (the same crowd aggregates the Films export carries), or {} when the film is
+    not on Letterboxd, or None when Letterboxd could not be reached."""
+    def fetch(key):
+        try:
+            r = requests.get(f"https://letterboxd.com/tmdb/{key}/", headers=_BROWSER, timeout=8)
+        except requests.RequestException:
+            return None
+        finally:
+            time.sleep(0.5)  # bulk callers (watchlist, syncs) fetch hundreds; stay polite
+        if r.status_code == 404:
+            return {}
+        if r.status_code != 200 or "letterboxd.com/film/" not in r.text:
+            return None
+        h = r.text
+        avg = re.search(r'"ratingValue":\s*([\d.]+)', h)
+        cnt = re.search(r'"ratingCount":\s*(\d+)', h)
+        names = re.findall(r'href="/films/(?:mini-)?theme/[^"]+"[^>]*>([^<]+)</a>', h)
+        if not avg:
+            return None  # too new to have an average yet: retry later, don't cache
+        return {"lb_avg_rating": float(avg.group(1)),
+                "lb_rating_count": int(cnt.group(1)) if cnt else None,
+                "lb_themes": "; ".join(html.unescape(n).strip() for n in names) or None}
+    return _cached(LB_CACHE, tmdb_id, fetch)
+
+
 
 def _crew_names(credits, jobs):
     """Names for the given TMDB crew jobs, de-duplicated, order preserved."""
@@ -219,6 +282,10 @@ def get_movie_metadata(title, year, tmdb_id=None, imdb_id=None):
             'dvd': omdb_res.get('DVD'),
         }
 
+    # --- B2. LETTERBOXD CROWD (same aggregates the Films export carries; the model
+    # reads them, so a new film must get them here or it is served as an average film)
+    lb = letterboxd_crowd(tmdb_data.get('tmdb_id')) or {}
+
     # --- C. MERGE ---
     def pick(*args):
         for val in args:
@@ -262,6 +329,9 @@ def get_movie_metadata(title, year, tmdb_id=None, imdb_id=None):
         'cinematographer': tmdb_data.get('cinematographer', []),
         'editor': tmdb_data.get('editor', []),
         'producer': tmdb_data.get('producer', []),
+        'lb_avg_rating': lb.get('lb_avg_rating'),
+        'lb_rating_count': lb.get('lb_rating_count'),
+        'lb_themes': lb.get('lb_themes'),
     }
 
 def sync_letterboxd_data():

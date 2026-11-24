@@ -62,3 +62,11 @@ youtube_playlist/letterboxd_confident_tiered.csv
 
 # --- raw ratings backups (data/ is ignored, but these live outside it) ---
 **/ratings.bak*.csv
+
+# --- agent skill installs (machine-local, reinstalled per machine) ---
+.claude/skills/
+.agents/
+skills-lock.json
+
+# --- local-only interview prep (not part of the project) ---
+docs/AMAZON_INTERVIEW_QA.html

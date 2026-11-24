@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 # Add project root to path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 from src import config
-from src.common.parsing import read_media_csv
+from src.common.parsing import read_media_csv, fix_mojibake
 
 # Load Environment Variables
 load_dotenv()
@@ -137,6 +137,9 @@ def enrich_game_data(merge=True):
     # read_media_csv repairs mojibake if it has to fall back to latin-1, instead of
     # writing the corruption back out one level deeper on every run.
     df = read_media_csv(raw_path)
+    # The raw list can hold valid-UTF-8 mojibake ("RagnarÃ¶k") that read_media_csv
+    # does not repair; unrepaired, it misses the merge key and the game is appended twice.
+    df['name'] = df['name'].map(fix_mojibake)
     print(f"📊 Loaded {len(df)} games from raw data.")
 
     # Merge: preserve existing cleaned rows, enrich only games new to the raw list.

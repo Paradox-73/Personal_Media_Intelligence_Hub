@@ -621,13 +621,13 @@ def build_universal_dataset():
     # (near-pure domain indicators -- MPAA exists for film/TV and not for books), and
     # the music-affinity block (music is de-rated, 0 rows).
     #
-    # CAVEAT that must travel with any metric computed on this matrix: the
-    # creator/studio encodings come from `oof_entity_encode`, which runs its OWN
-    # internal KFold unrelated to the frozen 50-fold registry. 48% of train rows get an
-    # encoding computed from a test row's target, and the value is computed once and
-    # reused across all 50 folds. Every unified MAE/R2 that includes these columns is
-    # therefore optimistic by an unmeasured amount. Fixing that means re-encoding inside
-    # each registry fold, which is not done here.
+    # The creator/studio columns as STORED here come from `oof_entity_encode`, whose
+    # inner KFold is unrelated to the frozen 50-fold registry, so in any registry fold
+    # they carry test targets into training rows (48% of train rows on the 2026-08-28
+    # corpus). They are not what the benchmark scores: `entity_raw` is saved in the
+    # state below and unified_repeated_cv._reencode_entities refits both columns
+    # inside every registry fold from training rows only. Train on the stored columns
+    # for serving (full-library maps); never benchmark on them.
     X_final = pd.concat([df[['critic_avg_5']].reset_index(drop=True),
                          X_entity.reset_index(drop=True),
                          X_genre.reset_index(drop=True),
