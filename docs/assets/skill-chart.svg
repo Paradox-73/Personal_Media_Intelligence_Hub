@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 440" width="1000" height="440" role="img" aria-labelledby="skill-title skill-desc">
+  <title id="skill-title">Skill against predicting the mean, per domain</title>
+  <desc id="skill-desc">Books scores 0.510 skill, Movies 0.435, Games 0.339, the unified cross-domain model 0.307 and TV 0.231, where 0 is the score of always predicting the average rating.</desc>
+
+  <defs>
+    <style>
+      .ser { font-family: Georgia, "Iowan Old Style", "Times New Roman", serif; }
+      .san { font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif; }
+      .mon { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace; }
+
+      .bar { transform-box: fill-box; transform-origin: left center; animation: bar-grow 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) backwards; }
+      .d1 { animation-delay: 0.05s; }
+      .d2 { animation-delay: 0.17s; }
+      .d3 { animation-delay: 0.29s; }
+      .d4 { animation-delay: 0.41s; }
+      .d5 { animation-delay: 0.53s; }
+      @keyframes bar-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+      @media (prefers-reduced-motion: reduce) { .bar { animation: none; } }
+    </style>
+  </defs>
+
+  <rect width="1000" height="440" fill="#14171C"/>
+
+  <text class="mon" x="40" y="48" font-size="11" letter-spacing="1.6" fill="#556678">PRIMARY METRIC &#183; FROZEN 10x5 CV FOLDS</text>
+  <text class="ser" x="40" y="84" font-size="28" fill="#E0E0E0">Skill against predicting the mean</text>
+
+  <g stroke="#2C343F" stroke-width="1">
+    <line x1="276" y1="108" x2="276" y2="352"/>
+    <line x1="376" y1="108" x2="376" y2="352"/>
+    <line x1="476" y1="108" x2="476" y2="352"/>
+    <line x1="576" y1="108" x2="576" y2="352"/>
+    <line x1="676" y1="108" x2="676" y2="352"/>
+    <line x1="776" y1="108" x2="776" y2="352"/>
+  </g>
+  <line x1="176" y1="108" x2="176" y2="352" stroke="#99AABB" stroke-width="1.5"/>
+
+  <g class="mon" font-size="10" fill="#556678" text-anchor="middle">
+    <text x="176" y="372">0</text>
+    <text x="276" y="372">0.1</text>
+    <text x="376" y="372">0.2</text>
+    <text x="476" y="372">0.3</text>
+    <text x="576" y="372">0.4</text>
+    <text x="676" y="372">0.5</text>
+    <text x="776" y="372">0.6</text>
+  </g>
+
+  <g>
+    <text class="san" x="40" y="130" font-size="14" font-weight="600" fill="#E0E0E0">Books</text>
+    <text class="mon" x="40" y="146" font-size="10" fill="#556678">N = 112</text>
+    <rect class="bar d1" x="176" y="120" width="510" height="24" rx="2" fill="#ff8000"/>
+    <text class="mon" x="698" y="137" font-size="13" fill="#ff8000">0.510</text>
+    <text class="mon" x="960" y="137" font-size="12" fill="#99AABB" text-anchor="end">rho 0.857</text>
+  </g>
+
+  <g>
+    <text class="san" x="40" y="178" font-size="14" font-weight="600" fill="#E0E0E0">Movies</text>
+    <text class="mon" x="40" y="194" font-size="10" fill="#556678">N = 1,234</text>
+    <rect class="bar d2" x="176" y="168" width="435" height="24" rx="2" fill="#556678"/>
+    <text class="mon" x="623" y="185" font-size="13" fill="#E0E0E0">0.435</text>
+    <text class="mon" x="960" y="185" font-size="12" fill="#99AABB" text-anchor="end">rho 0.796</text>
+  </g>
+
+  <g>
+    <text class="san" x="40" y="226" font-size="14" font-weight="600" fill="#E0E0E0">Games</text>
+    <text class="mon" x="40" y="242" font-size="10" fill="#556678">N = 66</text>
+    <rect class="bar d3" x="176" y="216" width="339" height="24" rx="2" fill="#556678"/>
+    <text class="mon" x="527" y="233" font-size="13" fill="#E0E0E0">0.339</text>
+    <text class="mon" x="960" y="233" font-size="12" fill="#99AABB" text-anchor="end">rho 0.683</text>
+  </g>
+
+  <g>
+    <text class="san" x="40" y="274" font-size="14" font-weight="600" fill="#E0E0E0">Unified</text>
+    <text class="mon" x="40" y="290" font-size="10" fill="#556678">N = 1,587</text>
+    <rect class="bar d4" x="176" y="264" width="307" height="24" rx="2" fill="none" stroke="#556678" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <text class="mon" x="495" y="281" font-size="13" fill="#99AABB">0.307</text>
+    <text class="mon" x="960" y="281" font-size="12" fill="#99AABB" text-anchor="end">rho 0.670</text>
+  </g>
+
+  <g>
+    <text class="san" x="40" y="322" font-size="14" font-weight="600" fill="#E0E0E0">TV</text>
+    <text class="mon" x="40" y="338" font-size="10" fill="#556678">N = 175</text>
+    <rect class="bar d5" x="176" y="312" width="231" height="24" rx="2" fill="#556678"/>
+    <text class="mon" x="419" y="329" font-size="13" fill="#E0E0E0">0.231</text>
+    <text class="mon" x="960" y="329" font-size="12" fill="#99AABB" text-anchor="end">rho 0.611</text>
+  </g>
+
+  <line x1="40" y1="396" x2="960" y2="396" stroke="#2C343F" stroke-width="1"/>
+  <text class="mon" x="40" y="416" font-size="10" letter-spacing="0.8" fill="#556678">SKILL = 1 - MAE / MAE OF ALWAYS PREDICTING THE AVERAGE RATING. 0 IS THAT BASELINE, 1 IS PERFECT.</text>
+  <text class="mon" x="40" y="430" font-size="10" letter-spacing="0.8" fill="#556678">SOLID = DEPLOYED PER-DOMAIN MODEL. DASHED = CROSS-DOMAIN UNIFIED MODEL. RHO = SPEARMAN RANK CORRELATION.</text>
+</svg>

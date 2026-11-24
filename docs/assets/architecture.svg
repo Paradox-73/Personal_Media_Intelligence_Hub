@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 456" width="1160" height="456" role="img" aria-labelledby="arch-title arch-desc">
+  <title id="arch-title">Pipeline architecture</title>
+  <desc id="arch-desc">Ingestion feeds a schema contract layer, then enrichment APIs, then the shared feature store, which fans out to the per-domain ensembles and the unified stack; both feed the Oracle and dashboards.</desc>
+
+  <defs>
+    <marker id="arch-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#556678"/>
+    </marker>
+    <style>
+      .ser { font-family: Georgia, "Iowan Old Style", "Times New Roman", serif; }
+      .san { font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif; }
+      .mon { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace; }
+      .name { font-size: 15px; font-weight: 600; fill: #E0E0E0; }
+      .sub  { font-size: 11px; fill: #99AABB; }
+      .lbl  { font-size: 10px; letter-spacing: 1.2px; fill: #99AABB; }
+
+      .wire { fill: none; stroke: #556678; stroke-width: 1.5; }
+      .flow { fill: none; stroke: #ff8000; stroke-width: 1.5; stroke-opacity: 0.55; stroke-dasharray: 6 12; animation: flow-run 1.6s linear infinite; }
+      @keyframes flow-run { to { stroke-dashoffset: -18; } }
+      @media (prefers-reduced-motion: reduce) {
+        .flow { animation: none; stroke-opacity: 0; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1160" height="456" fill="#14171C"/>
+
+  <g transform="translate(0,-32)">
+
+  <g class="wire" marker-end="url(#arch-arrow)">
+    <line x1="240" y1="140" x2="282" y2="140"/>
+    <line x1="488" y1="140" x2="530" y2="140"/>
+    <line x1="736" y1="140" x2="778" y2="140"/>
+    <path d="M 848 184 L 848 232 Q 848 240 840 240 L 396 240 Q 388 240 388 248 L 388 290"/>
+    <path d="M 920 184 L 920 256 Q 920 264 912 264 L 644 264 Q 636 264 636 272 L 636 290"/>
+    <line x1="736" y1="340" x2="778" y2="340"/>
+    <path d="M 388 384 L 388 416 Q 388 424 396 424 L 876 424 Q 884 424 884 416 L 884 390"/>
+  </g>
+
+  <g class="flow">
+    <line x1="240" y1="140" x2="282" y2="140"/>
+    <line x1="488" y1="140" x2="530" y2="140"/>
+    <line x1="736" y1="140" x2="778" y2="140"/>
+    <path d="M 848 184 L 848 232 Q 848 240 840 240 L 396 240 Q 388 240 388 248 L 388 290"/>
+    <path d="M 920 184 L 920 256 Q 920 264 912 264 L 644 264 Q 636 264 636 272 L 636 290"/>
+    <line x1="736" y1="340" x2="778" y2="340"/>
+    <path d="M 388 384 L 388 416 Q 388 424 396 424 L 876 424 Q 884 424 884 416 L 884 390"/>
+  </g>
+
+  <g>
+    <rect x="40" y="96" width="200" height="88" rx="6" fill="#2C343F" stroke="#556678" stroke-width="1"/>
+    <text class="san name" x="60" y="136">Ingestion</text>
+    <text class="mon sub" x="60" y="158">src/&lt;domain&gt;/ingestion.py</text>
+  </g>
+  <g>
+    <rect x="288" y="96" width="200" height="88" rx="6" fill="#2C343F" stroke="#556678" stroke-width="1"/>
+    <text class="san name" x="308" y="136">Schema contracts</text>
+    <text class="mon sub" x="308" y="158">Pydantic, two layers</text>
+  </g>
+  <g>
+    <rect x="536" y="96" width="200" height="88" rx="6" fill="#2C343F" stroke="#556678" stroke-width="1"/>
+    <text class="san name" x="556" y="130">Enrichment APIs</text>
+    <text class="mon sub" x="556" y="152">TMDB, OMDb, TVMaze,</text>
+    <text class="mon sub" x="556" y="168">RAWG, Hardcover, Spotify</text>
+  </g>
+  <g>
+    <rect x="784" y="96" width="200" height="88" rx="6" fill="#3a2410" stroke="#ff8000" stroke-width="1.5"/>
+    <text class="san name" x="804" y="130">Feature store</text>
+    <text class="mon sub" x="804" y="152">406 unified features,</text>
+    <text class="mon sub" x="804" y="168">frozen fold registry</text>
+  </g>
+
+  <g>
+    <rect x="288" y="296" width="200" height="88" rx="6" fill="#2C343F" stroke="#556678" stroke-width="1"/>
+    <text class="san name" x="308" y="336">Per-domain models</text>
+    <text class="mon sub" x="308" y="358">XGB + CatBoost + SVR</text>
+  </g>
+  <g>
+    <rect x="536" y="296" width="200" height="88" rx="6" fill="#2C343F" stroke="#556678" stroke-width="1"/>
+    <text class="san name" x="556" y="336">Unified stack</text>
+    <text class="mon sub" x="556" y="358">XGB + CatBoost mean</text>
+  </g>
+  <g>
+    <rect x="784" y="296" width="200" height="88" rx="6" fill="#3a2410" stroke="#ff8000" stroke-width="1.5"/>
+    <text class="san name" x="804" y="330">Oracle + dashboards</text>
+    <text class="mon sub" x="804" y="352">SHAP verdicts,</text>
+    <text class="mon sub" x="804" y="368">Streamlit pages</text>
+  </g>
+
+  <rect x="560" y="398" width="104" height="16" fill="#14171C"/>
+  <text class="mon lbl" x="612" y="410" text-anchor="middle">PREDICTIONS</text>
+
+  <g>
+    <line x1="40" y1="448" x2="1120" y2="448" stroke="#2C343F" stroke-width="1"/>
+    <rect x="40" y="462" width="12" height="12" rx="2" fill="#2C343F" stroke="#556678"/>
+    <text class="mon lbl" x="60" y="472">PIPELINE STAGE</text>
+    <rect x="216" y="462" width="12" height="12" rx="2" fill="#3a2410" stroke="#ff8000"/>
+    <text class="mon lbl" x="236" y="472">SHARED SPACE AND USER-FACING OUTPUT</text>
+  </g>
+  </g>
+</svg>

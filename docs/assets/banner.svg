@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 280" width="1200" height="280" role="img" aria-labelledby="banner-title banner-desc">
+  <title id="banner-title">Personal Media Intelligence Hub</title>
+  <desc id="banner-desc">Header banner: the project name beside an animated point cloud standing for the shared cross-domain taste space, with one highlighted item being scored.</desc>
+
+  <defs>
+    <linearGradient id="banner-rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff8000"/>
+      <stop offset="0.5" stop-color="#00e054"/>
+      <stop offset="1" stop-color="#40bcf4"/>
+    </linearGradient>
+    <radialGradient id="banner-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ff8000" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#ff8000" stop-opacity="0"/>
+    </radialGradient>
+    <style>
+      .ser { font-family: Georgia, "Iowan Old Style", "Times New Roman", serif; }
+      .san { font-family: "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif; }
+      .mon { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Liberation Mono", monospace; }
+
+      .pt { animation: pt-pulse 5.6s ease-in-out infinite; }
+      .pt:nth-of-type(3n)   { animation-delay: -0.8s; }
+      .pt:nth-of-type(3n+1) { animation-delay: -2.4s; }
+      .pt:nth-of-type(4n)   { animation-delay: -3.9s; }
+      @keyframes pt-pulse {
+        0%, 100% { opacity: 0.30; }
+        50%      { opacity: 0.95; }
+      }
+
+      .ring { transform-box: fill-box; transform-origin: center; animation: ring-out 3.2s ease-out infinite; }
+      .ring.b { animation-delay: -1.6s; }
+      @keyframes ring-out {
+        0%   { transform: scale(0.35); opacity: 0.85; }
+        100% { transform: scale(2.4);  opacity: 0; }
+      }
+
+      .link { stroke-dasharray: 4 5; animation: link-draw 3.4s linear infinite; }
+      @keyframes link-draw { to { stroke-dashoffset: -36; } }
+
+      .under { transform-box: fill-box; transform-origin: left center; animation: under-grow 4.8s ease-in-out infinite; }
+      @keyframes under-grow {
+        0%, 100% { transform: scaleX(0.35); }
+        50%      { transform: scaleX(1); }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .pt, .ring, .link, .under { animation: none; }
+        .pt { opacity: 0.8; }
+        .ring { opacity: 0.25; }
+        .under { transform: none; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1200" height="280" fill="#14171C"/>
+  <rect width="1200" height="4" fill="url(#banner-rule)"/>
+  <ellipse cx="980" cy="140" rx="280" ry="150" fill="url(#banner-glow)"/>
+
+  <text class="mon" x="64" y="86" font-size="11" letter-spacing="1.6" fill="#556678">EXPLAINABLE RATING PREDICTION &#183; SINGLE-USER CORPUS</text>
+  <text class="ser" x="64" y="144" font-size="44" letter-spacing="-0.5" fill="#E0E0E0">Personal Media Intelligence Hub</text>
+  <text class="san" x="64" y="180" font-size="17" fill="#99AABB">Movies &#183; TV &#183; Music &#183; Games &#183; Books in one shared taste space</text>
+  <text class="mon" x="64" y="208" font-size="13" fill="#556678">1,514 rated items &#183; 406 unified features &#183; frozen 10x5 CV folds</text>
+  <rect class="under" x="64" y="226" width="120" height="3" fill="#ff8000"/>
+
+  <g stroke="#556678" stroke-width="1" fill="none" opacity="0.55">
+    <path class="link" d="M 872 96 L 944 132"/>
+    <path class="link" d="M 944 132 L 1028 104"/>
+    <path class="link" d="M 944 132 L 1012 186"/>
+    <path class="link" d="M 1012 186 L 1088 160"/>
+  </g>
+
+  <g fill="#556678">
+    <circle class="pt" cx="836" cy="72" r="3"/>
+    <circle class="pt" cx="884" cy="188" r="2.5"/>
+    <circle class="pt" cx="912" cy="56" r="4"/>
+    <circle class="pt" cx="958" cy="214" r="3"/>
+    <circle class="pt" cx="996" cy="64" r="2.5"/>
+    <circle class="pt" cx="1044" cy="200" r="3.5"/>
+    <circle class="pt" cx="1072" cy="88" r="2.5"/>
+    <circle class="pt" cx="1108" cy="196" r="3"/>
+    <circle class="pt" cx="1136" cy="124" r="2.5"/>
+    <circle class="pt" cx="808" cy="148" r="2.5"/>
+    <circle class="pt" cx="1120" cy="48" r="3"/>
+    <circle class="pt" cx="808" cy="208" r="3"/>
+  </g>
+
+  <g fill="#40bcf4">
+    <circle class="pt" cx="872" cy="96" r="5"/>
+    <circle class="pt" cx="1028" cy="104" r="4"/>
+    <circle class="pt" cx="968" cy="88" r="3.5"/>
+    <circle class="pt" cx="1096" cy="128" r="3"/>
+    <circle class="pt" cx="920" cy="160" r="3.5"/>
+  </g>
+
+  <g fill="#00e054">
+    <circle class="pt" cx="1012" cy="186" r="4.5"/>
+    <circle class="pt" cx="1088" cy="160" r="4"/>
+    <circle class="pt" cx="892" cy="136" r="3"/>
+    <circle class="pt" cx="1060" cy="68" r="3.5"/>
+    <circle class="pt" cx="976" cy="156" r="3"/>
+  </g>
+
+  <circle class="ring" cx="944" cy="132" r="14" fill="none" stroke="#ff8000" stroke-width="1.5"/>
+  <circle class="ring b" cx="944" cy="132" r="14" fill="none" stroke="#ff8000" stroke-width="1.5"/>
+  <circle cx="944" cy="132" r="7" fill="#ff8000"/>
+  <text class="mon" x="1152" y="250" font-size="11" text-anchor="end" fill="#ff8000">SCORED ITEM &#183; 4.0&#9733; WITH A SHAP VERDICT</text>
+</svg>
